@@ -2,6 +2,8 @@
 
 Local Python bot for the Quantum University ERP.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/tapendra9104/QUMS-Chat-Bot)
+
 What it does:
 - stores ERP user id, password, and WhatsApp number in a local SQLite database
 - starts a manual ERP login session and shows the captcha in a local dashboard
