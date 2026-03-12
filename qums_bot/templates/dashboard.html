@@ -165,6 +165,11 @@
                 </p>
             {% endif %}
             <div class="actions">
+                {% if settings.admin_username and settings.admin_password %}
+                    <form class="inline" method="post" action="{{ url_for('admin_logout') }}">
+                        <button type="submit" class="ghost">Logout</button>
+                    </form>
+                {% endif %}
                 <form class="inline" method="post" action="{{ url_for('run_checks') }}">
                     <button type="submit" class="secondary">Run Attendance Checks Now</button>
                 </form>

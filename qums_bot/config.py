@@ -19,6 +19,8 @@ class Settings:
     app_env: str
     use_waitress: bool
     waitress_threads: int
+    admin_username: str
+    admin_password: str
     local_timezone: str
     morning_digest_time: str
     attendance_poll_interval_minutes: int
@@ -59,12 +61,14 @@ def load_settings() -> Settings:
         app_env=app_env,
         use_waitress=use_waitress,
         waitress_threads=int(os.getenv("WAITRESS_THREADS", "8")),
+        admin_username=os.getenv("ADMIN_USERNAME", "").strip(),
+        admin_password=os.getenv("ADMIN_PASSWORD", "").strip(),
         local_timezone=os.getenv("LOCAL_TIMEZONE", "Asia/Kolkata"),
         morning_digest_time=os.getenv("MORNING_DIGEST_TIME", "06:30"),
         attendance_poll_interval_minutes=int(os.getenv("ATTENDANCE_POLL_INTERVAL_MINUTES", "10")),
         lecture_grace_minutes=int(os.getenv("LECTURE_GRACE_MINUTES", "20")),
         flask_host=os.getenv("FLASK_HOST", "127.0.0.1"),
-        flask_port=int(os.getenv("FLASK_PORT", "5000")),
+        flask_port=int(os.getenv("FLASK_PORT", os.getenv("PORT", "5000"))),
         twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID", ""),
         twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", ""),
         twilio_whatsapp_mode=twilio_mode,

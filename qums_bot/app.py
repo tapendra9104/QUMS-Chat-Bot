@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import Flask, flash, jsonify, redirect, render_template, request, url_for
+from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 from .config import load_settings
 from .db import Database
@@ -30,6 +30,47 @@ def create_app() -> Flask:
     scheduler = build_scheduler(settings, service)
     scheduler.start()
     app.config["scheduler"] = scheduler
+
+    @app.before_request
+    def require_admin_login():
+        if request.endpoint in {"healthz", "admin_login", "admin_login_submit", "static"}:
+            return None
+        if not _admin_auth_enabled():
+            return None
+        if session.get("admin_authenticated"):
+            return None
+        return redirect(url_for("admin_login", next=request.path))
+
+    @app.get("/admin/login")
+    def admin_login():
+        if not _admin_auth_enabled():
+            return redirect(url_for("dashboard"))
+        if session.get("admin_authenticated"):
+            return redirect(url_for("dashboard"))
+        return render_template("admin_login.html", next_path=request.args.get("next") or url_for("dashboard"))
+
+    @app.post("/admin/login")
+    def admin_login_submit():
+        if not _admin_auth_enabled():
+            return redirect(url_for("dashboard"))
+
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        next_path = request.form.get("next_path") or url_for("dashboard")
+
+        if username == settings.admin_username and password == settings.admin_password:
+            session["admin_authenticated"] = True
+            flash("Admin login successful.", "success")
+            return redirect(next_path)
+
+        flash("Invalid admin username or password.", "error")
+        return render_template("admin_login.html", next_path=next_path), 401
+
+    @app.post("/admin/logout")
+    def admin_logout():
+        session.clear()
+        flash("Admin session closed.", "success")
+        return redirect(url_for("admin_login"))
 
     @app.get("/")
     def dashboard():
@@ -163,6 +204,11 @@ def _service() -> BotService:
     from flask import current_app
 
     return current_app.config["service"]
+
+
+def _admin_auth_enabled() -> bool:
+    service = _service()
+    return bool(service.settings.admin_username and service.settings.admin_password)
 
 
 def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = None):

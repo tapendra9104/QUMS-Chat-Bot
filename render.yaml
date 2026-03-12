@@ -1,0 +1,64 @@
+services:
+  - type: web
+    name: qums-chat-bot
+    runtime: python
+    region: singapore
+    plan: starter
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.14.3
+      - key: APP_ENV
+        value: production
+      - key: USE_WAITRESS
+        value: "1"
+      - key: WAITRESS_THREADS
+        value: "8"
+      - key: FLASK_HOST
+        value: 0.0.0.0
+      - key: FLASK_PORT
+        value: "10000"
+      - key: DATABASE_PATH
+        value: /var/data/bot.sqlite3
+      - key: ERP_BASE_URL
+        value: https://qums.quantumuniversity.edu.in
+      - key: LOCAL_TIMEZONE
+        value: Asia/Kolkata
+      - key: MORNING_DIGEST_TIME
+        value: "06:30"
+      - key: ATTENDANCE_POLL_INTERVAL_MINUTES
+        value: "10"
+      - key: LECTURE_GRACE_MINUTES
+        value: "20"
+      - key: APP_SECRET
+        generateValue: true
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_MODE
+        value: sandbox
+      - key: TWILIO_WHATSAPP_FROM
+        value: whatsapp:+14155238886
+      - key: TWILIO_SANDBOX_JOIN_CODE
+        sync: false
+      - key: TWILIO_STATUS_MESSAGE_LIMIT
+        value: "50"
+      - key: TWILIO_CONTENT_SID_DEFAULT
+        sync: false
+      - key: TWILIO_CONTENT_SID_MORNING
+        sync: false
+      - key: TWILIO_CONTENT_SID_ATTENDANCE
+        sync: false
+    disk:
+      name: qums-chat-bot-data
+      mountPath: /var/data
+      sizeGB: 1

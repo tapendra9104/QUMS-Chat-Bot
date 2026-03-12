@@ -15,6 +15,36 @@ What it does not do:
 - it does not clone the ERP website
 - it cannot auto-join a Twilio WhatsApp sandbox session on behalf of the user
 
+## Render deployment
+
+This repo now includes `render.yaml` for a Render web-service deployment.
+
+Recommended Render shape for the current codebase:
+- one always-on web service
+- one persistent disk mounted at `/var/data`
+- one instance only
+
+Why one instance only:
+- the app uses APScheduler inside the web process for morning and attendance jobs
+- the app uses SQLite by default, so scaling to multiple instances would create duplicate jobs and split state
+
+Before deploying on Render, set these environment variables in the Render dashboard:
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+
+For testing on sandbox:
+- keep `TWILIO_WHATSAPP_MODE=sandbox`
+- keep `TWILIO_WHATSAPP_FROM=whatsapp:+14155238886`
+- set `TWILIO_SANDBOX_JOIN_CODE` if you want the dashboard to show the exact join command
+
+For real production delivery:
+- change `TWILIO_WHATSAPP_MODE=production`
+- change `TWILIO_WHATSAPP_FROM` to your approved WhatsApp-enabled Twilio sender
+- set `TWILIO_CONTENT_SID_DEFAULT` or the specific morning and attendance template SIDs
+- do not rely on the sandbox for daily automated notifications
+
 ## ERP endpoints used
 
 - `POST /Account/GetStudentDetail`
@@ -118,6 +148,7 @@ The sender code uses template SIDs automatically for scheduled morning and atten
 - `main.py` uses Waitress when `USE_WAITRESS=1`
 - SQLite is acceptable for a small single-instance deployment; move to PostgreSQL before multi-instance deployment
 - ERP login still requires a manual captcha refresh flow through the dashboard when the ERP session expires
+- the deployed dashboard should always be protected with `ADMIN_USERNAME` and `ADMIN_PASSWORD`
 
 ## Important Twilio note
 
