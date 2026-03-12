@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QUMS Bot Dashboard</title>
+    <style>
+        body {
+            background: #f4f7fb;
+            color: #183247;
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            margin: 0;
+        }
+        .wrap {
+            margin: 0 auto;
+            max-width: 1100px;
+            padding: 24px;
+        }
+        .hero, .panel, .student {
+            background: #fff;
+            border: 1px solid #d7e0ea;
+            border-radius: 16px;
+            box-shadow: 0 8px 20px rgba(24, 50, 71, 0.06);
+            margin-bottom: 20px;
+            padding: 20px;
+        }
+        .hero {
+            background: linear-gradient(135deg, #12344d, #1f6f8b);
+            color: #fff;
+        }
+        h1, h2, h3 {
+            margin-top: 0;
+        }
+        .grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        }
+        label {
+            display: block;
+            font-size: 0.92rem;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        input[type="text"],
+        input[type="password"] {
+            border: 1px solid #bfd0dc;
+            border-radius: 10px;
+            box-sizing: border-box;
+            padding: 10px 12px;
+            width: 100%;
+        }
+        .check {
+            align-items: center;
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 12px;
+        }
+        button, .button-link {
+            background: #0d6e8b;
+            border: 0;
+            border-radius: 10px;
+            color: #fff;
+            cursor: pointer;
+            display: inline-block;
+            padding: 10px 14px;
+            text-decoration: none;
+        }
+        button.secondary, .button-link.secondary {
+            background: #5d7a8f;
+        }
+        button.danger {
+            background: #b13b3b;
+        }
+        button.ghost, .button-link.ghost {
+            background: #edf4f8;
+            color: #183247;
+        }
+        .flash {
+            border-radius: 12px;
+            margin-bottom: 12px;
+            padding: 12px 14px;
+        }
+        .flash.success {
+            background: #e7f8ed;
+            border: 1px solid #abd9bb;
+        }
+        .flash.error {
+            background: #fdecec;
+            border: 1px solid #efb0b0;
+        }
+        .meta {
+            color: #5c7284;
+            font-size: 0.92rem;
+        }
+        .status {
+            border-radius: 10px;
+            display: inline-block;
+            font-size: 0.85rem;
+            font-weight: 700;
+            margin-top: 10px;
+            padding: 6px 10px;
+        }
+        .status.ready {
+            background: #e7f8ed;
+            color: #1e6f43;
+        }
+        .status.not-ready {
+            background: #fdecec;
+            color: #9d2d2d;
+        }
+        code {
+            background: #edf4f8;
+            border-radius: 6px;
+            padding: 2px 6px;
+        }
+        pre {
+            background: #0f2230;
+            border-radius: 14px;
+            color: #eaf3f7;
+            overflow-x: auto;
+            padding: 16px;
+            white-space: pre-wrap;
+        }
+        .inline {
+            display: inline;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <section class="hero">
+            <h1>QUMS WhatsApp Bot</h1>
+            <p>This is a local admin panel for the Python bot. ERP login is supported only through manual CAPTCHA entry in the dashboard.</p>
+            <p class="meta">
+                App env: {{ settings.app_env }} |
+                Server: {{ "waitress" if settings.use_waitress else "flask-dev" }} |
+                Morning digest time: {{ settings.morning_digest_time }} |
+                Attendance poll interval: {{ settings.attendance_poll_interval_minutes }} minutes |
+                Twilio configured: {{ "Yes" if twilio_configured else "No" }} |
+                Mode: {{ settings.twilio_whatsapp_mode }} |
+                Sender: {{ settings.twilio_whatsapp_from or "Not set" }}
+            </p>
+            <p class="meta">
+                Sandbox cannot auto-join from this page. Twilio requires the user to send the join command from their own WhatsApp account.
+            </p>
+            {% if settings.twilio_whatsapp_mode == "sandbox" %}
+                <p class="meta">
+                    Sandbox sender: <code>whatsapp:+14155238886</code>
+                    {% if settings.twilio_sandbox_join_code %}
+                        | Current join command: <code>join {{ settings.twilio_sandbox_join_code }}</code>
+                    {% else %}
+                        | Set <code>TWILIO_SANDBOX_JOIN_CODE</code> in <code>.env</code> if you want the dashboard to display the exact join command.
+                    {% endif %}
+                </p>
+            {% else %}
+                <p class="meta">
+                    Production mode expects a WhatsApp-enabled sender and approved template SIDs for scheduled messages.
+                </p>
+            {% endif %}
+            <div class="actions">
+                <form class="inline" method="post" action="{{ url_for('run_checks') }}">
+                    <button type="submit" class="secondary">Run Attendance Checks Now</button>
+                </form>
+            </div>
+        </section>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="flash {{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <section class="panel">
+            <h2>{{ "Edit Student" if edit_student else "Add Student" }}</h2>
+            <form method="post" action="{{ url_for('save_student') }}">
+                {% if edit_student %}
+                    <input type="hidden" name="student_id" value="{{ edit_student.id }}">
+                {% endif %}
+                <div class="grid">
+                    <div>
+                        <label for="student_label">Student label</label>
+                        <input id="student_label" name="student_label" type="text" value="{{ edit_student.student_label if edit_student else '' }}" required>
+                    </div>
+                    <div>
+                        <label for="user_name">ERP user id</label>
+                        <input id="user_name" name="user_name" type="text" value="{{ edit_student.user_name if edit_student else '' }}" required>
+                    </div>
+                    <div>
+                        <label for="password">ERP password</label>
+                        <input id="password" name="password" type="password" placeholder="{{ 'Leave blank to keep existing password' if edit_student else '' }}">
+                    </div>
+                    <div>
+                        <label for="whatsapp_number">WhatsApp number</label>
+                        <input id="whatsapp_number" name="whatsapp_number" type="text" value="{{ edit_student.whatsapp_number if edit_student else '' }}" placeholder="+91XXXXXXXXXX" required>
+                    </div>
+                    <div>
+                        <label for="timezone">Timezone</label>
+                        <input id="timezone" name="timezone" type="text" value="{{ edit_student.timezone if edit_student else settings.local_timezone }}" required>
+                    </div>
+                </div>
+                <label class="check">
+                    <input name="enabled" type="checkbox" {% if edit_student and edit_student.enabled or not edit_student %}checked{% endif %}>
+                    Enable scheduled morning and attendance updates
+                </label>
+                <div class="actions">
+                    <button type="submit">Save Student</button>
+                    {% if edit_student %}
+                        <a class="button-link ghost" href="{{ url_for('dashboard') }}">Cancel Edit</a>
+                    {% endif %}
+                </div>
+            </form>
+        </section>
+
+        {% if preview_text %}
+            <section class="panel">
+                <h2>Preview</h2>
+                <pre>{{ preview_text }}</pre>
+            </section>
+        {% endif %}
+
+        <section class="grid">
+            {% for student in students %}
+                <article class="student">
+                    {% set wa = whatsapp_statuses.get(student.id) %}
+                    <h3>{{ student.student_label }}</h3>
+                    <p class="meta">
+                        ERP user id: {{ student.user_name }}<br>
+                        WhatsApp: {{ student.whatsapp_number }}<br>
+                        RegID: {{ student.reg_id or "Not synced yet" }}<br>
+                        Session updated: {{ student.session_updated_at or "Not logged in yet" }}<br>
+                        Status: {{ student.last_login_status or "Not started" }}
+                    </p>
+                    {% if wa %}
+                        <div class="status {{ 'ready' if wa.ready else 'not-ready' }}">
+                            {{ wa.state.replace('_', ' ') | title }}
+                        </div>
+                        <p class="meta">
+                            WhatsApp readiness: {{ wa.detail }}<br>
+                            {% if wa.last_outbound_status %}
+                                Last outbound status: {{ wa.last_outbound_status }}
+                                {% if wa.last_error_code %}| Error: {{ wa.last_error_code }}{% endif %}
+                                <br>
+                            {% endif %}
+                            {% if wa.last_inbound_at %}
+                                Last inbound sandbox message: {{ wa.last_inbound_at }}<br>
+                            {% endif %}
+                            {% if wa.join_command %}
+                                Join command: <code>{{ wa.join_command }}</code> to <code>+14155238886</code>
+                            {% endif %}
+                        </p>
+                    {% endif %}
+                    <div class="actions">
+                        <a class="button-link ghost" href="{{ url_for('dashboard', edit=student.id) }}">Edit</a>
+                        <form method="post" action="{{ url_for('start_login', student_id=student.id) }}">
+                            <button type="submit">Start ERP Login</button>
+                        </form>
+                        <a class="button-link secondary" href="{{ url_for('login_page', student_id=student.id) }}">Open Captcha</a>
+                        <form method="post" action="{{ url_for('preview_today', student_id=student.id) }}">
+                            <button type="submit" class="ghost">Preview Today</button>
+                        </form>
+                        <form method="post" action="{{ url_for('send_morning', student_id=student.id) }}">
+                            <button type="submit">Send Morning Summary</button>
+                        </form>
+                        <form method="post" action="{{ url_for('send_test', student_id=student.id) }}">
+                            <button type="submit" class="secondary">Send WhatsApp Test</button>
+                        </form>
+                        <form method="post" action="{{ url_for('delete_student', student_id=student.id) }}" onsubmit="return confirm('Delete this student profile and its saved ERP session data?');">
+                            <button type="submit" class="danger">Delete Profile</button>
+                        </form>
+                    </div>
+                </article>
+            {% else %}
+                <article class="student">
+                    <h3>No student configured</h3>
+                    <p class="meta">Save at least one student profile to start the bot.</p>
+                </article>
+            {% endfor %}
+        </section>
+    </div>
+</body>
+</html>

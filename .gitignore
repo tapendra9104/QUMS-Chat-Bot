@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/
+/*.html
+/*.txt
+!/requirements.txt
+/*.json
+/*.png
+/*.js
+/*.har
+/*.heapsnapshot

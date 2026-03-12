@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Manual ERP Login</title>
+    <style>
+        body {
+            background: #eef4f8;
+            color: #183247;
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            margin: 0;
+        }
+        .wrap {
+            margin: 0 auto;
+            max-width: 680px;
+            padding: 24px;
+        }
+        .card {
+            background: #fff;
+            border: 1px solid #d7e0ea;
+            border-radius: 18px;
+            box-shadow: 0 10px 24px rgba(24, 50, 71, 0.08);
+            padding: 24px;
+        }
+        h1, h2 {
+            margin-top: 0;
+        }
+        img {
+            background: #f8fbfd;
+            border: 1px solid #d1dce6;
+            border-radius: 12px;
+            display: block;
+            margin: 20px auto;
+            max-width: 100%;
+        }
+        input[type="text"] {
+            border: 1px solid #bfd0dc;
+            border-radius: 10px;
+            box-sizing: border-box;
+            padding: 12px 14px;
+            width: 100%;
+        }
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 16px;
+        }
+        button, a {
+            background: #0d6e8b;
+            border: 0;
+            border-radius: 10px;
+            color: #fff;
+            cursor: pointer;
+            display: inline-block;
+            padding: 10px 14px;
+            text-decoration: none;
+        }
+        button.secondary {
+            background: #5d7a8f;
+        }
+        .meta {
+            color: #587084;
+            font-size: 0.95rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="card">
+            <h1>Manual ERP Login</h1>
+            <p class="meta">
+                Student: {{ student.student_label }}<br>
+                ERP user id: {{ student.user_name }}
+            </p>
+            <p>The bot will not solve the captcha automatically. Enter the captcha shown below to activate the ERP session.</p>
+            <img src="{{ pending.captcha_data_url }}" alt="ERP captcha">
+            <form method="post" action="{{ url_for('complete_login', student_id=student.id) }}">
+                <label for="captcha">Captcha</label>
+                <input id="captcha" name="captcha" type="text" autocomplete="off" required>
+                <div class="actions">
+                    <button type="submit">Complete Login</button>
+                </div>
+            </form>
+            <div class="actions">
+                <form method="post" action="{{ url_for('refresh_login', student_id=student.id) }}">
+                    <button type="submit" class="secondary">Refresh Captcha</button>
+                </form>
+                <a href="{{ url_for('dashboard') }}">Back to Dashboard</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

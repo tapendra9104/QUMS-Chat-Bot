@@ -1,0 +1,9 @@
+Flask
+APScheduler
+beautifulsoup4
+cryptography
+python-dotenv
+requests
+twilio
+tzdata
+waitress
