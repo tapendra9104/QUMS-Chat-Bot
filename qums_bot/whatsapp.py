@@ -30,6 +30,7 @@ class WhatsAppChannelStatus:
     detail: str
     join_command: str | None = None
     last_inbound_at: str | None = None
+    sandbox_expires_at: str | None = None
     last_outbound_status: str | None = None
     last_error_code: int | None = None
 
@@ -103,12 +104,16 @@ class WhatsAppSender:
         return self._client
 
     def _send_chunk(self, to_number: str, body: str) -> str:
+        callback_url = self._status_callback_url()
         try:
-            message = self._client_instance.messages.create(
-                from_=self._normalize_number(self.settings.twilio_whatsapp_from),
-                to=self._normalize_number(to_number),
-                body=body,
-            )
+            payload = {
+                "from_": self._normalize_number(self.settings.twilio_whatsapp_from),
+                "to": self._normalize_number(to_number),
+                "body": body,
+            }
+            if callback_url:
+                payload["status_callback"] = callback_url
+            message = self._client_instance.messages.create(**payload)
         except TwilioRestException as exc:
             raise WhatsAppError(self._format_error(exc)) from exc
 
@@ -120,13 +125,17 @@ class WhatsAppSender:
 
     def _send_template(self, to_number: str, body: str, template_sid: str) -> str:
         payload = json.dumps({"1": body})
+        callback_url = self._status_callback_url()
         try:
-            message = self._client_instance.messages.create(
-                from_=self._normalize_number(self.settings.twilio_whatsapp_from),
-                to=self._normalize_number(to_number),
-                content_sid=template_sid,
-                content_variables=payload,
-            )
+            request_payload = {
+                "from_": self._normalize_number(self.settings.twilio_whatsapp_from),
+                "to": self._normalize_number(to_number),
+                "content_sid": template_sid,
+                "content_variables": payload,
+            }
+            if callback_url:
+                request_payload["status_callback"] = callback_url
+            message = self._client_instance.messages.create(**request_payload)
         except TwilioRestException as exc:
             raise WhatsAppError(self._format_error(exc)) from exc
 
@@ -169,6 +178,7 @@ class WhatsAppSender:
         latest_outbound = self._latest_outbound(recent_messages, recipient)
         latest_inbound = self._latest_inbound(recent_messages, recipient)
         last_error = self._message_error_code(latest_outbound)
+        sandbox_expires_at = self._sandbox_expiry_timestamp(latest_inbound)
 
         if sender != SANDBOX_SENDER:
             return WhatsAppChannelStatus(
@@ -180,6 +190,7 @@ class WhatsAppSender:
                 detail="Sandbox mode requires the Twilio sandbox sender whatsapp:+14155238886.",
                 join_command=join_command,
                 last_inbound_at=self._message_timestamp(latest_inbound),
+                sandbox_expires_at=sandbox_expires_at,
                 last_outbound_status=self._message_status(latest_outbound),
                 last_error_code=last_error,
             )
@@ -198,6 +209,7 @@ class WhatsAppSender:
                     ),
                     join_command=join_command,
                     last_inbound_at=self._message_timestamp(latest_inbound),
+                    sandbox_expires_at=sandbox_expires_at,
                     last_outbound_status=self._message_status(latest_outbound),
                     last_error_code=last_error,
                 )
@@ -214,6 +226,7 @@ class WhatsAppSender:
                 ),
                 join_command=join_command,
                 last_inbound_at=self._message_timestamp(latest_inbound),
+                sandbox_expires_at=sandbox_expires_at,
                 last_outbound_status=self._message_status(latest_outbound),
                 last_error_code=last_error,
             )
@@ -230,6 +243,7 @@ class WhatsAppSender:
             ),
             join_command=join_command,
             last_inbound_at=self._message_timestamp(latest_inbound),
+            sandbox_expires_at=sandbox_expires_at,
             last_outbound_status=self._message_status(latest_outbound),
             last_error_code=last_error,
         )
@@ -310,6 +324,13 @@ class WhatsAppSender:
         code = self.settings.twilio_sandbox_join_code.strip()
         return f"join {code}" if code else None
 
+    def _status_callback_url(self) -> str | None:
+        if self.settings.twilio_status_callback_url:
+            return self.settings.twilio_status_callback_url
+        if self.settings.public_base_url:
+            return f"{self.settings.public_base_url}/webhooks/twilio/status"
+        return None
+
     def _normalize_number(self, value: str) -> str:
         cleaned = value.strip()
         return cleaned if cleaned.startswith("whatsapp:") else f"whatsapp:{cleaned}"
@@ -365,6 +386,15 @@ class WhatsAppSender:
         if not created:
             return None
         return created.isoformat()
+
+    def _sandbox_expiry_timestamp(self, message: Any | None) -> str | None:
+        if not message:
+            return None
+        created = getattr(message, "date_created", None)
+        if not created:
+            return None
+        created_utc = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+        return (created_utc + timedelta(hours=SANDBOX_EXPIRY_HOURS)).isoformat()
 
     def _split_body(self, body: str, limit: int = 1500) -> list[str]:
         if len(body) <= limit:

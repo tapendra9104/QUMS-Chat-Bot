@@ -12,6 +12,8 @@ class Student:
     user_name: str
     password_encrypted: str
     whatsapp_number: str
+    telegram_chat_id: str
+    email_address: str
     enabled: bool
     timezone: str
     reg_id: str | None
@@ -19,6 +21,11 @@ class Student:
     session_cookies: str | None
     session_updated_at: str | None
     last_login_status: str | None
+    erp_status_text: str | None
+    erp_status_updated_at: str | None
+    last_bot_activity_text: str | None
+    last_erp_sync_at: str | None
+    last_bot_action_at: str | None
     created_at: str
     updated_at: str
 
@@ -87,4 +94,100 @@ class LectureEvent:
     is_break: bool
     status: str
     check_after: datetime | None
+    status_recorded_at: datetime | None
     note: str
+
+
+@dataclass
+class DailyAttendanceReport:
+    student_id: int
+    event_date: date
+    total_lectures: int
+    marked_count: int
+    present_count: int
+    absent_count: int
+    unmarked_count: int
+    report_body: str
+    sent_at: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class MessageHistoryRecord:
+    id: int
+    student_id: int
+    student_label: str
+    whatsapp_number: str
+    telegram_chat_id: str
+    email_address: str
+    channel: str
+    recipient: str
+    category: str
+    message_kind: str
+    provider_sid: str
+    title: str
+    body: str
+    idempotency_key: str | None
+    delivery_status: str | None
+    delivery_error_code: int | None
+    delivery_error_message: str | None
+    status_updated_at: str | None
+    sent_at: str
+
+
+@dataclass
+class OutboundMessageRecord:
+    idempotency_key: str
+    student_id: int
+    channel: str
+    recipient: str
+    category: str
+    message_kind: str
+    title: str
+    body: str
+    status: str
+    provider_sid: str | None
+    delivery_status: str | None
+    delivery_error_code: int | None
+    delivery_error_message: str | None
+    attempt_count: int
+    next_retry_at: str | None
+    dead_lettered_at: str | None
+    claimed_at: str
+    sent_at: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class AdminAuditRecord:
+    id: int
+    actor: str
+    action: str
+    target_type: str
+    target_id: str
+    details: str
+    created_at: str
+
+
+@dataclass
+class TelegramAdminChat:
+    chat_id: str
+    auto_refresh_enabled: bool
+    dashboard_message_id: str | None
+    last_dashboard_sent_at: str | None
+    last_dashboard_hash: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class TelegramAdminSession:
+    chat_id: str
+    mode: str
+    step: str
+    student_id: int | None
+    payload_json: str
+    created_at: str
+    updated_at: str

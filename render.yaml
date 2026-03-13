@@ -18,10 +18,34 @@ services:
         value: "1"
       - key: WAITRESS_THREADS
         value: "8"
+      - key: DASHBOARD_AUTO_REFRESH_SECONDS
+        value: "30"
+      - key: RUN_SCHEDULER
+        value: "1"
+      - key: TASK_QUEUE_MODE
+        value: inline
+      - key: REDIS_URL
+        sync: false
+      - key: TASK_QUEUE_NAME
+        value: qums-bot
       - key: FLASK_HOST
         value: 0.0.0.0
       - key: FLASK_PORT
         value: "10000"
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: WEBHOOK_RATE_LIMIT_COUNT
+        value: "60"
+      - key: WEBHOOK_RATE_LIMIT_WINDOW_SECONDS
+        value: "60"
+      - key: ADMIN_RATE_LIMIT_COUNT
+        value: "10"
+      - key: ADMIN_RATE_LIMIT_WINDOW_SECONDS
+        value: "60"
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.0"
       - key: DATABASE_PATH
         value: /var/data/bot.sqlite3
       - key: ERP_BASE_URL
@@ -30,10 +54,28 @@ services:
         value: Asia/Kolkata
       - key: MORNING_DIGEST_TIME
         value: "06:30"
+      - key: EVENING_REPORT_TIME
+        value: "19:00"
       - key: ATTENDANCE_POLL_INTERVAL_MINUTES
+        value: "1"
+      - key: SUBSTITUTION_POLL_INTERVAL_MINUTES
+        value: "1"
+      - key: MONITOR_POLL_INTERVAL_MINUTES
+        value: "1"
+      - key: SANDBOX_EXPIRY_WARNING_MINUTES
         value: "10"
       - key: LECTURE_GRACE_MINUTES
         value: "20"
+      - key: ATTENDANCE_CORRECTION_LOOKBACK_DAYS
+        value: "14"
+      - key: ATTENDANCE_SHORTAGE_BUFFER_LECTURES
+        value: "1"
+      - key: DELIVERY_RETRY_LIMIT
+        value: "3"
+      - key: DELIVERY_RETRY_BACKOFF_SECONDS
+        value: "60"
+      - key: LOW_ATTENDANCE_THRESHOLDS
+        value: 75,70,65
       - key: APP_SECRET
         generateValue: true
       - key: ADMIN_USERNAME
@@ -52,12 +94,22 @@ services:
         sync: false
       - key: TWILIO_STATUS_MESSAGE_LIMIT
         value: "50"
+      - key: TWILIO_STATUS_CALLBACK_URL
+        sync: false
       - key: TWILIO_CONTENT_SID_DEFAULT
         sync: false
       - key: TWILIO_CONTENT_SID_MORNING
         sync: false
       - key: TWILIO_CONTENT_SID_ATTENDANCE
         sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_API_BASE_URL
+        value: https://api.telegram.org
+      - key: TELEGRAM_ADMIN_CHAT_IDS
+        sync: false
+      - key: TELEGRAM_POLL_INTERVAL_SECONDS
+        value: "1"
     disk:
       name: qums-chat-bot-data
       mountPath: /var/data

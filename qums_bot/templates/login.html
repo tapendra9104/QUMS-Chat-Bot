@@ -77,6 +77,7 @@
             <p>The bot will not solve the captcha automatically. Enter the captcha shown below to activate the ERP session.</p>
             <img src="{{ pending.captcha_data_url }}" alt="ERP captcha">
             <form method="post" action="{{ url_for('complete_login', student_id=student.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <label for="captcha">Captcha</label>
                 <input id="captcha" name="captcha" type="text" autocomplete="off" required>
                 <div class="actions">
@@ -85,6 +86,7 @@
             </form>
             <div class="actions">
                 <form method="post" action="{{ url_for('refresh_login', student_id=student.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="secondary">Refresh Captcha</button>
                 </form>
                 <a href="{{ url_for('dashboard') }}">Back to Dashboard</a>

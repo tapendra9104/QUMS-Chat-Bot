@@ -21,6 +21,19 @@ WEEKDAY_ALIASES = {
 }
 
 BREAK_WORDS = {"break", "lunch", "recess"}
+NO_CLASS_WORDS = {
+    "holiday",
+    "no class",
+    "no classes",
+    "off day",
+    "class cancelled",
+    "class canceled",
+    "lecture cancelled",
+    "lecture canceled",
+    "not scheduled",
+    "no lecture",
+    "no lectures",
+}
 
 
 def parse_json_value(value: Any, default: Any) -> Any:
@@ -292,20 +305,29 @@ def _parse_flat_slots(rows: list[dict[str, Any]], columns: list[str]) -> list[Le
         slot_label = str(row.get("Period") or row.get("Time") or row.get("Timing") or row.get("Day/Period") or "").strip()
         subject = str(row.get("Subject") or row.get("SubsSubject") or row.get("SubjectName") or "").strip()
         teacher = str(row.get("Employee") or row.get("Faculty") or row.get("EMPNAME") or row.get("SubsEmployee") or "").strip()
-        cell = "\n".join(part for part in [subject, teacher, str(row.get("Time") or row.get("Duration") or "").strip()] if part)
-        slot = _build_slot(slot_label=slot_label or str(row.get("Time") or "").strip(), cell=cell)
-        if not slot and subject:
-            start_time, end_time = parse_time_range(slot_label, str(row.get("Time") or row.get("Duration") or ""))
+        time_text = str(row.get("Time") or row.get("Duration") or "").strip()
+        cell = "\n".join(part for part in [subject, teacher, time_text] if part)
+
+        # Flat ERP rows usually expose subject and teacher as separate fields.
+        # Prefer those explicit values over the generic cell parser to avoid
+        # accidentally merging the teacher into the subject name.
+        if subject:
+            start_time, end_time = parse_time_range(slot_label, time_text)
+            is_no_class = _looks_like_no_class(subject)
+            normalized_subject = _no_class_label(subject) if is_no_class else subject
             slot = LectureSlot(
-                slot_label=slot_label or "Lecture",
-                subject_key=normalize_subject_key(str(row.get("SubjectCode") or subject)),
-                subject_name=subject,
-                teacher_name=teacher,
+                slot_label=slot_label or time_text or "Lecture",
+                subject_key=normalize_subject_key(normalized_subject),
+                subject_name=normalized_subject,
+                teacher_name="" if is_no_class else teacher,
                 raw_cell=cell,
                 start_time=start_time,
                 end_time=end_time,
-                is_break=_looks_like_break(subject),
+                is_break=_looks_like_break(subject) or is_no_class,
+                note=subject if is_no_class else "",
             )
+        else:
+            slot = _build_slot(slot_label=slot_label or time_text, cell=cell)
         if slot:
             slots.append(slot)
     return _inject_break_slots(slots)
@@ -321,8 +343,11 @@ def _build_slot(slot_label: str, cell: str) -> LectureSlot | None:
         lines = _split_cell_entries(cell)
     if not lines and _looks_like_break(slot_label):
         lines = [slot_label]
+    if not lines and _looks_like_no_class(combined):
+        lines = [_no_class_label(combined)]
 
-    is_break = _looks_like_break(combined)
+    is_no_class = _looks_like_no_class(combined)
+    is_break = _looks_like_break(combined) or is_no_class
     if not lines and not is_break:
         return None
 
@@ -349,7 +374,10 @@ def _build_slot(slot_label: str, cell: str) -> LectureSlot | None:
                 teacher_name = line
                 break
 
-    if is_break and not subject_name:
+    if is_no_class:
+        subject_name = _no_class_label(subject_name or combined)
+        teacher_name = ""
+    elif is_break and not subject_name:
         subject_name = "Break"
 
     if not subject_name:
@@ -364,12 +392,27 @@ def _build_slot(slot_label: str, cell: str) -> LectureSlot | None:
         start_time=start_time,
         end_time=end_time,
         is_break=is_break,
+        note=combined if is_no_class else "",
     )
 
 
 def _looks_like_break(value: str) -> bool:
     normalized = value.lower()
     return any(word in normalized for word in BREAK_WORDS)
+
+
+def _looks_like_no_class(value: str) -> bool:
+    normalized = " ".join((value or "").strip().lower().split())
+    return any(word in normalized for word in NO_CLASS_WORDS)
+
+
+def _no_class_label(value: str) -> str:
+    normalized = " ".join((value or "").strip().lower().split())
+    if "holiday" in normalized:
+        return "Holiday"
+    if "off day" in normalized:
+        return "Off Day"
+    return "No Class"
 
 
 def _is_time_text(value: str) -> bool:

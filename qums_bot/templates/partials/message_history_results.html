@@ -1,0 +1,30 @@
+{% if message_history %}
+    {% for item in message_history %}
+        <details>
+            <summary>{{ item.sent_at }} | {{ item.student_label }} | {{ item.category.replace('_', ' ') | title }} | {{ item.title }}</summary>
+            <p class="meta">
+                Channel: {{ item.channel | title }}<br>
+                Recipient: {{ item.recipient }}<br>
+                Message kind: {{ item.message_kind }}<br>
+                Provider id: {{ item.provider_sid or "Not available" }}<br>
+                Delivery status: {{ item.delivery_status or "Pending callback" }}
+                {% if item.delivery_error_code %}| Error code: {{ item.delivery_error_code }}{% endif %}
+            </p>
+            <pre>{{ item.body }}</pre>
+        </details>
+    {% endfor %}
+    <div class="pager">
+        <div class="meta">Showing {{ message_history|length }} of {{ message_history_pagination.total_items }} message record(s).</div>
+        <div class="actions">
+            {% if message_history_pagination.has_prev %}
+                <a class="button-link ghost" href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category, message_page=message_history_pagination.prev_page, audit_q=audit_log_filters.query, audit_action=audit_log_filters.action, audit_page=audit_log_pagination.page) }}">Previous</a>
+            {% endif %}
+            <span class="meta">Page {{ message_history_pagination.page }} of {{ message_history_pagination.total_pages }}</span>
+            {% if message_history_pagination.has_next %}
+                <a class="button-link ghost" href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category, message_page=message_history_pagination.next_page, audit_q=audit_log_filters.query, audit_action=audit_log_filters.action, audit_page=audit_log_pagination.page) }}">Next</a>
+            {% endif %}
+        </div>
+    </div>
+{% else %}
+    <p class="meta">{% if message_history_filters.query or message_history_filters.channel or message_history_filters.category %}No message history matched the current filters.{% else %}No sent message history is available yet.{% endif %}</p>
+{% endif %}

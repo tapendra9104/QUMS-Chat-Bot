@@ -38,8 +38,14 @@ class ERPClient:
 
     def start_manual_login(self, student: Student) -> PendingLogin:
         session = self._new_session()
-        response = session.get(f"{self.settings.base_url}/", timeout=30)
-        response.raise_for_status()
+        response = self._request(
+            session,
+            "get",
+            f"{self.settings.base_url}/",
+            context="ERP login page",
+            timeout=30,
+        )
+        self._raise_response_error(response, "ERP login page")
 
         login_state = extract_login_state(response.text)
         if not login_state["request_verification_token"] or not login_state["captcha_data_url"]:
@@ -58,12 +64,15 @@ class ERPClient:
 
     def refresh_captcha(self, pending: PendingLogin) -> PendingLogin:
         session = self._session_from_cookies(pending.cookies_json)
-        response = session.post(
+        response = self._request(
+            session,
+            "post",
             f"{self.settings.base_url}/Account/showrefreshcaptchaImage",
+            context="ERP captcha refresh",
             data={},
             timeout=30,
         )
-        response.raise_for_status()
+        self._raise_response_error(response, "ERP captcha refresh")
         if not response.content:
             raise ERPClientError("ERP returned an empty captcha image.")
 
@@ -92,14 +101,17 @@ class ERPClient:
             "captcha": captcha.strip(),
         }
 
-        response = session.post(
+        response = self._request(
+            session,
+            "post",
             f"{self.settings.base_url}/",
+            context="ERP login submit",
             data=payload,
             headers={"Referer": f"{self.settings.base_url}/"},
             timeout=30,
             allow_redirects=True,
         )
-        response.raise_for_status()
+        self._raise_response_error(response, "ERP login submit")
 
         try:
             detail_payload = self._post_json(session, "/Account/GetStudentDetail", {})
@@ -154,8 +166,11 @@ class ERPClient:
         return reg_id
 
     def _post_json(self, session: requests.Session, path: str, data: dict[str, Any]) -> dict[str, Any]:
-        response = session.post(
+        response = self._request(
+            session,
+            "post",
             f"{self.settings.base_url}{path}",
+            context=path,
             data=data,
             headers={
                 "Referer": f"{self.settings.base_url}/",
@@ -163,15 +178,45 @@ class ERPClient:
             },
             timeout=30,
         )
-        response.raise_for_status()
 
         if self._looks_like_login_page(response.text):
             raise AuthenticationRequired("ERP session expired.")
+        self._raise_response_error(response, path, allow_auth_failure=True)
 
         try:
             return response.json()
         except ValueError as exc:
             raise ERPClientError(f"ERP returned a non-JSON response for {path}.") from exc
+
+    def _request(
+        self,
+        session: requests.Session,
+        method: str,
+        url: str,
+        *,
+        context: str,
+        **kwargs,
+    ) -> requests.Response:
+        try:
+            return session.request(method, url, **kwargs)
+        except requests.RequestException as exc:
+            raise ERPClientError(f"{context} request failed: {exc}") from exc
+
+    def _raise_response_error(
+        self,
+        response: requests.Response,
+        context: str,
+        *,
+        allow_auth_failure: bool = False,
+    ) -> None:
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            if allow_auth_failure and response.status_code in {401, 403}:
+                raise AuthenticationRequired("ERP session expired.") from exc
+            raise ERPClientError(
+                f"{context} request failed with status {response.status_code}."
+            ) from exc
 
     def _new_session(self) -> requests.Session:
         session = requests.Session()

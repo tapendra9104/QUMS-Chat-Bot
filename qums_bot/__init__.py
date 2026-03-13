@@ -1,1 +1,1 @@
-"""Quantum ERP WhatsApp bot package."""
+"""Quantum ERP multi-channel notification bot package."""

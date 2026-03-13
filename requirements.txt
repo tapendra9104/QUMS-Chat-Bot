@@ -4,6 +4,9 @@ beautifulsoup4
 cryptography
 python-dotenv
 requests
+redis
+rq
+sentry-sdk[flask]
 twilio
 tzdata
 waitress
