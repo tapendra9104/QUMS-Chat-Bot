@@ -3108,9 +3108,16 @@ class BotService:
                 f"({self._safe_percentage(total_present, total_lecture):.2f}%)"
             ),
             "",
-            "Subjects",
+            "Subject-wise Attendance",
         ]
-        for item in attendance:
+        sorted_attendance = sorted(
+            attendance,
+            key=lambda item: (
+                self._format_subject_label(item.subject_name, item.subject_code).lower(),
+                item.subject_code.lower(),
+            ),
+        )
+        for item in sorted_attendance:
             present = max(int(item.total_present), 0)
             total = max(int(item.total_lecture), 0)
             absent = max(total - present, 0)
@@ -3118,7 +3125,10 @@ class BotService:
             lines.append(
                 f"- {self._format_subject_label(item.subject_name, item.subject_code)} | "
                 f"Faculty: {self._resolve_risk_teacher_name(item, lecture_events)} | "
-                f"Attendance: {present}/{total} ({percentage:.2f}%) | Absent: {absent}"
+                f"Percentage: {percentage:.2f}% | "
+                f"Total lectures: {total} | "
+                f"Present: {present} | "
+                f"Absent: {absent}"
             )
         return "\n".join(lines)
 
