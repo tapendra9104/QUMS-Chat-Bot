@@ -33,9 +33,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
     app.secret_key = settings.app_secret
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-    app.config["SESSION_COOKIE_SECURE"] = bool(
-        settings.app_env == "production" or settings.public_base_url.startswith("https://")
-    )
+    app.config["SESSION_COOKIE_SECURE"] = settings.public_base_url.startswith("https://")
     app.config["service"] = service
     app.config["settings"] = settings
     app.config["rate_limiter"] = InMemoryRateLimiter()

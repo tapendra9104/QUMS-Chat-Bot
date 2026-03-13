@@ -689,6 +689,53 @@ class IntegrationFlowTests(unittest.TestCase):
             )
             self.assertEqual(good_response.status_code, 302)
 
+    def test_http_production_deploy_does_not_force_secure_session_cookie(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "APP_ENV": "production",
+            "USE_WAITRESS": "1",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "PUBLIC_BASE_URL": "http://45.196.196.19",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            self.assertFalse(app.config["SESSION_COOKIE_SECURE"])
+
+            client = app.test_client()
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            response = client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers["Location"], "/")
+
+    def test_https_public_base_url_enables_secure_session_cookie(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "APP_ENV": "production",
+            "USE_WAITRESS": "1",
+            "RUN_SCHEDULER": "0",
+            "PUBLIC_BASE_URL": "https://bot.example.com",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            self.assertTrue(app.config["SESSION_COOKIE_SECURE"])
+
     def test_send_morning_route_handles_telegram_delivery_failure(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
         env_values = {
