@@ -36,17 +36,27 @@ What it does not do:
 
 ## Render deployment
 
-This repo now includes `render.yaml` for a Render web-service deployment.
+This repo now includes `render.yaml` for a low-resource Render web-service deployment.
 
 Recommended Render shape for the current codebase:
-- one always-on web service
-- one persistent disk mounted at `/var/data`
+- one web service
 - one instance only
 
 Default single-instance notes:
 - the default mode still uses APScheduler in the web process
 - SQLite is fine for a small single-instance deployment
 - queue mode is optional and disabled by default
+
+Low-resource Render profile in this repo:
+- targets a low-cost Render web service profile with a `512 MB / 0.1 CPU` budget
+- keeps SQLite on the writable ephemeral filesystem instead of mounting a persistent disk
+- reduces Waitress threads and background polling cadence to fit the smaller CPU budget
+- disables dashboard auto-refresh scheduling in the web process
+
+Important low-resource caveats:
+- this profile is suitable for testing and light personal use, not dependable unattended production
+- if the instance sleeps or restarts, scheduler guarantees are interrupted
+- SQLite data on this profile is not durable across rebuilds or instance replacement
 
 Multi-instance notes:
 - set `TASK_QUEUE_MODE=rq`

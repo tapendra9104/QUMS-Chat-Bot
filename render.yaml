@@ -3,7 +3,7 @@ services:
     name: qums-chat-bot
     runtime: python
     region: singapore
-    plan: starter
+    plan: free
     branch: main
     autoDeployTrigger: commit
     buildCommand: pip install -r requirements.txt
@@ -17,9 +17,9 @@ services:
       - key: USE_WAITRESS
         value: "1"
       - key: WAITRESS_THREADS
-        value: "8"
+        value: "2"
       - key: DASHBOARD_AUTO_REFRESH_SECONDS
-        value: "30"
+        value: "0"
       - key: RUN_SCHEDULER
         value: "1"
       - key: TASK_QUEUE_MODE
@@ -47,7 +47,7 @@ services:
       - key: SENTRY_TRACES_SAMPLE_RATE
         value: "0.0"
       - key: DATABASE_PATH
-        value: /var/data/bot.sqlite3
+        value: /tmp/bot.sqlite3
       - key: ERP_BASE_URL
         value: https://qums.quantumuniversity.edu.in
       - key: LOCAL_TIMEZONE
@@ -57,11 +57,11 @@ services:
       - key: EVENING_REPORT_TIME
         value: "19:00"
       - key: ATTENDANCE_POLL_INTERVAL_MINUTES
-        value: "1"
+        value: "2"
       - key: SUBSTITUTION_POLL_INTERVAL_MINUTES
-        value: "1"
+        value: "3"
       - key: MONITOR_POLL_INTERVAL_MINUTES
-        value: "1"
+        value: "5"
       - key: SANDBOX_EXPIRY_WARNING_MINUTES
         value: "10"
       - key: LECTURE_GRACE_MINUTES
@@ -109,8 +109,4 @@ services:
       - key: TELEGRAM_ADMIN_CHAT_IDS
         sync: false
       - key: TELEGRAM_POLL_INTERVAL_SECONDS
-        value: "1"
-    disk:
-      name: qums-chat-bot-data
-      mountPath: /var/data
-      sizeGB: 1
+        value: "5"

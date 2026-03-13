@@ -66,6 +66,7 @@ def make_settings(db_path: Path) -> Settings:
         twilio_content_sid_default="",
         twilio_content_sid_morning="",
         twilio_content_sid_attendance="",
+        telegram_bot_token="token",
         telegram_admin_chat_ids=("5570554765",),
         telegram_poll_interval_seconds=5,
     )
@@ -268,6 +269,13 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertTrue(scheduler._job_defaults["coalesce"])
         self.assertEqual(scheduler._job_defaults["max_instances"], 1)
         self.assertEqual(scheduler._job_defaults["misfire_grace_time"], 60)
+
+    def test_scheduler_skips_disabled_telegram_dashboard_refresh_job(self) -> None:
+        settings = self.settings.__class__(**{**self.settings.__dict__, "dashboard_auto_refresh_seconds": 0})
+        scheduler = build_scheduler(settings, DummyService())
+        job_ids = {job.id for job in scheduler.get_jobs()}
+        self.assertIn("telegram-inbound-checks", job_ids)
+        self.assertNotIn("telegram-admin-refresh-checks", job_ids)
 
     def test_scheduled_dispatch_honors_student_timezones(self) -> None:
         student_india = self._add_student(label="India Student", timezone="Asia/Kolkata")
