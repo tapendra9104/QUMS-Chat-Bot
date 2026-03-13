@@ -114,6 +114,9 @@ RUN_SCHEDULER=1
 TASK_QUEUE_MODE=inline
 REDIS_URL=
 TASK_QUEUE_NAME=qums-bot
+ADMIN_USERNAME=
+ADMIN_PASSWORD=
+ADMIN_TELEGRAM_USERNAME=
 LOCAL_TIMEZONE=Asia/Kolkata
 MORNING_DIGEST_TIME=06:30
 EVENING_REPORT_TIME=19:00
@@ -149,6 +152,12 @@ TWILIO_CONTENT_SID_ATTENDANCE=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_API_BASE_URL=https://api.telegram.org
 ```
+
+Admin login recovery:
+- `ADMIN_USERNAME` and `ADMIN_PASSWORD` remain the bootstrap credentials
+- `ADMIN_TELEGRAM_USERNAME` can be set for Telegram password recovery
+- after sign-in, you can update the admin login username, password, and recovery Telegram username from the dashboard
+- if you forget the password, the login page can send a one-time reset code to the configured Telegram admin chat after you verify the recovery Telegram username
 
 Install dependencies:
 

@@ -586,6 +586,10 @@ class Database:
                 (state_key, state_value, now),
             )
 
+    def delete_runtime_state(self, state_key: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM runtime_state WHERE state_key = ?", (state_key,))
+
     def get_telegram_admin_chat(self, chat_id: str) -> TelegramAdminChat | None:
         with self._connect() as conn:
             row = conn.execute(

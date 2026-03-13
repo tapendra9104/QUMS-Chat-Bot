@@ -71,6 +71,11 @@
             color: #5c7284;
             font-size: 0.92rem;
         }
+        .meta a {
+            color: #0d6e8b;
+            font-weight: 600;
+            text-decoration: none;
+        }
     </style>
 </head>
 <body>
@@ -78,6 +83,13 @@
         <section class="card">
             <h1>QUMS Bot Admin</h1>
             <p class="meta">Sign in to access the deployed dashboard.</p>
+            <p class="meta">
+                {% if recovery_configured %}
+                    Forgot your password? <a href="{{ url_for('admin_forgot_password') }}">Reset it with Telegram</a>.
+                {% else %}
+                    Telegram password recovery is not configured yet.
+                {% endif %}
+            </p>
 
             {% with messages = get_flashed_messages(with_categories=true) %}
                 {% if messages %}

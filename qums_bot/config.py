@@ -30,6 +30,7 @@ class Settings:
     task_queue_name: str
     admin_username: str
     admin_password: str
+    admin_telegram_username: str
     local_timezone: str
     morning_digest_time: str
     evening_report_time: str
@@ -179,6 +180,7 @@ def load_settings() -> Settings:
         task_queue_name=os.getenv("TASK_QUEUE_NAME", "qums-bot").strip() or "qums-bot",
         admin_username=os.getenv("ADMIN_USERNAME", "").strip(),
         admin_password=os.getenv("ADMIN_PASSWORD", "").strip(),
+        admin_telegram_username=os.getenv("ADMIN_TELEGRAM_USERNAME", "").strip(),
         local_timezone=env_timezone("LOCAL_TIMEZONE", "Asia/Kolkata"),
         morning_digest_time=os.getenv("MORNING_DIGEST_TIME", "06:30"),
         evening_report_time=os.getenv("EVENING_REPORT_TIME", "19:00"),

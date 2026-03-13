@@ -363,6 +363,47 @@
         </section>
 
         <section class="panel">
+            <h2>Admin Security</h2>
+            <p class="meta">
+                Update the dashboard login username and password. Telegram recovery sends reset codes to the configured admin Telegram chat and verifies the Telegram username you set here.
+            </p>
+            <form method="post" action="{{ url_for('admin_account_update') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="grid">
+                    <div>
+                        <label for="login_username">Login username</label>
+                        <input id="login_username" name="login_username" type="text" value="{{ admin_account.username }}" required>
+                    </div>
+                    <div>
+                        <label for="recovery_telegram_username">Recovery Telegram username</label>
+                        <input
+                            id="recovery_telegram_username"
+                            name="recovery_telegram_username"
+                            type="text"
+                            value="{{ admin_account.recovery_telegram_username }}"
+                            placeholder="@username or https://t.me/username">
+                    </div>
+                    <div>
+                        <label for="current_password">Current password</label>
+                        <input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+                    </div>
+                    <div>
+                        <label for="new_password">New password</label>
+                        <input id="new_password" name="new_password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current password">
+                    </div>
+                    <div>
+                        <label for="confirm_password">Confirm new password</label>
+                        <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" placeholder="Repeat the new password if changing it">
+                    </div>
+                </div>
+                <div class="actions">
+                    <button type="submit">Update Admin Login</button>
+                    <a class="button-link ghost" href="{{ url_for('admin_forgot_password') }}">Forgot Password Recovery</a>
+                </div>
+            </form>
+        </section>
+
+        <section class="panel">
             <h2>{{ "Edit Student" if edit_student else "Add Student" }}</h2>
             <form method="post" action="{{ url_for('save_student') }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

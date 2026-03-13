@@ -34,6 +34,7 @@ def make_settings(db_path: Path) -> Settings:
         task_queue_name="qums-bot",
         admin_username="",
         admin_password="",
+        admin_telegram_username="",
         local_timezone="Asia/Kolkata",
         morning_digest_time="06:30",
         evening_report_time="19:00",

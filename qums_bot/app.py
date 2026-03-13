@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import csv
+import json
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from urllib.parse import urlsplit
 
 from flask import Flask, Response, current_app, flash, jsonify, redirect, render_template, request, session, url_for
 from apscheduler.schedulers.base import STATE_RUNNING
 from twilio.request_validator import RequestValidator
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from .monitoring import init_monitoring
 from .rate_limit import InMemoryRateLimiter
@@ -20,6 +22,13 @@ from .service import NotificationDeliveryError
 from .task_queue import TaskDispatcher
 from .telegram import TelegramError
 from .whatsapp import WhatsAppError
+
+
+ADMIN_RESET_STATE_KEY = "admin_password_reset"
+ADMIN_USERNAME_OVERRIDE_KEY = "admin_username_override"
+ADMIN_PASSWORD_HASH_OVERRIDE_KEY = "admin_password_hash_override"
+ADMIN_TELEGRAM_USERNAME_OVERRIDE_KEY = "admin_telegram_username_override"
+ADMIN_RESET_CODE_TTL_MINUTES = 10
 
 
 def create_app(*, start_scheduler: bool = True) -> Flask:
@@ -54,6 +63,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "healthz",
             "admin_login",
             "admin_login_submit",
+            "admin_forgot_password",
+            "admin_forgot_password_request",
+            "admin_forgot_password_reset",
             "twilio_status_webhook",
             "twilio_inbound_webhook",
             "static",
@@ -91,7 +103,11 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return redirect(url_for("dashboard"))
         if session.get("admin_authenticated"):
             return redirect(url_for("dashboard"))
-        return render_template("admin_login.html", next_path=_safe_next_path(request.args.get("next")))
+        return render_template(
+            "admin_login.html",
+            next_path=_safe_next_path(request.args.get("next")),
+            recovery_configured=bool(_get_admin_account_state()["recovery_telegram_username"]),
+        )
 
     @app.post("/admin/login")
     def admin_login_submit():
@@ -109,20 +125,180 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         password = request.form.get("password", "")
         next_path = _safe_next_path(request.form.get("next_path"))
 
-        if username == settings.admin_username and password == settings.admin_password:
+        if _verify_admin_credentials(username, password):
             session.clear()
             session["admin_authenticated"] = True
             flash("Admin login successful.", "success")
             return redirect(next_path)
 
         flash("Invalid admin username or password.", "error")
-        return render_template("admin_login.html", next_path=next_path), 401
+        return render_template(
+            "admin_login.html",
+            next_path=next_path,
+            recovery_configured=bool(_get_admin_account_state()["recovery_telegram_username"]),
+        ), 401
+
+    @app.get("/admin/forgot-password")
+    def admin_forgot_password():
+        if not _admin_auth_enabled():
+            return redirect(url_for("dashboard"))
+        if session.get("admin_authenticated"):
+            return redirect(url_for("dashboard"))
+        return render_template(
+            "admin_forgot_password.html",
+            recovery_configured=bool(_get_admin_account_state()["recovery_telegram_username"]),
+            reset_code_ttl_minutes=ADMIN_RESET_CODE_TTL_MINUTES,
+            telegram_username="",
+            next_login_path=_safe_next_path(request.args.get("next")),
+        )
+
+    @app.post("/admin/forgot-password/request")
+    def admin_forgot_password_request():
+        if not _admin_auth_enabled():
+            return redirect(url_for("dashboard"))
+        limit_response = _enforce_rate_limit(
+            bucket=f"admin-forgot:{_client_ip()}",
+            limit=settings.admin_rate_limit_count,
+            window_seconds=settings.admin_rate_limit_window_seconds,
+        )
+        if limit_response is not None:
+            return limit_response
+        telegram_username = request.form.get("telegram_username", "").strip()
+        try:
+            normalized = _issue_admin_password_reset_code(telegram_username)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return render_template(
+                "admin_forgot_password.html",
+                recovery_configured=bool(_get_admin_account_state()["recovery_telegram_username"]),
+                reset_code_ttl_minutes=ADMIN_RESET_CODE_TTL_MINUTES,
+                telegram_username=telegram_username,
+                next_login_path=url_for("admin_login"),
+            ), 400
+        except TelegramError as exc:
+            _report_internal_exception("Telegram password reset delivery failed.", exc)
+            flash("Reset code could not be sent to Telegram right now.", "error")
+            return render_template(
+                "admin_forgot_password.html",
+                recovery_configured=bool(_get_admin_account_state()["recovery_telegram_username"]),
+                reset_code_ttl_minutes=ADMIN_RESET_CODE_TTL_MINUTES,
+                telegram_username=telegram_username,
+                next_login_path=url_for("admin_login"),
+            ), 502
+
+        flash(
+            f"A reset code was sent to the configured Telegram admin chat for {normalized}.",
+            "success",
+        )
+        return render_template(
+            "admin_forgot_password.html",
+            recovery_configured=True,
+            reset_code_ttl_minutes=ADMIN_RESET_CODE_TTL_MINUTES,
+            telegram_username=normalized,
+            next_login_path=url_for("admin_login"),
+        )
+
+    @app.post("/admin/forgot-password/reset")
+    def admin_forgot_password_reset():
+        if not _admin_auth_enabled():
+            return redirect(url_for("dashboard"))
+        limit_response = _enforce_rate_limit(
+            bucket=f"admin-reset:{_client_ip()}",
+            limit=settings.admin_rate_limit_count,
+            window_seconds=settings.admin_rate_limit_window_seconds,
+        )
+        if limit_response is not None:
+            return limit_response
+
+        telegram_username = request.form.get("telegram_username", "").strip()
+        reset_code = request.form.get("reset_code", "").strip()
+        new_username = request.form.get("new_username", "").strip()
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        try:
+            normalized_telegram = _normalize_telegram_username(telegram_username)
+            validated_username = _validate_admin_login_username(new_username)
+            validated_password = _validate_admin_password(new_password, confirm_password)
+            _consume_admin_password_reset_code(normalized_telegram, reset_code)
+            _persist_admin_account_credentials(
+                username=validated_username,
+                password=validated_password,
+                recovery_telegram_username=normalized_telegram,
+            )
+            try:
+                _service().log_admin_action(
+                    actor=f"password-reset:{normalized_telegram}",
+                    action="admin_password_reset",
+                    target_type="admin_account",
+                    target_id=validated_username,
+                    details="Admin login credentials were reset through Telegram verification.",
+                )
+            except Exception as exc:
+                _report_internal_exception("Admin password reset audit logging failed.", exc)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return render_template(
+                "admin_forgot_password.html",
+                recovery_configured=bool(_get_admin_account_state()["recovery_telegram_username"]),
+                reset_code_ttl_minutes=ADMIN_RESET_CODE_TTL_MINUTES,
+                telegram_username=telegram_username,
+                next_login_path=url_for("admin_login"),
+            ), 400
+
+        session.clear()
+        flash("Admin login credentials were updated. Sign in with the new username and password.", "success")
+        return redirect(url_for("admin_login"))
 
     @app.post("/admin/logout")
     def admin_logout():
         session.clear()
         flash("Admin session closed.", "success")
         return redirect(url_for("admin_login"))
+
+    @app.post("/admin/account/update")
+    def admin_account_update():
+        current_password = request.form.get("current_password", "")
+        login_username = request.form.get("login_username", "").strip()
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        recovery_telegram_username = request.form.get("recovery_telegram_username", "").strip()
+        try:
+            if not _verify_admin_password(current_password):
+                raise ValueError("Current password is not valid.")
+            validated_username = _validate_admin_login_username(login_username)
+            normalized_recovery = (
+                _normalize_telegram_username(recovery_telegram_username)
+                if recovery_telegram_username.strip()
+                else ""
+            )
+            if normalized_recovery and (not _service().telegram.configured or not _service().settings.telegram_admin_chat_ids):
+                raise ValueError("Telegram recovery cannot be enabled until the Telegram bot token and admin chat ids are configured.")
+            if new_password or confirm_password:
+                password_to_store = _validate_admin_password(new_password, confirm_password)
+                password_changed = True
+            else:
+                password_to_store = current_password
+                password_changed = False
+            _persist_admin_account_credentials(
+                username=validated_username,
+                password=password_to_store,
+                recovery_telegram_username=normalized_recovery,
+            )
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+
+        _log_admin_action(
+            action="update_admin_account",
+            target_type="admin_account",
+            target_id=validated_username,
+            details=(
+                f"Admin login username updated to {validated_username} and Telegram recovery username "
+                f"{normalized_recovery or 'disabled'}; password {'changed' if password_changed else 'kept'}."
+            ),
+        )
+        flash("Admin login settings updated.", "success")
+        return redirect(url_for("dashboard"))
 
     @app.get("/")
     def dashboard():
@@ -562,8 +738,164 @@ def _csrf_token() -> str:
 
 
 def _admin_auth_enabled() -> bool:
+    account = _get_admin_account_state()
+    return bool(account["username"] and account["password_available"])
+
+
+def _get_admin_account_state() -> dict[str, object]:
     service = _service()
-    return bool(service.settings.admin_username and service.settings.admin_password)
+    db = service.db
+    username_override = (db.get_runtime_state(ADMIN_USERNAME_OVERRIDE_KEY) or "").strip()
+    password_hash_override = (db.get_runtime_state(ADMIN_PASSWORD_HASH_OVERRIDE_KEY) or "").strip()
+    recovery_override = (db.get_runtime_state(ADMIN_TELEGRAM_USERNAME_OVERRIDE_KEY) or "").strip()
+    username = username_override or service.settings.admin_username
+    recovery_username = recovery_override or service.settings.admin_telegram_username
+    normalized_recovery = ""
+    if recovery_username:
+        try:
+            normalized_recovery = _normalize_telegram_username(recovery_username)
+        except ValueError:
+            normalized_recovery = ""
+    return {
+        "username": username,
+        "password_hash_override": password_hash_override,
+        "password_available": bool(password_hash_override or service.settings.admin_password),
+        "recovery_telegram_username": normalized_recovery,
+    }
+
+
+def _verify_admin_password(password: str) -> bool:
+    account = _get_admin_account_state()
+    password_hash_override = str(account["password_hash_override"] or "")
+    if password_hash_override:
+        return bool(password) and check_password_hash(password_hash_override, password)
+    return bool(password) and secrets.compare_digest(password, _service().settings.admin_password)
+
+
+def _verify_admin_credentials(username: str, password: str) -> bool:
+    account = _get_admin_account_state()
+    expected_username = str(account["username"] or "").strip()
+    if not expected_username or not secrets.compare_digest(username, expected_username):
+        return False
+    return _verify_admin_password(password)
+
+
+def _persist_admin_account_credentials(
+    *,
+    username: str,
+    password: str,
+    recovery_telegram_username: str,
+) -> None:
+    db = _service().db
+    db.upsert_runtime_state(state_key=ADMIN_USERNAME_OVERRIDE_KEY, state_value=username)
+    db.upsert_runtime_state(
+        state_key=ADMIN_PASSWORD_HASH_OVERRIDE_KEY,
+        state_value=generate_password_hash(password),
+    )
+    if recovery_telegram_username:
+        db.upsert_runtime_state(
+            state_key=ADMIN_TELEGRAM_USERNAME_OVERRIDE_KEY,
+            state_value=recovery_telegram_username,
+        )
+    else:
+        db.delete_runtime_state(ADMIN_TELEGRAM_USERNAME_OVERRIDE_KEY)
+
+
+def _normalize_telegram_username(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        raise ValueError("Telegram username is required.")
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned.split(prefix, 1)[1].strip("/")
+            break
+    if cleaned.startswith("@"):
+        cleaned = cleaned[1:]
+    if not cleaned or not cleaned.replace("_", "a").isalnum() or not (5 <= len(cleaned) <= 32):
+        raise ValueError("Telegram username must be a valid @username or t.me link.")
+    return f"@{cleaned}"
+
+
+def _validate_admin_login_username(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if len(cleaned) < 3 or len(cleaned) > 64:
+        raise ValueError("Login username must be between 3 and 64 characters.")
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    if any(ch not in allowed for ch in cleaned):
+        raise ValueError("Login username can use letters, numbers, dots, underscores, and hyphens only.")
+    return cleaned
+
+
+def _validate_admin_password(password: str, confirm_password: str) -> str:
+    if len(password or "") < 8:
+        raise ValueError("Password must be at least 8 characters long.")
+    if password != confirm_password:
+        raise ValueError("Password confirmation does not match.")
+    return password
+
+
+def _issue_admin_password_reset_code(telegram_username: str) -> str:
+    service = _service()
+    account = _get_admin_account_state()
+    expected_recovery = str(account["recovery_telegram_username"] or "")
+    if not expected_recovery:
+        raise ValueError("Telegram password recovery is not configured yet. Sign in and set a recovery Telegram username first.")
+    normalized = _normalize_telegram_username(telegram_username)
+    if normalized != expected_recovery:
+        raise ValueError("Telegram username does not match the configured recovery username.")
+    if not service.telegram.configured or not service.settings.telegram_admin_chat_ids:
+        raise ValueError("Telegram password recovery is not available on this deployment.")
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=ADMIN_RESET_CODE_TTL_MINUTES)
+    payload = json.dumps(
+        {
+            "code_hash": generate_password_hash(code),
+            "expires_at": expires_at.replace(microsecond=0).isoformat(),
+            "telegram_username": normalized,
+        }
+    )
+    service.db.upsert_runtime_state(state_key=ADMIN_RESET_STATE_KEY, state_value=payload)
+    message = (
+        "QUMS Bot admin password reset code\n"
+        f"Code: {code}\n"
+        f"Expires in: {ADMIN_RESET_CODE_TTL_MINUTES} minutes\n"
+        "If you did not request this, ignore this message."
+    )
+    for chat_id in service.settings.telegram_admin_chat_ids:
+        service.telegram.send_text(chat_id, message, message_kind="admin_password_reset")
+    return normalized
+
+
+def _consume_admin_password_reset_code(telegram_username: str, reset_code: str) -> None:
+    raw_state = _service().db.get_runtime_state(ADMIN_RESET_STATE_KEY)
+    if not raw_state:
+        raise ValueError("Reset code is not active. Request a new code first.")
+    try:
+        payload = json.loads(raw_state)
+    except json.JSONDecodeError:
+        _service().db.delete_runtime_state(ADMIN_RESET_STATE_KEY)
+        raise ValueError("Reset code is not active. Request a new code first.") from None
+
+    expires_at_raw = str(payload.get("expires_at") or "")
+    expected_username = str(payload.get("telegram_username") or "")
+    code_hash = str(payload.get("code_hash") or "")
+    if not expires_at_raw or not expected_username or not code_hash:
+        _service().db.delete_runtime_state(ADMIN_RESET_STATE_KEY)
+        raise ValueError("Reset code is not active. Request a new code first.")
+    if telegram_username != expected_username:
+        raise ValueError("Telegram username does not match the active reset request.")
+    try:
+        expires_at = datetime.fromisoformat(expires_at_raw)
+    except ValueError:
+        _service().db.delete_runtime_state(ADMIN_RESET_STATE_KEY)
+        raise ValueError("Reset code is not active. Request a new code first.") from None
+    if expires_at < datetime.now(timezone.utc):
+        _service().db.delete_runtime_state(ADMIN_RESET_STATE_KEY)
+        raise ValueError("Reset code has expired. Request a new code again.")
+    if not reset_code or not check_password_hash(code_hash, reset_code):
+        raise ValueError("Reset code is not valid.")
+    _service().db.delete_runtime_state(ADMIN_RESET_STATE_KEY)
 
 
 def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = None):
@@ -579,6 +911,7 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
     dead_letter_messages = service.get_dead_letter_messages(10)
     message_state = _build_message_history_state(service, request.args)
     audit_state = _build_audit_log_state(service, request.args)
+    admin_account = _get_admin_account_state()
     whatsapp_statuses = {student.id: service.get_whatsapp_status(student) for student in students}
     student_automation_statuses = {
         student.id: service.get_student_automation_status(student, now=dashboard_now)
@@ -611,6 +944,7 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
         action_center=action_center,
         outbound_summary=outbound_summary,
         dead_letter_messages=dead_letter_messages,
+        admin_account=admin_account,
         twilio_configured=service.whatsapp.configured,
         telegram_configured=service.telegram.configured,
         settings=settings,
@@ -938,11 +1272,7 @@ def _build_action_center(*, students, student_dashboard_views, whatsapp_statuses
 
 
 def _log_admin_action(*, action: str, target_type: str, target_id: str, details: str) -> None:
-    actor = (
-        (_service().settings.admin_username or "dashboard-admin")
-        if session.get("admin_authenticated")
-        else "dashboard"
-    )
+    actor = str(_get_admin_account_state()["username"] or "dashboard-admin") if session.get("admin_authenticated") else "dashboard"
     try:
         _service().log_admin_action(
             actor=actor,

@@ -229,6 +229,7 @@ class IntegrationFlowTests(unittest.TestCase):
             task_queue_name="qums-bot",
             admin_username="",
             admin_password="",
+            admin_telegram_username="",
             local_timezone="Asia/Kolkata",
             morning_digest_time="06:30",
             evening_report_time="19:00",
@@ -285,6 +286,7 @@ class IntegrationFlowTests(unittest.TestCase):
             task_queue_name="qums-bot",
             admin_username="",
             admin_password="",
+            admin_telegram_username="",
             local_timezone="Asia/Kolkata",
             morning_digest_time="06:30",
             evening_report_time="19:00",
@@ -346,6 +348,7 @@ class IntegrationFlowTests(unittest.TestCase):
             task_queue_name="qums-bot",
             admin_username="",
             admin_password="",
+            admin_telegram_username="",
             local_timezone="Asia/Kolkata",
             morning_digest_time="06:30",
             evening_report_time="19:00",
@@ -648,6 +651,145 @@ class IntegrationFlowTests(unittest.TestCase):
             with client.session_transaction() as session_state:
                 self.assertTrue(session_state.get("admin_authenticated"))
                 self.assertNotIn("stale_key", session_state)
+
+    def test_admin_account_update_changes_login_credentials_and_recovery_username(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+
+            login_csrf = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            login_response = client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+            self.assertEqual(login_response.status_code, 302)
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(dashboard_html)
+            update_response = client.post(
+                "/admin/account/update",
+                data={
+                    "csrf_token": csrf_token,
+                    "login_username": "ops-admin",
+                    "recovery_telegram_username": "@gunda872",
+                    "current_password": "password",
+                    "new_password": "new-pass-123",
+                    "confirm_password": "new-pass-123",
+                },
+            )
+            self.assertEqual(update_response.status_code, 302)
+
+            logout_csrf = self._extract_csrf_token(client.get("/").get_data(as_text=True))
+            client.post("/admin/logout", data={"csrf_token": logout_csrf})
+
+            relogin_csrf = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            bad_response = client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": relogin_csrf,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+            self.assertEqual(bad_response.status_code, 401)
+
+            relogin_csrf = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            good_response = client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": relogin_csrf,
+                    "username": "ops-admin",
+                    "password": "new-pass-123",
+                    "next_path": "/",
+                },
+            )
+            self.assertEqual(good_response.status_code, 302)
+
+            self.assertEqual(app.config["service"].db.get_runtime_state("admin_username_override"), "ops-admin")
+            self.assertEqual(
+                app.config["service"].db.get_runtime_state("admin_telegram_username_override"),
+                "@gunda872",
+            )
+
+    def test_forgot_password_reset_sends_code_to_telegram_and_accepts_new_credentials(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "ADMIN_TELEGRAM_USERNAME": "@gunda872",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            fake_session = FakeTelegramSession()
+            app.config["service"].telegram._session = fake_session
+            client = app.test_client()
+
+            forgot_html = client.get("/admin/forgot-password").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(forgot_html)
+            request_response = client.post(
+                "/admin/forgot-password/request",
+                data={
+                    "csrf_token": csrf_token,
+                    "telegram_username": "@gunda872",
+                },
+            )
+            self.assertEqual(request_response.status_code, 200)
+            self.assertTrue(fake_session.calls)
+
+            message_payload = fake_session.calls[-1]["json"] or {}
+            message_text = str(message_payload.get("text") or "")
+            code_match = re.search(r"Code:\s*(\d{6})", message_text)
+            self.assertIsNotNone(code_match)
+            reset_code = code_match.group(1)
+
+            reset_response = client.post(
+                "/admin/forgot-password/reset",
+                data={
+                    "csrf_token": csrf_token,
+                    "telegram_username": "@gunda872",
+                    "reset_code": reset_code,
+                    "new_username": "recovered-admin",
+                    "new_password": "recovered-pass-123",
+                    "confirm_password": "recovered-pass-123",
+                },
+            )
+            self.assertEqual(reset_response.status_code, 302)
+            self.assertEqual(reset_response.headers["Location"], "/admin/login")
+
+            login_csrf = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            login_response = client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "username": "recovered-admin",
+                    "password": "recovered-pass-123",
+                    "next_path": "/",
+                },
+            )
+            self.assertEqual(login_response.status_code, 302)
 
     def test_dashboard_post_requires_csrf_token(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
