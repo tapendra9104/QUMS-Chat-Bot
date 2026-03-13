@@ -88,34 +88,32 @@ def build_scheduler(
         id="delivery-retry-checks",
         replace_existing=True,
     )
-    if settings.telegram_bot_token:
-        scheduler.add_job(
-            _dispatch(
-                service.run_telegram_inbound_sweep,
-                dispatcher=dispatcher,
-                job_name="telegram-inbound-checks",
-                callback_name="run_telegram_inbound_sweep",
-                interval_seconds=settings.telegram_poll_interval_seconds,
-            ),
-            "interval",
-            seconds=settings.telegram_poll_interval_seconds,
-            id="telegram-inbound-checks",
-            replace_existing=True,
-        )
-    if settings.telegram_bot_token and settings.dashboard_auto_refresh_seconds > 0:
-        scheduler.add_job(
-            _dispatch(
-                service.run_telegram_admin_refresh_sweep,
-                dispatcher=dispatcher,
-                job_name="telegram-admin-refresh-checks",
-                callback_name="run_telegram_admin_refresh_sweep",
-                interval_seconds=settings.dashboard_auto_refresh_seconds,
-            ),
-            "interval",
-            seconds=settings.dashboard_auto_refresh_seconds,
-            id="telegram-admin-refresh-checks",
-            replace_existing=True,
-        )
+    scheduler.add_job(
+        _dispatch(
+            service.run_telegram_inbound_sweep,
+            dispatcher=dispatcher,
+            job_name="telegram-inbound-checks",
+            callback_name="run_telegram_inbound_sweep",
+            interval_seconds=settings.telegram_poll_interval_seconds,
+        ),
+        "interval",
+        seconds=settings.telegram_poll_interval_seconds,
+        id="telegram-inbound-checks",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _dispatch(
+            service.run_telegram_admin_refresh_sweep,
+            dispatcher=dispatcher,
+            job_name="telegram-admin-refresh-checks",
+            callback_name="run_telegram_admin_refresh_sweep",
+            interval_seconds=max(settings.dashboard_auto_refresh_seconds, 5),
+        ),
+        "interval",
+        seconds=max(settings.dashboard_auto_refresh_seconds, 5),
+        id="telegram-admin-refresh-checks",
+        replace_existing=True,
+    )
     return scheduler
 
 
