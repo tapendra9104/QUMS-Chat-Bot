@@ -1796,8 +1796,10 @@ class IntegrationFlowTests(unittest.TestCase):
                     "timezone": "Asia/Kolkata",
                     "enabled": "on",
                 },
+                follow_redirects=False,
             )
-            self.assertEqual(bad_response.status_code, 400)
+            self.assertEqual(bad_response.status_code, 302)
+            self.assertEqual(bad_response.headers["Location"], "/")
 
             csrf_token = self._extract_csrf_token(client.get("/").get_data(as_text=True))
             good_response = client.post(
@@ -1813,6 +1815,47 @@ class IntegrationFlowTests(unittest.TestCase):
                 },
             )
             self.assertEqual(good_response.status_code, 302)
+
+    def test_invalid_csrf_for_ajax_post_returns_reload_hint(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            response = client.post(
+                "/students",
+                data={"student_label": "No Token"},
+                headers={"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"},
+            )
+            self.assertEqual(response.status_code, 400)
+            payload = response.get_json()
+            self.assertIsInstance(payload, dict)
+            self.assertTrue(payload.get("reload"))
+            self.assertIn("session expired", str(payload.get("message", "")).lower())
+
+    def test_html_pages_disable_caching(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            response = client.get("/admin/login")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store, no-cache, must-revalidate, max-age=0")
+            self.assertEqual(response.headers.get("Pragma"), "no-cache")
+            self.assertEqual(response.headers.get("Expires"), "0")
 
     def test_http_production_deploy_does_not_force_secure_session_cookie(self) -> None:
         db_path = self.tmp / "bot.sqlite3"

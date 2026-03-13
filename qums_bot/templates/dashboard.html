@@ -1043,6 +1043,10 @@
                                 return { ok: response.ok, payload: payload };
                             });
                         }).then(function (result) {
+                            if (!result.ok && result.payload && result.payload.reload) {
+                                window.location.reload();
+                                return;
+                            }
                             feedback.hidden = false;
                             feedback.textContent = result.payload.message || (result.ok ? "Retry completed." : "Retry failed.");
                             feedback.classList.add(result.ok ? "success" : "error");

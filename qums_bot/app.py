@@ -150,8 +150,21 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         expected = session.get("_csrf_token")
         received = request.form.get("csrf_token", "")
         if not expected or not received or not secrets.compare_digest(expected, received):
-            return ("Invalid CSRF token.", 400)
+            session.pop("_csrf_token", None)
+            message = "Your session expired or the page is stale. Please refresh and try again."
+            if _is_ajax_request():
+                return jsonify({"message": message, "reload": True}), 400
+            flash(message, "error")
+            return redirect(_csrf_retry_location())
         return None
+
+    @app.after_request
+    def disable_html_caching(response: Response):
+        if request.method == "GET" and response.mimetype == "text/html":
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
     @app.context_processor
     def inject_csrf_token():
@@ -1263,6 +1276,31 @@ def _service() -> BotService:
     from flask import current_app
 
     return current_app.config["service"]
+
+
+def _is_ajax_request() -> bool:
+    requested_with = request.headers.get("X-Requested-With", "")
+    accept = request.headers.get("Accept", "")
+    return requested_with == "XMLHttpRequest" or "application/json" in accept.lower()
+
+
+def _csrf_retry_location() -> str:
+    endpoint = request.endpoint or ""
+    if endpoint == "admin_login_submit":
+        return url_for("admin_login", next=_safe_next_path(request.form.get("next_path")))
+    if endpoint == "student_login_submit":
+        next_path = _safe_next_path(request.form.get("next_path"))
+        return url_for("login_alias", next=next_path)
+    if endpoint in {"admin_forgot_password_request", "admin_forgot_password_reset"}:
+        return url_for("admin_forgot_password")
+    if endpoint in {"student_forgot_password_request", "student_forgot_password_reset"}:
+        return url_for("student_forgot_password")
+    if endpoint in {"student_password_change_request", "student_password_change_submit"}:
+        return url_for("dashboard")
+    referrer = request.referrer or ""
+    if referrer:
+        return referrer
+    return url_for("dashboard")
 
 
 def _csrf_token() -> str:
