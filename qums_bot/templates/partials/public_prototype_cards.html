@@ -1,0 +1,34 @@
+<section class="grid">
+    <article class="student">
+        <h3>Prototype Preview</h3>
+        <p class="meta">
+            This public page shows a demo view only. Real student profiles, message history, and internal automation data are hidden until login.
+        </p>
+        <div class="live-grid">
+            <div class="live-card light">
+                <div class="live-label">What This Bot Does</div>
+                <div class="live-value">Automation Demo</div>
+                <div class="live-sub">
+                    Morning schedule updates, attendance alerts, substitute lecture alerts, shortage warnings, and day-end reporting.
+                </div>
+            </div>
+            <div class="live-card light">
+                <div class="live-label">Want To Try It?</div>
+                <div class="live-value">Apply First</div>
+                <div class="live-sub">
+                    Fill the application form below so the owner can review and create your profile.
+                </div>
+            </div>
+        </div>
+        <div class="status not-ready">Demo / Prototype View</div>
+        <p class="meta">
+            To try the live system, submit the application form and contact the owner directly.
+            {% if settings.owner_telegram_contact %}
+                <br>Owner Telegram: <code>{{ settings.owner_telegram_contact }}</code>
+            {% endif %}
+            {% if settings.owner_whatsapp_contact %}
+                <br>Owner WhatsApp: <code>{{ settings.owner_whatsapp_contact }}</code>
+            {% endif %}
+        </p>
+    </article>
+</section>

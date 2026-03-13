@@ -1,0 +1,25 @@
+{% if audit_log %}
+    {% for item in audit_log %}
+        <details data-refresh-key="audit:{{ item.id }}">
+            <summary>{{ item.created_at }} | {{ item.action.replace('_', ' ') | title }} | {{ item.target_type }} {{ item.target_id }}</summary>
+            <p class="meta">
+                Actor: {{ item.actor }}<br>
+                Details: {{ item.details }}
+            </p>
+        </details>
+    {% endfor %}
+    <div class="pager">
+        <div class="meta">Showing {{ audit_log|length }} of {{ audit_log_pagination.total_items }} audit record(s).</div>
+        <div class="actions">
+            {% if audit_log_pagination.has_prev %}
+                <a class="button-link ghost" href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category, message_page=message_history_pagination.page, audit_q=audit_log_filters.query, audit_action=audit_log_filters.action, audit_page=audit_log_pagination.prev_page) }}">Previous</a>
+            {% endif %}
+            <span class="meta">Page {{ audit_log_pagination.page }} of {{ audit_log_pagination.total_pages }}</span>
+            {% if audit_log_pagination.has_next %}
+                <a class="button-link ghost" href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category, message_page=message_history_pagination.page, audit_q=audit_log_filters.query, audit_action=audit_log_filters.action, audit_page=audit_log_pagination.next_page) }}">Next</a>
+            {% endif %}
+        </div>
+    </div>
+{% else %}
+    <p class="meta">{% if audit_log_filters.query or audit_log_filters.action %}No admin audit entries matched the current filters.{% else %}No admin audit entries are available yet.{% endif %}</p>
+{% endif %}

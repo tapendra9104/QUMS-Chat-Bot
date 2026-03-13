@@ -18,10 +18,16 @@ from .runtime import build_runtime
 from .erp_client import ERPClientError
 from .errors import StudentValidationError
 from .scheduler import build_scheduler
-from .service import NotificationDeliveryError
+from .service import (
+    NOTIFICATION_CHANNEL_MODE_LABELS,
+    STUDENT_ACTION_LABELS,
+    STUDENT_ACTION_ORDER,
+    NotificationDeliveryError,
+)
 from .task_queue import TaskDispatcher
 from .telegram import TelegramError
 from .whatsapp import WhatsAppError
+from .security import decrypt_text
 
 
 ADMIN_RESET_STATE_KEY = "admin_password_reset"
@@ -29,6 +35,15 @@ ADMIN_USERNAME_OVERRIDE_KEY = "admin_username_override"
 ADMIN_PASSWORD_HASH_OVERRIDE_KEY = "admin_password_hash_override"
 ADMIN_TELEGRAM_USERNAME_OVERRIDE_KEY = "admin_telegram_username_override"
 ADMIN_RESET_CODE_TTL_MINUTES = 10
+STUDENT_RESET_STATE_PREFIX = "student_password_reset:"
+STUDENT_RESET_CODE_TTL_MINUTES = 10
+DELIVERY_BASED_STUDENT_ACTIONS = {
+    "send_attendance_summary",
+    "send_morning",
+    "send_day_report",
+    "send_shortage_report",
+    "send_channel_test",
+}
 
 
 def create_app(*, start_scheduler: bool = True) -> Flask:
@@ -58,9 +73,19 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
     app.config["scheduler"] = scheduler
 
     @app.before_request
-    def require_admin_login():
-        if request.endpoint in {
+    def require_dashboard_access():
+        endpoint = request.endpoint or ""
+        public_endpoints = {
             "healthz",
+            "dashboard",
+            "dashboard_live_data",
+            "submit_application",
+            "login_alias",
+            "student_login_submit",
+            "student_logout",
+            "student_forgot_password",
+            "student_forgot_password_request",
+            "student_forgot_password_reset",
             "admin_login",
             "admin_login_submit",
             "admin_forgot_password",
@@ -69,13 +94,48 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "twilio_status_webhook",
             "twilio_inbound_webhook",
             "static",
-        }:
+        }
+        admin_only_endpoints = {
+            "admin_logout",
+            "admin_account_update",
+            "save_student",
+            "update_student_controls",
+            "delete_student",
+            "start_login",
+            "login_page",
+            "refresh_login",
+            "complete_login",
+            "preview_today",
+            "send_morning",
+            "send_attendance_summary",
+            "send_evening",
+            "send_shortage_report",
+            "send_test",
+            "retry_dead_letter",
+            "run_checks",
+            "export_message_history",
+            "export_audit_log",
+        }
+        student_only_endpoints = {
+            "student_password_change_request",
+            "student_password_change_submit",
+            "student_profile_update",
+        }
+        if endpoint in public_endpoints:
             return None
-        if not _admin_auth_enabled():
+        if endpoint in admin_only_endpoints:
+            if _is_admin_authenticated():
+                return None
+            if not _admin_auth_enabled():
+                return None
+            return redirect(url_for("admin_login", next=request.path))
+        if endpoint in student_only_endpoints:
+            if _is_student_authenticated():
+                return None
+            return redirect(url_for("login_alias", next=request.path))
+        if _is_admin_authenticated() or _is_student_authenticated() or not _admin_auth_enabled():
             return None
-        if session.get("admin_authenticated"):
-            return None
-        return redirect(url_for("admin_login", next=request.path))
+        return redirect(url_for("login_alias", next=request.path))
 
     @app.before_request
     def verify_csrf_token():
@@ -109,6 +169,55 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             recovery_configured=bool(_get_admin_account_state()["recovery_telegram_username"]),
         )
 
+    @app.get("/login")
+    def login_alias():
+        if _is_admin_authenticated() or _is_student_authenticated():
+            return redirect(url_for("dashboard"))
+        return render_template(
+            "site_login.html",
+            next_path=_safe_next_path(request.args.get("next")),
+            admin_login_path=url_for("admin_login", next=_safe_next_path(request.args.get("next"))),
+        )
+
+    @app.post("/login")
+    def student_login_submit():
+        limit_response = _enforce_rate_limit(
+            bucket=f"student-login:{_client_ip()}",
+            limit=settings.admin_rate_limit_count,
+            window_seconds=settings.admin_rate_limit_window_seconds,
+        )
+        if limit_response is not None:
+            return limit_response
+
+        login_username = request.form.get("login_username", "").strip()
+        password = request.form.get("password", "")
+        next_path = _safe_next_path(request.form.get("next_path"))
+        try:
+            student = _service().get_student_by_site_login_username(login_username)
+        except StudentValidationError:
+            student = None
+        if (
+            not student
+            or not student.enabled
+            or not student.site_login_username
+            or not student.site_password_hash
+            or not password
+            or not check_password_hash(student.site_password_hash, password)
+        ):
+            flash("Invalid login username or password.", "error")
+            return render_template(
+                "site_login.html",
+                next_path=next_path,
+                admin_login_path=url_for("admin_login", next=next_path),
+            ), 401
+
+        session.clear()
+        session["student_authenticated"] = True
+        session["student_id"] = student.id
+        session["student_username"] = student.site_login_username
+        flash(f"Signed in as {student.site_login_username}.", "success")
+        return redirect(next_path)
+
     @app.post("/admin/login")
     def admin_login_submit():
         if not _admin_auth_enabled():
@@ -128,6 +237,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         if _verify_admin_credentials(username, password):
             session.clear()
             session["admin_authenticated"] = True
+            session["admin_username"] = username
             flash("Admin login successful.", "success")
             return redirect(next_path)
 
@@ -249,11 +359,114 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         flash("Admin login credentials were updated. Sign in with the new username and password.", "success")
         return redirect(url_for("admin_login"))
 
+    @app.get("/forgot-password")
+    def student_forgot_password():
+        if _is_student_authenticated():
+            return redirect(url_for("dashboard"))
+        return render_template(
+            "student_forgot_password.html",
+            reset_code_ttl_minutes=STUDENT_RESET_CODE_TTL_MINUTES,
+            login_username="",
+            next_login_path=_safe_next_path(request.args.get("next")) or url_for("login_alias"),
+        )
+
+    @app.post("/forgot-password/request")
+    def student_forgot_password_request():
+        limit_response = _enforce_rate_limit(
+            bucket=f"student-forgot:{_client_ip()}",
+            limit=settings.admin_rate_limit_count,
+            window_seconds=settings.admin_rate_limit_window_seconds,
+        )
+        if limit_response is not None:
+            return limit_response
+        login_username = request.form.get("login_username", "").strip()
+        try:
+            student = _issue_student_password_reset_code(login_username, purpose="forgot_password")
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return render_template(
+                "student_forgot_password.html",
+                reset_code_ttl_minutes=STUDENT_RESET_CODE_TTL_MINUTES,
+                login_username=login_username,
+                next_login_path=url_for("login_alias"),
+            ), 400
+        except StudentValidationError:
+            flash("Student login username is not valid.", "error")
+            return render_template(
+                "student_forgot_password.html",
+                reset_code_ttl_minutes=STUDENT_RESET_CODE_TTL_MINUTES,
+                login_username=login_username,
+                next_login_path=url_for("login_alias"),
+            ), 400
+        except TelegramError as exc:
+            _report_internal_exception("Student password reset delivery failed.", exc)
+            flash("Reset code could not be sent to Telegram right now.", "error")
+            return render_template(
+                "student_forgot_password.html",
+                reset_code_ttl_minutes=STUDENT_RESET_CODE_TTL_MINUTES,
+                login_username=login_username,
+                next_login_path=url_for("login_alias"),
+            ), 502
+
+        flash(f"A verification code was sent to Telegram for {student.site_login_username}.", "success")
+        return render_template(
+            "student_forgot_password.html",
+            reset_code_ttl_minutes=STUDENT_RESET_CODE_TTL_MINUTES,
+            login_username=student.site_login_username,
+            next_login_path=url_for("login_alias"),
+        )
+
+    @app.post("/forgot-password/reset")
+    def student_forgot_password_reset():
+        limit_response = _enforce_rate_limit(
+            bucket=f"student-reset:{_client_ip()}",
+            limit=settings.admin_rate_limit_count,
+            window_seconds=settings.admin_rate_limit_window_seconds,
+        )
+        if limit_response is not None:
+            return limit_response
+
+        login_username = request.form.get("login_username", "").strip()
+        reset_code = request.form.get("reset_code", "").strip()
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        try:
+            student = _require_student_for_site_login(login_username)
+            validated_password = _validate_site_password(new_password, confirm_password)
+            _consume_student_password_reset_code(student, reset_code)
+            _service().update_student_site_password(student_id=student.id, new_password=validated_password)
+            _notify_student_password_change(student, change_type="forgot_password_reset")
+            _service().log_admin_action(
+                actor=f"student-reset:{student.site_login_username}",
+                action="student_password_reset",
+                target_type="student",
+                target_id=str(student.id),
+                details="Student website password was reset through Telegram verification.",
+            )
+        except (ValueError, StudentValidationError) as exc:
+            flash(str(exc), "error")
+            return render_template(
+                "student_forgot_password.html",
+                reset_code_ttl_minutes=STUDENT_RESET_CODE_TTL_MINUTES,
+                login_username=login_username,
+                next_login_path=url_for("login_alias"),
+            ), 400
+
+        session.clear()
+        flash("Password updated. Sign in with your new password.", "success")
+        return redirect(url_for("login_alias"))
+
     @app.post("/admin/logout")
     def admin_logout():
         session.clear()
         flash("Admin session closed.", "success")
-        return redirect(url_for("admin_login"))
+        return redirect(url_for("dashboard"))
+
+    @app.post("/logout")
+    def student_logout():
+        session.clear()
+        flash("Signed out successfully.", "success")
+        return redirect(url_for("dashboard"))
 
     @app.post("/admin/account/update")
     def admin_account_update():
@@ -300,9 +513,120 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         flash("Admin login settings updated.", "success")
         return redirect(url_for("dashboard"))
 
+    @app.post("/student/password/request")
+    def student_password_change_request():
+        student = _current_student()
+        if not student:
+            return redirect(url_for("login_alias", next=url_for("dashboard")))
+        try:
+            _issue_student_password_reset_code(student.site_login_username, purpose="change_password")
+        except (ValueError, StudentValidationError) as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+        except TelegramError as exc:
+            _report_internal_exception("Student password change code delivery failed.", exc)
+            flash("Verification code could not be sent to Telegram right now.", "error")
+            return redirect(url_for("dashboard"))
+        flash("A verification code was sent to your Telegram account.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/student/password/change")
+    def student_password_change_submit():
+        student = _current_student()
+        if not student:
+            return redirect(url_for("login_alias", next=url_for("dashboard")))
+
+        reset_code = request.form.get("reset_code", "").strip()
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        try:
+            validated_password = _validate_site_password(new_password, confirm_password)
+            _consume_student_password_reset_code(student, reset_code)
+            _service().update_student_site_password(student_id=student.id, new_password=validated_password)
+            _notify_student_password_change(student, change_type="self_service")
+            _service().log_admin_action(
+                actor=f"student:{student.site_login_username}",
+                action="student_password_change",
+                target_type="student",
+                target_id=str(student.id),
+                details="Student website password was changed from the signed-in dashboard.",
+            )
+        except (ValueError, StudentValidationError) as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+
+        flash("Your website password has been changed.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/student/profile/update")
+    def student_profile_update():
+        student = _current_student()
+        if not student:
+            return redirect(url_for("login_alias", next=url_for("dashboard")))
+
+        previous_student = student
+        supplied_erp_password = request.form.get("password", "")
+        try:
+            saved_id = _service().save_student(
+                student_id=student.id,
+                student_label=request.form.get("student_label", ""),
+                user_name=request.form.get("user_name", ""),
+                password=supplied_erp_password,
+                site_login_username=student.site_login_username,
+                site_login_password="",
+                whatsapp_number=request.form.get("whatsapp_number", ""),
+                telegram_chat_id=request.form.get("telegram_chat_id", ""),
+                email_address="",
+                enabled=student.enabled,
+                timezone=request.form.get("timezone", ""),
+            )
+            updated_student = _service().get_student(saved_id)
+            if not updated_student:
+                raise ValueError("Updated student profile could not be loaded.")
+            changes = _describe_student_profile_changes(
+                previous_student,
+                updated_student,
+                erp_password_changed=bool((supplied_erp_password or "").strip()),
+            )
+            if changes:
+                _service().db.update_student_bot_activity(
+                    updated_student.id,
+                    f"Student profile updated by {updated_student.site_login_username}.",
+                )
+                try:
+                    _service().log_admin_action(
+                        actor=f"student:{updated_student.site_login_username}",
+                        action="student_profile_update",
+                        target_type="student",
+                        target_id=str(updated_student.id),
+                        details="; ".join(changes),
+                    )
+                except Exception as exc:
+                    _report_internal_exception("Student profile update audit logging failed.", exc)
+                _notify_admin_student_profile_update(updated_student, changes)
+                flash("Profile updated successfully.", "success")
+            else:
+                flash("No profile changes were detected.", "warning")
+        except StudentValidationError as exc:
+            flash(str(exc), "error")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        except Exception as exc:
+            _report_internal_exception("Student profile update failed unexpectedly.", exc)
+            flash("Profile could not be updated due to an internal error.", "error")
+        return redirect(url_for("dashboard"))
+
     @app.get("/")
     def dashboard():
-        return _render_dashboard()
+        edit_id = None
+        if _is_admin_authenticated():
+            edit_id = _parse_positive_int(request.args.get("edit"), default=0) or None
+            if edit_id:
+                edit_student = _service().get_student(edit_id)
+                if edit_student and _service().is_student_action_disabled(edit_student, "edit"):
+                    flash("Edit is disabled for this student profile.", "error")
+                    edit_id = None
+        return _render_dashboard(edit_id=edit_id)
 
     @app.get("/healthz")
     def healthz():
@@ -381,12 +705,22 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except ValueError:
             flash("Student id is not valid.", "error")
             return _render_dashboard(), 400
+        if student_id:
+            existing_student = service.get_student(student_id)
+            if not existing_student:
+                flash("Student profile not found.", "error")
+                return _render_dashboard(), 404
+            if service.is_student_action_disabled(existing_student, "edit"):
+                flash("Edit is disabled for this student profile.", "error")
+                return _render_dashboard(), 403
         try:
             saved_id = service.save_student(
                 student_id=student_id,
                 student_label=request.form.get("student_label", ""),
                 user_name=request.form.get("user_name", ""),
                 password=request.form.get("password", ""),
+                site_login_username=request.form.get("site_login_username", ""),
+                site_login_password=request.form.get("site_login_password", ""),
                 whatsapp_number=request.form.get("whatsapp_number", ""),
                 telegram_chat_id=request.form.get("telegram_chat_id", ""),
                 email_address="",
@@ -410,8 +744,92 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         flash("Student profile saved.", "success")
         return redirect(url_for("dashboard", edit=saved_id))
 
+    @app.post("/students/<int:student_id>/controls")
+    def update_student_controls(student_id: int):
+        service = _service()
+        student = service.get_student(student_id)
+        if not student:
+            flash("Student profile not found.", "error")
+            return redirect(url_for("dashboard"))
+        try:
+            updated_student = service.update_student_controls(
+                student_id=student_id,
+                enabled=request.form.get("enabled") == "on",
+                notification_channel_mode=request.form.get("notification_channel_mode", "all"),
+                disabled_actions=request.form.getlist("disabled_actions"),
+            )
+        except StudentValidationError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+        except Exception as exc:
+            _report_internal_exception("Student control update failed unexpectedly.", exc)
+            flash("Student controls could not be updated due to an internal error.", "error")
+            return redirect(url_for("dashboard"))
+
+        _log_admin_action(
+            action="update_student_controls",
+            target_type="student",
+            target_id=str(student_id),
+            details=(
+                f"Profile {'enabled' if updated_student.enabled else 'blocked'}, "
+                f"delivery {service.get_student_notification_channel_label(updated_student)}, "
+                f"disabled actions: "
+                f"{', '.join(service.get_student_disabled_actions(updated_student)) or 'none'}."
+            ),
+        )
+        flash("Student controls updated.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/applications")
+    def submit_application():
+        limit_response = _enforce_rate_limit(
+            bucket=f"application:{_client_ip()}",
+            limit=settings.admin_rate_limit_count,
+            window_seconds=settings.admin_rate_limit_window_seconds,
+        )
+        if limit_response is not None:
+            return limit_response
+        service = _service()
+        try:
+            result = service.submit_application_request(
+                applicant_name=request.form.get("applicant_name", ""),
+                student_label=request.form.get("student_label", ""),
+                user_name=request.form.get("user_name", ""),
+                password=request.form.get("password", ""),
+                whatsapp_number=request.form.get("whatsapp_number", ""),
+                telegram_chat_id=request.form.get("telegram_chat_id", ""),
+                timezone=request.form.get("timezone", ""),
+                reg_id=request.form.get("reg_id", ""),
+                note=request.form.get("note", ""),
+                created_from_ip=_client_ip(),
+            )
+        except StudentValidationError as exc:
+            flash(str(exc), "error")
+            return _render_dashboard(), 400
+        except Exception as exc:
+            _report_internal_exception("Public application submission failed unexpectedly.", exc)
+            flash("The application could not be submitted right now. Please try again shortly.", "error")
+            return _render_dashboard(), 500
+
+        try:
+            service.log_admin_action(
+                actor=f"public-application:{_client_ip()}",
+                action="submit_application_request",
+                target_type="application_request",
+                target_id=str(result["id"]),
+                details="A new public application request was submitted from the website dashboard.",
+            )
+        except Exception as exc:
+            _report_internal_exception("Public application audit logging failed.", exc)
+        if result["notification_sent"]:
+            flash("Application submitted. The admin has been notified on Telegram.", "success")
+        else:
+            flash("Application submitted. It was saved, but the Telegram admin notification could not be delivered.", "warning")
+        return redirect(url_for("dashboard"))
+
     @app.post("/students/<int:student_id>/delete")
     def delete_student(student_id: int):
+        student = _service().get_student(student_id)
         deleted = _service().delete_student(student_id)
         if not deleted:
             flash("Student profile not found.", "error")
@@ -422,11 +840,16 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             target_id=str(student_id),
             details="Student profile deleted from dashboard.",
         )
+        if student:
+            _notify_admin_student_profile_deleted(student)
         flash("Student profile deleted.", "success")
         return redirect(url_for("dashboard"))
 
     @app.post("/students/<int:student_id>/login/start")
     def start_login(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "start_login")
+        if guard_response is not None:
+            return guard_response
         try:
             _service().start_login(student_id)
         except ERPClientError as exc:
@@ -443,6 +866,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.get("/students/<int:student_id>/login")
     def login_page(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "open_captcha")
+        if guard_response is not None:
+            return guard_response
         student = _service().get_student(student_id)
         pending = _service().db.get_pending_login(student_id)
         if not student or not pending:
@@ -452,6 +878,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/login/refresh")
     def refresh_login(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "open_captcha")
+        if guard_response is not None:
+            return guard_response
         try:
             _service().refresh_login(student_id)
         except ERPClientError as exc:
@@ -468,6 +897,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/login/complete")
     def complete_login(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "open_captcha")
+        if guard_response is not None:
+            return guard_response
         captcha = request.form.get("captcha", "")
         try:
             message = _service().complete_login(student_id, captcha)
@@ -485,6 +917,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/preview")
     def preview_today(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "preview_today")
+        if guard_response is not None:
+            return guard_response
         try:
             preview_text = _service().preview_today(student_id)
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
@@ -501,6 +936,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-morning")
     def send_morning(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "send_morning", require_delivery=True)
+        if guard_response is not None:
+            return guard_response
         try:
             _service().send_morning_update(student_id, force=True)
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
@@ -517,6 +955,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-attendance-summary")
     def send_attendance_summary(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "send_attendance_summary", require_delivery=True)
+        if guard_response is not None:
+            return guard_response
         try:
             _service().send_attendance_summary_report(student_id, force=True)
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
@@ -533,6 +974,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-evening")
     def send_evening(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "send_day_report", require_delivery=True)
+        if guard_response is not None:
+            return guard_response
         try:
             _service().send_evening_report(student_id, force=True)
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
@@ -549,6 +993,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-shortage-report")
     def send_shortage_report(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "send_shortage_report", require_delivery=True)
+        if guard_response is not None:
+            return guard_response
         try:
             _service().send_shortage_report(student_id, force=True)
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
@@ -565,6 +1012,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-test")
     def send_test(student_id: int):
+        guard_response = _guard_admin_student_action(student_id, "send_channel_test", require_delivery=True)
+        if guard_response is not None:
+            return guard_response
         try:
             _service().send_test_message(student_id)
         except (WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
@@ -695,28 +1145,114 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
     @app.get("/dashboard/live-data")
     def dashboard_live_data():
         service = _service()
-        message_state = _build_message_history_state(service, request.args)
-        dead_letter_messages = service.get_dead_letter_messages(10)
+        is_admin_authenticated = _is_admin_authenticated()
+        is_student_authenticated = _is_student_authenticated()
+        current_student = _current_student()
+        students = [current_student] if is_student_authenticated and current_student else (service.list_students() if is_admin_authenticated else [])
+        student_dashboard_views = _build_student_dashboard_views(students)
+        dashboard_now = service._local_now()
+        whatsapp_statuses = {
+            student.id: service.get_whatsapp_status(student)
+            for student in students
+            if is_admin_authenticated or is_student_authenticated
+        }
+        student_automation_statuses = {
+            student.id: service.get_student_automation_status(student, now=dashboard_now)
+            for student in students
+        }
+        if is_admin_authenticated:
+            dead_letter_messages = service.get_dead_letter_messages(10)
+            outbound_summary = service.get_outbound_queue_summary()
+            message_state = _build_message_history_state(service, request.args)
+        elif current_student:
+            dead_letter_messages = service.get_dead_letter_messages_for_student(current_student.id, 10)
+            outbound_summary = service.get_outbound_queue_summary_for_student(current_student.id)
+            message_state = _build_message_history_state(service, request.args, student_id=current_student.id)
+        else:
+            dead_letter_messages = []
+            outbound_summary = {"claimed": 0, "sent": 0, "failed": 0, "dead_letter": 0}
+            message_state = {
+                "rows": [],
+                "filters": {"query": "", "channel": "", "category": ""},
+                "pagination": {"page": 1, "per_page": 20, "total_items": 0, "total_pages": 1, "has_prev": False, "has_next": False, "prev_page": 1, "next_page": 1},
+            }
+        audit_state = _build_audit_log_state(service, request.args) if is_admin_authenticated else {
+            "rows": [],
+            "filters": {"query": "", "action": ""},
+            "pagination": {"page": 1, "per_page": 20, "total_items": 0, "total_pages": 1, "has_prev": False, "has_next": False, "prev_page": 1, "next_page": 1},
+        }
+        action_center = (
+            _build_action_center(
+                students=students,
+                student_dashboard_views=student_dashboard_views,
+                whatsapp_statuses=whatsapp_statuses,
+                outbound_summary=outbound_summary,
+                dead_letters=dead_letter_messages,
+                dashboard_now=dashboard_now,
+            )
+            if is_admin_authenticated
+            else []
+        )
         return jsonify(
             {
-                "message_history_html": render_template(
-                    "partials/message_history_results.html",
-                    message_history=message_state["rows"],
-                    message_history_filters=message_state["filters"],
-                    message_history_pagination=message_state["pagination"],
-                    audit_log_filters={
-                        "query": request.args.get("audit_q", "").strip(),
-                        "action": request.args.get("audit_action", "").strip().lower(),
-                    },
-                    audit_log_pagination={
-                        "page": _parse_positive_int(request.args.get("audit_page"), default=1),
-                    },
+                "student_cards_html": render_template(
+                    "partials/student_cards.html" if (is_admin_authenticated or is_student_authenticated) else "partials/public_prototype_cards.html",
+                    students=students,
+                    student_dashboard_views=student_dashboard_views,
+                    whatsapp_statuses=whatsapp_statuses,
+                    student_automation_statuses=student_automation_statuses,
+                    is_admin_authenticated=is_admin_authenticated,
+                    is_student_authenticated=is_student_authenticated,
+                    can_view_student_details=bool(is_admin_authenticated or is_student_authenticated),
+                    settings=service.settings,
                 ),
-                "dead_letter_html": render_template(
-                    "partials/dead_letter_content.html",
-                    dead_letter_messages=dead_letter_messages,
+                "action_center_html": (
+                    render_template(
+                        "partials/action_center_content.html",
+                        action_center=action_center,
+                    )
+                    if is_admin_authenticated
+                    else ""
                 ),
-                "outbound_summary": service.get_outbound_queue_summary(),
+                "message_history_html": (
+                    render_template(
+                        "partials/message_history_results.html",
+                        message_history=message_state["rows"],
+                        message_history_filters=message_state["filters"],
+                        message_history_pagination=message_state["pagination"],
+                        audit_log_filters={
+                            "query": request.args.get("audit_q", "").strip(),
+                            "action": request.args.get("audit_action", "").strip().lower(),
+                        },
+                        audit_log_pagination={
+                            "page": _parse_positive_int(request.args.get("audit_page"), default=1),
+                        },
+                    )
+                    if is_admin_authenticated or is_student_authenticated
+                    else ""
+                ),
+                "dead_letter_html": (
+                    render_template(
+                        "partials/dead_letter_content.html",
+                        dead_letter_messages=dead_letter_messages,
+                        can_retry_dead_letters=is_admin_authenticated,
+                    )
+                    if is_admin_authenticated or is_student_authenticated
+                    else ""
+                ),
+                "audit_log_html": (
+                    render_template(
+                        "partials/audit_log_results.html",
+                        audit_log=audit_state["rows"],
+                        audit_log_filters=audit_state["filters"],
+                        audit_log_pagination=audit_state["pagination"],
+                        message_history_filters=message_state["filters"],
+                        message_history_pagination=message_state["pagination"],
+                    )
+                    if is_admin_authenticated
+                    else ""
+                ),
+                "outbound_summary": outbound_summary,
             }
         )
 
@@ -898,33 +1434,245 @@ def _consume_admin_password_reset_code(telegram_username: str, reset_code: str) 
     _service().db.delete_runtime_state(ADMIN_RESET_STATE_KEY)
 
 
+def _student_reset_state_key(student_id: int) -> str:
+    return f"{STUDENT_RESET_STATE_PREFIX}{student_id}"
+
+
+def _require_student_for_site_login(login_username: str):
+    student = _service().get_student_by_site_login_username(login_username)
+    if not student or not student.enabled or not student.site_login_username or not student.site_password_hash:
+        raise ValueError("Student login username is not valid.")
+    return student
+
+
+def _validate_site_password(password: str, confirm_password: str) -> str:
+    if len(password or "") < 8:
+        raise ValueError("Password must be at least 8 characters long.")
+    if password != confirm_password:
+        raise ValueError("Password confirmation does not match.")
+    return password
+
+
+def _issue_student_password_reset_code(login_username: str, *, purpose: str):
+    service = _service()
+    student = _require_student_for_site_login(login_username)
+    if not student.telegram_chat_id:
+        raise ValueError("Telegram recovery is not configured for this user yet.")
+    if not service.telegram.configured:
+        raise ValueError("Telegram password recovery is not available on this deployment.")
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=STUDENT_RESET_CODE_TTL_MINUTES)
+    payload = json.dumps(
+        {
+            "code_hash": generate_password_hash(code),
+            "expires_at": expires_at.replace(microsecond=0).isoformat(),
+            "student_id": student.id,
+            "purpose": purpose,
+        }
+    )
+    service.db.upsert_runtime_state(state_key=_student_reset_state_key(student.id), state_value=payload)
+    message = (
+        "QUMS Bot website password verification code\n"
+        f"User: {student.site_login_username}\n"
+        f"Code: {code}\n"
+        f"Expires in: {STUDENT_RESET_CODE_TTL_MINUTES} minutes\n"
+        "If you did not request this, ignore this message."
+    )
+    service.telegram.send_text(student.telegram_chat_id, message, message_kind="student_password_reset")
+    return student
+
+
+def _consume_student_password_reset_code(student, reset_code: str) -> None:
+    raw_state = _service().db.get_runtime_state(_student_reset_state_key(student.id))
+    if not raw_state:
+        raise ValueError("Reset code is not active. Request a new code first.")
+    try:
+        payload = json.loads(raw_state)
+    except json.JSONDecodeError:
+        _service().db.delete_runtime_state(_student_reset_state_key(student.id))
+        raise ValueError("Reset code is not active. Request a new code first.") from None
+    expires_at_raw = str(payload.get("expires_at") or "")
+    code_hash = str(payload.get("code_hash") or "")
+    student_id = int(payload.get("student_id") or 0)
+    if student_id != student.id or not expires_at_raw or not code_hash:
+        _service().db.delete_runtime_state(_student_reset_state_key(student.id))
+        raise ValueError("Reset code is not active. Request a new code first.")
+    try:
+        expires_at = datetime.fromisoformat(expires_at_raw)
+    except ValueError:
+        _service().db.delete_runtime_state(_student_reset_state_key(student.id))
+        raise ValueError("Reset code is not active. Request a new code first.") from None
+    if expires_at < datetime.now(timezone.utc):
+        _service().db.delete_runtime_state(_student_reset_state_key(student.id))
+        raise ValueError("Reset code has expired. Request a new code again.")
+    if not reset_code or not check_password_hash(code_hash, reset_code):
+        raise ValueError("Reset code is not valid.")
+    _service().db.delete_runtime_state(_student_reset_state_key(student.id))
+
+
+def _notify_student_password_change(student, *, change_type: str) -> None:
+    service = _service()
+    changed_at = service._format_datetime(service._local_now())
+    service.db.update_student_bot_activity(
+        student.id,
+        f"Website password changed for {student.site_login_username}.",
+    )
+    if student.telegram_chat_id:
+        service.telegram.send_text(
+            student.telegram_chat_id,
+            "\n".join(
+                [
+                    "QUMS Bot password updated",
+                    f"Login username: {student.site_login_username}",
+                    f"Changed at: {changed_at}",
+                    "Your website password was changed successfully.",
+                ]
+            ),
+            message_kind="student_password_changed",
+        )
+    admin_message = "\n".join(
+        [
+            "Student website password changed",
+            f"Student: {student.student_label}",
+            f"Login username: {student.site_login_username}",
+            f"Telegram: {student.telegram_chat_id or 'Not set'}",
+            f"Changed at: {changed_at}",
+            f"Source: {'Forgot password reset' if change_type == 'forgot_password_reset' else 'Signed-in student change'}",
+        ]
+    )
+    for chat_id in service.settings.telegram_admin_chat_ids:
+        service.telegram.send_text(chat_id, admin_message, message_kind="student_password_changed_admin")
+
+
+def _describe_student_profile_changes(previous_student, updated_student, *, erp_password_changed: bool) -> list[str]:
+    changes: list[str] = []
+    field_pairs = [
+        ("student label", previous_student.student_label, updated_student.student_label),
+        ("ERP user id", previous_student.user_name, updated_student.user_name),
+        ("WhatsApp", previous_student.whatsapp_number, updated_student.whatsapp_number),
+        ("Telegram", previous_student.telegram_chat_id or "Not set", updated_student.telegram_chat_id or "Not set"),
+        ("timezone", previous_student.timezone, updated_student.timezone),
+    ]
+    for label, old_value, new_value in field_pairs:
+        if (old_value or "") != (new_value or ""):
+            changes.append(f"{label}: {old_value or 'Not set'} -> {new_value or 'Not set'}")
+    if erp_password_changed:
+        changes.append("ERP password updated")
+    return changes
+
+
+def _notify_admin_student_profile_update(student, changes: list[str]) -> None:
+    service = _service()
+    if not service.telegram.configured or not service.settings.telegram_admin_chat_ids:
+        return
+    message = "\n".join(
+        [
+            "Student profile updated",
+            f"Student: {student.student_label}",
+            f"Login username: {student.site_login_username}",
+            f"Updated at: {service._format_datetime(service._local_now())}",
+            "Changes:",
+            *[f"- {item}" for item in changes],
+        ]
+    )
+    for chat_id in service.settings.telegram_admin_chat_ids:
+        try:
+            service.telegram.send_text(chat_id, message, message_kind="student_profile_updated")
+        except TelegramError as exc:
+            _report_internal_exception("Student profile update Telegram notification failed.", exc)
+
+
+def _notify_admin_student_profile_deleted(student) -> None:
+    service = _service()
+    if not service.telegram.configured or not service.settings.telegram_admin_chat_ids:
+        return
+    message = "\n".join(
+        [
+            "Student profile deleted",
+            f"Student: {student.student_label}",
+            f"ERP user id: {student.user_name}",
+            f"Login username: {student.site_login_username or 'Not set'}",
+            f"Deleted at: {service._format_datetime(service._local_now())}",
+        ]
+    )
+    for chat_id in service.settings.telegram_admin_chat_ids:
+        try:
+            service.telegram.send_text(chat_id, message, message_kind="student_profile_deleted")
+        except TelegramError as exc:
+            _report_internal_exception("Student profile deletion Telegram notification failed.", exc)
+
+
 def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = None):
     service = _service()
-    students = service.list_students()
+    is_admin_authenticated = _is_admin_authenticated()
+    is_student_authenticated = _is_student_authenticated()
+    current_student = _current_student()
+    viewer_role = _viewer_role()
+    students = [current_student] if is_student_authenticated and current_student else (service.list_students() if is_admin_authenticated else [])
     student_dashboard_views = _build_student_dashboard_views(students)
-    message_history_options = service.get_message_history_filter_options()
-    audit_log_options = service.get_admin_audit_filter_options()
-    edit_student = service.get_student(edit_id) if edit_id else None
+    message_history_options = service.get_message_history_filter_options() if (is_admin_authenticated or is_student_authenticated) else {"channels": [], "categories": []}
+    audit_log_options = service.get_admin_audit_filter_options() if is_admin_authenticated else {"actions": []}
+    edit_student = service.get_student(edit_id) if edit_id and is_admin_authenticated else None
+    if edit_student and service.is_student_action_disabled(edit_student, "edit"):
+        edit_student = None
     settings = service.settings
     dashboard_now = service._local_now()
-    outbound_summary = service.get_outbound_queue_summary()
-    dead_letter_messages = service.get_dead_letter_messages(10)
-    message_state = _build_message_history_state(service, request.args)
-    audit_state = _build_audit_log_state(service, request.args)
+    if is_admin_authenticated:
+        outbound_summary = service.get_outbound_queue_summary()
+        dead_letter_messages = service.get_dead_letter_messages(10)
+        message_state = _build_message_history_state(service, request.args)
+    elif current_student:
+        outbound_summary = service.get_outbound_queue_summary_for_student(current_student.id)
+        dead_letter_messages = service.get_dead_letter_messages_for_student(current_student.id, 10)
+        message_state = _build_message_history_state(service, request.args, student_id=current_student.id)
+    else:
+        outbound_summary = {"claimed": 0, "sent": 0, "failed": 0, "dead_letter": 0}
+        dead_letter_messages = []
+        message_state = {
+            "rows": [],
+            "filters": {"query": "", "channel": "", "category": ""},
+            "pagination": {"page": 1, "per_page": 20, "total_items": 0, "total_pages": 1, "has_prev": False, "has_next": False, "prev_page": 1, "next_page": 1},
+        }
+    audit_state = _build_audit_log_state(service, request.args) if is_admin_authenticated else {
+        "rows": [],
+        "filters": {"query": "", "action": ""},
+        "pagination": {"page": 1, "per_page": 20, "total_items": 0, "total_pages": 1, "has_prev": False, "has_next": False, "prev_page": 1, "next_page": 1},
+    }
     admin_account = _get_admin_account_state()
-    whatsapp_statuses = {student.id: service.get_whatsapp_status(student) for student in students}
+    whatsapp_statuses = {
+        student.id: service.get_whatsapp_status(student)
+        for student in students
+        if is_admin_authenticated or is_student_authenticated
+    }
     student_automation_statuses = {
         student.id: service.get_student_automation_status(student, now=dashboard_now)
         for student in students
     }
-    action_center = _build_action_center(
-        students=students,
-        student_dashboard_views=student_dashboard_views,
-        whatsapp_statuses=whatsapp_statuses,
-        outbound_summary=outbound_summary,
-        dead_letters=dead_letter_messages,
-        dashboard_now=dashboard_now,
+    action_center = (
+        _build_action_center(
+            students=students,
+            student_dashboard_views=student_dashboard_views,
+            whatsapp_statuses=whatsapp_statuses,
+            outbound_summary=outbound_summary,
+            dead_letters=dead_letter_messages,
+            dashboard_now=dashboard_now,
+        )
+        if is_admin_authenticated
+        else []
     )
+    application_requests = service.list_application_requests(12) if is_admin_authenticated else []
+    viewer_session = {
+        "username": (
+            session.get("admin_username")
+            if is_admin_authenticated
+            else (current_student.site_login_username if current_student else "Guest")
+        ),
+        "login_path": url_for("login_alias"),
+        "admin_login_path": url_for("admin_login"),
+        "authenticated": bool(is_admin_authenticated or is_student_authenticated),
+        "role": viewer_role,
+    }
     return render_template(
         "dashboard.html",
         students=students,
@@ -945,6 +1693,14 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
         outbound_summary=outbound_summary,
         dead_letter_messages=dead_letter_messages,
         admin_account=admin_account,
+        viewer_session=viewer_session,
+        current_student=current_student,
+        is_admin_authenticated=is_admin_authenticated,
+        is_student_authenticated=is_student_authenticated,
+        can_view_student_details=bool(is_admin_authenticated or is_student_authenticated),
+        can_retry_dead_letters=is_admin_authenticated,
+        application_requests=application_requests,
+        application_request_views=_build_application_request_views(application_requests),
         twilio_configured=service.whatsapp.configured,
         telegram_configured=service.telegram.configured,
         settings=settings,
@@ -994,6 +1750,7 @@ def _build_message_history_state(
     service,
     params,
     *,
+    student_id: int | None = None,
     page_param: str = "message_page",
     per_page_param: str = "message_per_page",
     default_per_page: int = 20,
@@ -1006,23 +1763,23 @@ def _build_message_history_state(
     }
     page = _parse_positive_int(params.get(page_param), default=1)
     per_page = _parse_bounded_positive_int(params.get(per_page_param), default=default_per_page, maximum=max_per_page)
-    total_items = service.count_message_history(**filters)
+    total_items = service.count_message_history(student_id=student_id, **filters)
     page_rows, pagination = _paginate_rows(
         total_items=total_items,
         page=page,
         per_page=per_page,
-        fetch_page=lambda limit, offset: service.get_message_history_page(limit=limit, offset=offset, **filters),
+        fetch_page=lambda limit, offset: service.get_message_history_page(limit=limit, offset=offset, student_id=student_id, **filters),
     )
     return {"rows": page_rows, "filters": filters, "pagination": pagination}
 
 
-def _build_message_export_state(service, params):
+def _build_message_export_state(service, params, *, student_id: int | None = None):
     filters = {
         "query": params.get("message_q", "").strip(),
         "channel": params.get("message_channel", "").strip().lower(),
         "category": params.get("message_category", "").strip().lower(),
     }
-    total_items = service.count_message_history(**filters)
+    total_items = service.count_message_history(student_id=student_id, **filters)
     if params.get("page") or params.get("per_page"):
         page = _parse_positive_int(params.get("page"), default=1)
         per_page = _parse_bounded_positive_int(params.get("per_page"), default=20, maximum=500)
@@ -1030,10 +1787,14 @@ def _build_message_export_state(service, params):
             total_items=total_items,
             page=page,
             per_page=per_page,
-            fetch_page=lambda limit, offset: service.get_message_history_page(limit=limit, offset=offset, **filters),
+            fetch_page=lambda limit, offset: service.get_message_history_page(limit=limit, offset=offset, student_id=student_id, **filters),
         )
         return {"rows": page_rows, "filters": filters, "pagination": pagination}
-    rows = service.get_message_history_page(limit=max(total_items, 1), offset=0, **filters) if total_items else []
+    rows = (
+        service.get_message_history_page(limit=max(total_items, 1), offset=0, student_id=student_id, **filters)
+        if total_items
+        else []
+    )
     return {
         "rows": rows,
         "filters": filters,
@@ -1148,12 +1909,48 @@ def _build_student_dashboard_views(students):
         recent_activity = (student.last_bot_activity_text or "").strip() or None
         last_erp_sync_at = _format_dashboard_timestamp(student.last_erp_sync_at or student.session_updated_at)
         last_bot_action_at = _format_dashboard_timestamp(student.last_bot_action_at or student.updated_at)
+        notification_mode = service.get_student_notification_channel_mode(student)
+        disabled_actions = service.get_student_disabled_actions(student)
+        blocked = not student.enabled
+        action_states = {}
+        for action_key in STUDENT_ACTION_ORDER:
+            disabled = action_key in disabled_actions or (blocked and action_key != "edit")
+            if notification_mode == "paused" and action_key in DELIVERY_BASED_STUDENT_ACTIONS:
+                disabled = True
+            action_states[action_key] = {
+                "label": STUDENT_ACTION_LABELS[action_key],
+                "disabled": disabled,
+            }
         views[student.id] = {
             "erp_status": erp_status,
             "recent_activity": recent_activity,
             "captcha_ready": pending_login is not None,
             "last_erp_sync_at": last_erp_sync_at,
             "last_bot_action_at": last_bot_action_at,
+            "blocked": blocked,
+            "notification_channel_mode": notification_mode,
+            "notification_channel_label": NOTIFICATION_CHANNEL_MODE_LABELS[notification_mode],
+            "disabled_actions": sorted(disabled_actions),
+            "disabled_action_labels": [STUDENT_ACTION_LABELS[action_key] for action_key in STUDENT_ACTION_ORDER if action_key in disabled_actions],
+            "action_states": action_states,
+        }
+    return views
+
+
+def _build_application_request_views(application_requests):
+    settings = _service().settings
+    views: dict[int, dict[str, str | None]] = {}
+    for item in application_requests:
+        password_value = None
+        if item.password_encrypted:
+            try:
+                password_value = decrypt_text(settings.app_secret, item.password_encrypted)
+            except Exception:
+                password_value = None
+        views[item.id] = {
+            "created_at": _format_dashboard_timestamp(item.created_at) or item.created_at,
+            "updated_at": _format_dashboard_timestamp(item.updated_at) or item.updated_at,
+            "password_value": password_value,
         }
     return views
 
@@ -1304,6 +2101,55 @@ def _safe_next_path(value: str | None) -> str:
     if parts.scheme or parts.netloc or not candidate.startswith("/"):
         return url_for("dashboard")
     return candidate
+
+
+def _is_admin_authenticated() -> bool:
+    if not _admin_auth_enabled():
+        return True
+    return bool(session.get("admin_authenticated"))
+
+
+def _current_student():
+    if not session.get("student_authenticated"):
+        return None
+    student_id = session.get("student_id")
+    if not student_id:
+        return None
+    try:
+        student = _service().get_student(int(student_id))
+    except (TypeError, ValueError):
+        return None
+    if not student or not student.enabled or not student.site_login_username or not student.site_password_hash:
+        return None
+    return student
+
+
+def _is_student_authenticated() -> bool:
+    return _current_student() is not None
+
+
+def _viewer_role() -> str:
+    if _is_admin_authenticated():
+        return "admin"
+    if _is_student_authenticated():
+        return "student"
+    return "public"
+
+
+def _guard_admin_student_action(student_id: int, action_key: str, *, require_delivery: bool = False):
+    service = _service()
+    student = service.get_student(student_id)
+    if not student:
+        flash("Student profile not found.", "error")
+        return redirect(url_for("dashboard"))
+    try:
+        service.assert_student_action_allowed(student, action_key)
+        if require_delivery:
+            service.assert_student_notifications_available(student)
+    except ERPClientError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("dashboard"))
+    return None
 
 
 def _scheduler_is_running(scheduler) -> bool:

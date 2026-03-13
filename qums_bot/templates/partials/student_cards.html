@@ -1,0 +1,206 @@
+<section class="grid">
+    {% for student in students %}
+        <article class="student">
+            {% set wa = whatsapp_statuses.get(student.id) %}
+            {% set automation = student_automation_statuses.get(student.id) %}
+            {% set student_view = student_dashboard_views.get(student.id) %}
+            {% set action_states = student_view.action_states if student_view else {} %}
+            <h3>{{ student.student_label }}</h3>
+            <p class="meta">
+                {% if can_view_student_details %}
+                    ERP user id: {{ student.user_name }}<br>
+                    WhatsApp: {{ student.whatsapp_number }}<br>
+                    Telegram: {{ student.telegram_chat_id or "Not set" }}<br>
+                    RegID: {{ student.reg_id or "Not synced yet" }}<br>
+                    Session updated: {{ student.session_updated_at or "Not logged in yet" }}<br>
+                {% endif %}
+                ERP session: {{ student_view.erp_status if student_view else "Not started" }}
+                {% if student_view and student_view.last_erp_sync_at %}
+                    <br>
+                    Last ERP sync at: {{ student_view.last_erp_sync_at }}
+                {% endif %}
+                {% if student_view and student_view.last_bot_action_at %}
+                    <br>
+                    Last bot action at: {{ student_view.last_bot_action_at }}
+                {% endif %}
+                {% if student_view and student_view.recent_activity %}
+                    <br>
+                    Recent bot activity: {{ student_view.recent_activity }}
+                {% endif %}
+            </p>
+            {% if student_view %}
+                <p class="meta">
+                    Profile access:
+                    <span class="status {{ 'ready' if not student_view.blocked else 'not-ready' }}">
+                        {{ 'Active' if not student_view.blocked else 'Blocked' }}
+                    </span>
+                    <br>
+                    Delivery routing:
+                    <code>{{ student_view.notification_channel_label }}</code>
+                    <br>
+                    Disabled features:
+                    {{ student_view.disabled_action_labels | join(', ') if student_view.disabled_action_labels else 'None' }}
+                </p>
+            {% endif %}
+            {% if automation %}
+                <div class="live-grid">
+                    <div class="live-card light">
+                        <div class="live-label">Student Time</div>
+                        <div class="live-value js-live-clock" data-base-iso="{{ automation.current_time_iso }}" data-timezone="{{ automation.timezone }}">
+                            {{ automation.current_time_label }}
+                        </div>
+                        <div class="live-sub">Timezone: {{ automation.timezone }}</div>
+                    </div>
+                    <div class="live-card light">
+                        <div class="live-label">Next Attendance Scan</div>
+                        <div class="live-value">
+                            {% if automation.next_attendance_scan_iso %}
+                                <span class="js-countdown" data-target-iso="{{ automation.next_attendance_scan_iso }}">Calculating...</span>
+                            {% else %}
+                                No pending lecture scan
+                            {% endif %}
+                        </div>
+                        <div class="live-sub">
+                            {% if automation.next_attendance_scan_label %}
+                                Next check: {{ automation.next_attendance_scan_label }}<br>
+                                Lecture: {{ automation.next_attendance_subject }}
+                            {% else %}
+                                No scheduled lecture is waiting for a present, absent, or pending scan right now.
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="live-card light">
+                        <div class="live-label">Latest Attendance Marked</div>
+                        <div class="live-value">
+                            {% if automation.latest_marked_status %}
+                                {{ automation.latest_marked_status }}
+                            {% else %}
+                                No lecture marked yet
+                            {% endif %}
+                        </div>
+                        <div class="live-sub">
+                            {% if automation.latest_marked_at_label %}
+                                {{ automation.latest_marked_subject }}<br>
+                                Marked at: {{ automation.latest_marked_at_label }}
+                            {% else %}
+                                The timestamp will appear here after the bot detects a present or absent marking.
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+            {% if wa and can_view_student_details %}
+                <div class="status {{ 'ready' if wa.ready else 'not-ready' }}">
+                    {{ wa.state.replace('_', ' ') | title }}
+                </div>
+                <p class="meta">
+                    WhatsApp readiness: {{ wa.detail }}<br>
+                    {% if wa.last_outbound_status %}
+                        Last outbound status: {{ wa.last_outbound_status }}
+                        {% if wa.last_error_code %}| Error: {{ wa.last_error_code }}{% endif %}
+                        <br>
+                    {% endif %}
+                    {% if wa.last_inbound_at %}
+                        Last inbound sandbox message: {{ wa.last_inbound_at }}<br>
+                    {% endif %}
+                    {% if wa.sandbox_expires_at %}
+                        Sandbox expires at: {{ wa.sandbox_expires_at }}<br>
+                    {% endif %}
+                    {% if wa.join_command %}
+                        Join command: <code>{{ wa.join_command }}</code> to <code>+14155238886</code>
+                    {% endif %}
+                </p>
+            {% endif %}
+            {% if is_admin_authenticated %}
+                <details class="student-action-menu">
+                    <summary class="student-action-trigger" title="Open student controls">...</summary>
+                    <div class="student-action-content">
+                        <p class="meta">Student controls for {{ student.student_label }}</p>
+                        <div class="actions">
+                            {% if action_states.get('edit', {}).get('disabled') %}
+                                <span class="button-link ghost disabled" title="Edit is disabled for this student profile.">Edit</span>
+                            {% else %}
+                                <a class="button-link ghost" href="{{ url_for('dashboard', edit=student.id) }}">Edit</a>
+                            {% endif %}
+                            <form method="post" action="{{ url_for('start_login', student_id=student.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" {% if action_states.get('start_login', {}).get('disabled') %}disabled title="Start ERP Login is disabled for this student profile."{% endif %}>Start ERP Login</button>
+                            </form>
+                            {% if student_view and student_view.captcha_ready and not action_states.get('open_captcha', {}).get('disabled') %}
+                                <a class="button-link secondary" href="{{ url_for('login_page', student_id=student.id) }}">Open Captcha</a>
+                            {% elif action_states.get('open_captcha', {}).get('disabled') %}
+                                <span class="button-link secondary disabled" title="Open Captcha is disabled for this student profile.">Open Captcha</span>
+                            {% else %}
+                                <span class="button-link secondary disabled" title="Start ERP Login first to create a captcha session.">Open Captcha</span>
+                            {% endif %}
+                            <form method="post" action="{{ url_for('preview_today', student_id=student.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="ghost" {% if action_states.get('preview_today', {}).get('disabled') %}disabled title="Preview Today is disabled for this student profile."{% endif %}>Preview Today</button>
+                            </form>
+                            <form method="post" action="{{ url_for('send_attendance_summary', student_id=student.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="ghost" {% if action_states.get('send_attendance_summary', {}).get('disabled') %}disabled title="Send Attendance Summary is disabled for this student profile."{% endif %}>Send Attendance Summary</button>
+                            </form>
+                            <form method="post" action="{{ url_for('send_morning', student_id=student.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" {% if action_states.get('send_morning', {}).get('disabled') %}disabled title="Send Morning Summary is disabled for this student profile."{% endif %}>Send Morning Summary</button>
+                            </form>
+                            <form method="post" action="{{ url_for('send_evening', student_id=student.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="ghost" {% if action_states.get('send_day_report', {}).get('disabled') %}disabled title="Send Day Report is disabled for this student profile."{% endif %}>Send Day Report</button>
+                            </form>
+                            <form method="post" action="{{ url_for('send_shortage_report', student_id=student.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="ghost" {% if action_states.get('send_shortage_report', {}).get('disabled') %}disabled title="Send Shortage Report is disabled for this student profile."{% endif %}>Send Shortage Report</button>
+                            </form>
+                            <form method="post" action="{{ url_for('send_test', student_id=student.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="secondary" {% if action_states.get('send_channel_test', {}).get('disabled') %}disabled title="Send Channel Test is disabled for this student profile."{% endif %}>Send Channel Test</button>
+                            </form>
+                            <form method="post" action="{{ url_for('delete_student', student_id=student.id) }}" onsubmit="return confirm('Delete this student profile and its saved ERP session data?');">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="danger">Delete Profile</button>
+                            </form>
+                        </div>
+                        <form method="post" action="{{ url_for('update_student_controls', student_id=student.id) }}" class="student-control-form">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <label class="check">
+                                <input name="enabled" type="checkbox" {% if student.enabled %}checked{% endif %}>
+                                Keep this student profile active
+                            </label>
+                            <div>
+                                <label for="notification_channel_mode_{{ student.id }}">Notification routing</label>
+                                <select id="notification_channel_mode_{{ student.id }}" name="notification_channel_mode">
+                                    <option value="all" {% if student_view.notification_channel_mode == 'all' %}selected{% endif %}>All channels</option>
+                                    <option value="whatsapp_only" {% if student_view.notification_channel_mode == 'whatsapp_only' %}selected{% endif %}>WhatsApp only</option>
+                                    <option value="telegram_only" {% if student_view.notification_channel_mode == 'telegram_only' %}selected{% endif %}>Telegram only</option>
+                                    <option value="paused" {% if student_view.notification_channel_mode == 'paused' %}selected{% endif %}>Pause all notifications</option>
+                                </select>
+                            </div>
+                            <div class="student-control-grid">
+                                {% for action_key, action_state in action_states.items() %}
+                                    <label class="check compact">
+                                        <input
+                                            name="disabled_actions"
+                                            type="checkbox"
+                                            value="{{ action_key }}"
+                                            {% if action_key in student_view.disabled_actions %}checked{% endif %}>
+                                        Disable {{ action_state.label }}
+                                    </label>
+                                {% endfor %}
+                            </div>
+                            <div class="actions">
+                                <button type="submit">Apply Controls</button>
+                            </div>
+                        </form>
+                    </div>
+                </details>
+            {% endif %}
+        </article>
+    {% else %}
+        <article class="student">
+            <h3>No student configured</h3>
+            <p class="meta">Save at least one student profile to start the bot.</p>
+        </article>
+    {% endfor %}
+</section>

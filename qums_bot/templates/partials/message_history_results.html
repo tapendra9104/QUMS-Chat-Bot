@@ -1,6 +1,6 @@
 {% if message_history %}
     {% for item in message_history %}
-        <details>
+        <details data-refresh-key="message:{{ item.id }}">
             <summary>{{ item.sent_at }} | {{ item.student_label }} | {{ item.category.replace('_', ' ') | title }} | {{ item.title }}</summary>
             <p class="meta">
                 Channel: {{ item.channel | title }}<br>

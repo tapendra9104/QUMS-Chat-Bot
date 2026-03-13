@@ -75,12 +75,17 @@
             margin-bottom: 6px;
         }
         input[type="text"],
-        input[type="password"] {
+        input[type="password"],
+        textarea {
             border: 1px solid #bfd0dc;
             border-radius: 10px;
             box-sizing: border-box;
             padding: 10px 12px;
             width: 100%;
+        }
+        textarea {
+            min-height: 110px;
+            resize: vertical;
         }
         .check {
             align-items: center;
@@ -93,6 +98,42 @@
             flex-wrap: wrap;
             gap: 10px;
             margin-top: 12px;
+        }
+        .student-action-menu {
+            border-top: 1px solid #d7e0ea;
+            margin-top: 14px;
+            padding-top: 12px;
+        }
+        .student-action-trigger {
+            align-items: center;
+            background: #edf4f8;
+            border-radius: 999px;
+            color: #183247;
+            display: inline-flex;
+            font-size: 1.4rem;
+            font-weight: 700;
+            height: 40px;
+            justify-content: center;
+            letter-spacing: 0.08em;
+            width: 40px;
+        }
+        .student-action-content {
+            margin-top: 12px;
+        }
+        .student-control-form {
+            border-top: 1px solid #d7e0ea;
+            margin-top: 14px;
+            padding-top: 14px;
+        }
+        .student-control-grid {
+            display: grid;
+            gap: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            margin-top: 12px;
+        }
+        .check.compact {
+            font-size: 0.88rem;
+            margin-top: 0;
         }
         button, .button-link {
             background: #0d6e8b;
@@ -234,77 +275,122 @@
         }
     </style>
 </head>
-<body>
+<body data-refresh-seconds="{{ settings.dashboard_auto_refresh_seconds }}">
     <div class="wrap">
         <section class="hero">
             <h1>QUMS Multi-Channel Bot</h1>
-            <p>This is a local admin panel for the Python bot. ERP login is supported only through manual CAPTCHA entry in the dashboard.</p>
-            <p class="meta">
-                App env: {{ settings.app_env }} |
-                Server: {{ "waitress" if settings.use_waitress else "flask-dev" }} |
-                Morning digest time: {{ settings.morning_digest_time }} |
-                Evening report fallback time: {{ settings.evening_report_time }} |
-                Attendance poll interval: {{ settings.attendance_poll_interval_minutes }} minutes |
-                Substitution poll interval: {{ settings.substitution_poll_interval_minutes }} minutes |
-                Monitor poll interval: {{ settings.monitor_poll_interval_minutes }} minutes |
-                Dashboard auto-refresh: {{ settings.dashboard_auto_refresh_seconds }} seconds |
-                Sandbox warning window: {{ settings.sandbox_expiry_warning_minutes }} minutes |
-                Low attendance thresholds: {{ settings.low_attendance_thresholds | join(', ') }}% |
-                Scheduler config: {{ "Enabled" if settings.run_scheduler else "Disabled" }} |
-                Scheduler active: {{ "Yes" if scheduler_active else "No" }} |
-                Task queue mode: {{ settings.task_queue_mode }} |
-                Sentry: {{ "Enabled" if sentry_enabled else "Disabled" }} |
-                Twilio configured: {{ "Yes" if twilio_configured else "No" }} |
-                Telegram configured: {{ "Yes" if telegram_configured else "No" }} |
-                Mode: {{ settings.twilio_whatsapp_mode }} |
-                Sender: {{ settings.twilio_whatsapp_from or "Not set" }}
+            <p>
+                {% if is_admin_authenticated %}
+                    This is the admin dashboard for the QUMS automation bot. ERP login is supported only through manual CAPTCHA entry in the dashboard.
+                {% elif is_student_authenticated %}
+                    This is your student dashboard. You can review your own delivery history, dead-letter items, and account security settings here.
+                {% else %}
+                    This is the public QUMS Bot prototype page. You can review the demo experience here and submit a new student application without signing in.
+                {% endif %}
             </p>
-            <p class="meta">
-                Sandbox cannot auto-join from this page. Twilio requires the user to send the join command from their own WhatsApp account.
-            </p>
-            {% if settings.twilio_whatsapp_mode == "sandbox" %}
+            {% if is_admin_authenticated %}
                 <p class="meta">
-                    Sandbox sender: <code>whatsapp:+14155238886</code>
-                    {% if settings.twilio_sandbox_join_code %}
-                        | Current join command: <code>join {{ settings.twilio_sandbox_join_code }}</code>
-                    {% else %}
-                        | Set <code>TWILIO_SANDBOX_JOIN_CODE</code> in <code>.env</code> if you want the dashboard to display the exact join command.
-                    {% endif %}
+                    App env: {{ settings.app_env }} |
+                    Server: {{ "waitress" if settings.use_waitress else "flask-dev" }} |
+                    Morning digest time: {{ settings.morning_digest_time }} |
+                    Evening report fallback time: {{ settings.evening_report_time }} |
+                    Attendance poll interval: {{ settings.attendance_poll_interval_minutes }} minutes |
+                    Substitution poll interval: {{ settings.substitution_poll_interval_minutes }} minutes |
+                    Monitor poll interval: {{ settings.monitor_poll_interval_minutes }} minutes |
+                    Dashboard auto-refresh: {{ settings.dashboard_auto_refresh_seconds }} seconds |
+                    Sandbox warning window: {{ settings.sandbox_expiry_warning_minutes }} minutes |
+                    Low attendance thresholds: {{ settings.low_attendance_thresholds | join(', ') }}% |
+                    Scheduler config: {{ "Enabled" if settings.run_scheduler else "Disabled" }} |
+                    Scheduler active: {{ "Yes" if scheduler_active else "No" }} |
+                    Task queue mode: {{ settings.task_queue_mode }} |
+                    Sentry: {{ "Enabled" if sentry_enabled else "Disabled" }} |
+                    Twilio configured: {{ "Yes" if twilio_configured else "No" }} |
+                    Telegram configured: {{ "Yes" if telegram_configured else "No" }} |
+                    Mode: {{ settings.twilio_whatsapp_mode }} |
+                    Sender: {{ settings.twilio_whatsapp_from or "Not set" }}
                 </p>
             {% else %}
                 <p class="meta">
-                    Production mode expects a WhatsApp-enabled sender and approved template SIDs for scheduled messages.
+                    {% if is_student_authenticated %}
+                        Student view: only your own dashboard data is visible here.
+                    {% else %}
+                        Public view: this page shows a prototype only.
+                        Real student profiles and internal dashboard data are hidden until login.
+                    {% endif %}
                 </p>
+                {% if settings.telegram_bot_link %}
+                    <p class="meta">
+                        Telegram bot: <a href="{{ settings.telegram_bot_link }}" target="_blank" rel="noopener noreferrer">{{ settings.telegram_bot_link }}</a>
+                    </p>
+                {% endif %}
             {% endif %}
+            {% if is_admin_authenticated %}
+                <p class="meta">
+                    Sandbox cannot auto-join from this page. Twilio requires the user to send the join command from their own WhatsApp account.
+                </p>
+                {% if settings.twilio_whatsapp_mode == "sandbox" %}
+                    <p class="meta">
+                        Sandbox sender: <code>whatsapp:+14155238886</code>
+                        {% if settings.twilio_sandbox_join_code %}
+                            | Current join command: <code>join {{ settings.twilio_sandbox_join_code }}</code>
+                        {% else %}
+                            | Set <code>TWILIO_SANDBOX_JOIN_CODE</code> in <code>.env</code> if you want the dashboard to display the exact join command.
+                        {% endif %}
+                    </p>
+                {% else %}
+                    <p class="meta">
+                        Production mode expects a WhatsApp-enabled sender and approved template SIDs for scheduled messages.
+                    </p>
+                {% endif %}
+            {% endif %}
+            <div class="live-grid">
+                <div class="live-card">
+                    <div class="live-label">Dashboard Access</div>
+                    <div class="live-value">{{ viewer_session.username }}</div>
+                    <div class="live-sub">
+                        Role: {{ viewer_session.role | title }}<br>
+                        Login page: <code>{{ viewer_session.login_path }}</code>
+                    </div>
+                </div>
+            </div>
             <div class="actions">
-                {% if settings.admin_username and settings.admin_password %}
+                {% if is_admin_authenticated %}
                     <form class="inline" method="post" action="{{ url_for('admin_logout') }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="ghost">Logout</button>
                     </form>
+                {% elif is_student_authenticated %}
+                    <form class="inline" method="post" action="{{ url_for('student_logout') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="ghost">Logout</button>
+                    </form>
+                {% else %}
+                    <a class="button-link ghost" href="{{ url_for('login_alias', next=request.path) }}">Login</a>
                 {% endif %}
-                <form class="inline" method="post" action="{{ url_for('run_checks') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button type="submit" class="secondary">Run Live Checks Now</button>
-                </form>
-                <form class="inline" method="post" action="{{ url_for('export_message_history') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <input type="hidden" name="message_q" value="{{ message_history_filters.query }}">
-                    <input type="hidden" name="message_channel" value="{{ message_history_filters.channel }}">
-                    <input type="hidden" name="message_category" value="{{ message_history_filters.category }}">
-                    <input type="hidden" name="page" value="{{ message_history_pagination.page }}">
-                    <input type="hidden" name="per_page" value="{{ message_history_pagination.per_page }}">
-                    <button type="submit" class="ghost">Export Message CSV</button>
-                </form>
-                <form class="inline" method="post" action="{{ url_for('export_audit_log') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <input type="hidden" name="audit_q" value="{{ audit_log_filters.query }}">
-                    <input type="hidden" name="audit_action" value="{{ audit_log_filters.action }}">
-                    <input type="hidden" name="page" value="{{ audit_log_pagination.page }}">
-                    <input type="hidden" name="per_page" value="{{ audit_log_pagination.per_page }}">
-                    <button type="submit" class="ghost">Export Audit CSV</button>
-                </form>
-                <button type="button" class="ghost js-refresh-toggle" data-refresh-seconds="{{ settings.dashboard_auto_refresh_seconds }}">Auto-refresh: on</button>
+                {% if is_admin_authenticated %}
+                    <form class="inline" method="post" action="{{ url_for('run_checks') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="secondary">Run Live Checks Now</button>
+                    </form>
+                    <form class="inline" method="post" action="{{ url_for('export_message_history') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="message_q" value="{{ message_history_filters.query }}">
+                        <input type="hidden" name="message_channel" value="{{ message_history_filters.channel }}">
+                        <input type="hidden" name="message_category" value="{{ message_history_filters.category }}">
+                        <input type="hidden" name="page" value="{{ message_history_pagination.page }}">
+                        <input type="hidden" name="per_page" value="{{ message_history_pagination.per_page }}">
+                        <button type="submit" class="ghost">Export Message CSV</button>
+                    </form>
+                    <form class="inline" method="post" action="{{ url_for('export_audit_log') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="audit_q" value="{{ audit_log_filters.query }}">
+                        <input type="hidden" name="audit_action" value="{{ audit_log_filters.action }}">
+                        <input type="hidden" name="page" value="{{ audit_log_pagination.page }}">
+                        <input type="hidden" name="per_page" value="{{ audit_log_pagination.per_page }}">
+                        <button type="submit" class="ghost">Export Audit CSV</button>
+                    </form>
+                    <button type="button" class="ghost js-refresh-toggle" data-refresh-seconds="{{ settings.dashboard_auto_refresh_seconds }}">Auto-refresh: on</button>
+                {% endif %}
             </div>
             <div class="live-grid">
                 <div class="live-card">
@@ -312,24 +398,46 @@
                     <div class="live-value js-live-now" data-base-iso="{{ scheduler_overview.server_now_iso }}" data-timezone="{{ settings.local_timezone }}">
                         {{ scheduler_overview.server_now_label }}
                     </div>
-                    <div class="live-sub">Automatic messages are sent by the running scheduler. The dashboard does not need to stay open.</div>
-                </div>
-                {% for job in scheduler_overview.jobs %}
-                    <div class="live-card">
-                        <div class="live-label">{{ job.label }}</div>
-                        <div class="live-value">
-                            {% if job.next_run_iso %}
-                                <span class="js-countdown" data-target-iso="{{ job.next_run_iso }}">Calculating...</span>
-                            {% else %}
-                                Not scheduled
-                            {% endif %}
-                        </div>
-                        <div class="live-sub">
-                            Next run: {{ job.next_run_label }}<br>
-                            {{ job.detail }}
-                        </div>
+                    <div class="live-sub">
+                        {% if is_admin_authenticated %}
+                            Automatic messages are sent by the running scheduler. The dashboard does not need to stay open.
+                        {% elif is_student_authenticated %}
+                            Your own dashboard updates silently in the background without exposing admin-only controls.
+                        {% else %}
+                            This public page updates silently in the background so you can check current status without signing in.
+                        {% endif %}
                     </div>
-                {% endfor %}
+                </div>
+                {% if is_admin_authenticated %}
+                    {% for job in scheduler_overview.jobs %}
+                        <div class="live-card">
+                            <div class="live-label">{{ job.label }}</div>
+                            <div class="live-value">
+                                {% if job.next_run_iso %}
+                                    <span class="js-countdown" data-target-iso="{{ job.next_run_iso }}">Calculating...</span>
+                                {% else %}
+                                    Not scheduled
+                                {% endif %}
+                            </div>
+                            <div class="live-sub">
+                                Next run: {{ job.next_run_label }}<br>
+                                {{ job.detail }}
+                            </div>
+                        </div>
+                    {% endfor %}
+                {% elif is_student_authenticated %}
+                    <div class="live-card">
+                        <div class="live-label">Account Security</div>
+                        <div class="live-value">Telegram Verified</div>
+                        <div class="live-sub">Verification codes for password changes are sent directly to your configured Telegram account.</div>
+                    </div>
+                {% else %}
+                    <div class="live-card">
+                        <div class="live-label">Prototype Access</div>
+                        <div class="live-value">Apply To Try</div>
+                        <div class="live-sub">Use the form below if you want a new student profile added to the bot.</div>
+                    </div>
+                {% endif %}
             </div>
         </section>
 
@@ -341,113 +449,288 @@
             {% endif %}
         {% endwith %}
 
-        <section class="panel" id="action-center-panel">
-            <h2>Action Center</h2>
-            <p class="meta" id="outbound-queue-summary">
-                Outbound queue:
-                claimed <span data-queue-count="claimed">{{ outbound_summary.claimed or 0 }}</span>,
-                sent <span data-queue-count="sent">{{ outbound_summary.sent or 0 }}</span>,
-                waiting retry <span data-queue-count="failed">{{ outbound_summary.failed or 0 }}</span>,
-                dead letter <span data-queue-count="dead_letter">{{ outbound_summary.dead_letter or 0 }}</span>
-            </p>
-            {% if action_center %}
-                {% for item in action_center %}
-                    <div class="action-item {{ item.level }}">
-                        <strong>{{ item.title }}</strong>
-                        <div class="meta">{{ item.detail }}</div>
-                    </div>
-                {% endfor %}
-            {% else %}
-                <p class="meta">No operational issues are active right now.</p>
-            {% endif %}
-        </section>
+        {% if is_admin_authenticated %}
+            <section class="panel" id="action-center-panel">
+                <h2>Action Center</h2>
+                <p class="meta" id="outbound-queue-summary">
+                    Outbound queue:
+                    claimed <span data-queue-count="claimed">{{ outbound_summary.claimed or 0 }}</span>,
+                    sent <span data-queue-count="sent">{{ outbound_summary.sent or 0 }}</span>,
+                    waiting retry <span data-queue-count="failed">{{ outbound_summary.failed or 0 }}</span>,
+                    dead letter <span data-queue-count="dead_letter">{{ outbound_summary.dead_letter or 0 }}</span>
+                </p>
+                <div id="action-center-results">
+                    {% include "partials/action_center_content.html" %}
+                </div>
+            </section>
 
-        <section class="panel">
-            <h2>Admin Security</h2>
-            <p class="meta">
-                Update the dashboard login username and password. Telegram recovery sends reset codes to the configured admin Telegram chat and verifies the Telegram username you set here.
-            </p>
-            <form method="post" action="{{ url_for('admin_account_update') }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <div class="grid">
-                    <div>
-                        <label for="login_username">Login username</label>
-                        <input id="login_username" name="login_username" type="text" value="{{ admin_account.username }}" required>
+            <section class="panel">
+                <h2>Admin Security</h2>
+                <p class="meta">
+                    Update the dashboard login username and password. Telegram recovery sends reset codes to the configured admin Telegram chat and verifies the Telegram username you set here.
+                </p>
+                <form method="post" action="{{ url_for('admin_account_update') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="grid">
+                        <div>
+                            <label for="login_username">Login username</label>
+                            <input id="login_username" name="login_username" type="text" value="{{ admin_account.username }}" required>
+                        </div>
+                        <div>
+                            <label for="recovery_telegram_username">Recovery Telegram username</label>
+                            <input
+                                id="recovery_telegram_username"
+                                name="recovery_telegram_username"
+                                type="text"
+                                value="{{ admin_account.recovery_telegram_username }}"
+                                placeholder="@username or https://t.me/username">
+                        </div>
+                        <div>
+                            <label for="current_password">Current password</label>
+                            <input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+                        </div>
+                        <div>
+                            <label for="new_password">New password</label>
+                            <input id="new_password" name="new_password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current password">
+                        </div>
+                        <div>
+                            <label for="confirm_password">Confirm new password</label>
+                            <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" placeholder="Repeat the new password if changing it">
+                        </div>
                     </div>
-                    <div>
-                        <label for="recovery_telegram_username">Recovery Telegram username</label>
-                        <input
-                            id="recovery_telegram_username"
-                            name="recovery_telegram_username"
-                            type="text"
-                            value="{{ admin_account.recovery_telegram_username }}"
-                            placeholder="@username or https://t.me/username">
+                    <div class="actions">
+                        <button type="submit">Update Admin Login</button>
+                        <a class="button-link ghost" href="{{ url_for('admin_forgot_password') }}">Forgot Password Recovery</a>
                     </div>
-                    <div>
-                        <label for="current_password">Current password</label>
-                        <input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
-                    </div>
-                    <div>
-                        <label for="new_password">New password</label>
-                        <input id="new_password" name="new_password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current password">
-                    </div>
-                    <div>
-                        <label for="confirm_password">Confirm new password</label>
-                        <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" placeholder="Repeat the new password if changing it">
-                    </div>
-                </div>
-                <div class="actions">
-                    <button type="submit">Update Admin Login</button>
-                    <a class="button-link ghost" href="{{ url_for('admin_forgot_password') }}">Forgot Password Recovery</a>
-                </div>
-            </form>
-        </section>
+                </form>
+            </section>
 
-        <section class="panel">
-            <h2>{{ "Edit Student" if edit_student else "Add Student" }}</h2>
-            <form method="post" action="{{ url_for('save_student') }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                {% if edit_student %}
-                    <input type="hidden" name="student_id" value="{{ edit_student.id }}">
-                {% endif %}
-                <div class="grid">
-                    <div>
-                        <label for="student_label">Student label</label>
-                        <input id="student_label" name="student_label" type="text" value="{{ edit_student.student_label if edit_student else '' }}" required>
-                    </div>
-                    <div>
-                        <label for="user_name">ERP user id</label>
-                        <input id="user_name" name="user_name" type="text" value="{{ edit_student.user_name if edit_student else '' }}" required>
-                    </div>
-                    <div>
-                        <label for="password">ERP password</label>
-                        <input id="password" name="password" type="password" placeholder="{{ 'Leave blank to keep existing password' if edit_student else '' }}">
-                    </div>
-                    <div>
-                        <label for="whatsapp_number">WhatsApp number</label>
-                        <input id="whatsapp_number" name="whatsapp_number" type="text" value="{{ edit_student.whatsapp_number if edit_student else '' }}" placeholder="+91XXXXXXXXXX" required>
-                    </div>
-                    <div>
-                        <label for="telegram_chat_id">Telegram chat id</label>
-                        <input id="telegram_chat_id" name="telegram_chat_id" type="text" value="{{ edit_student.telegram_chat_id if edit_student else '' }}" placeholder="123456789, -100..., or @username">
-                    </div>
-                    <div>
-                        <label for="timezone">Timezone</label>
-                        <input id="timezone" name="timezone" type="text" value="{{ edit_student.timezone if edit_student else settings.local_timezone }}" required>
-                    </div>
-                </div>
-                <label class="check">
-                    <input name="enabled" type="checkbox" {% if edit_student and edit_student.enabled or not edit_student %}checked{% endif %}>
-                    Enable morning summary, lecture attendance checks, substitute lecture alerts, evening report, and monitoring alerts
-                </label>
-                <div class="actions">
-                    <button type="submit">Save Student</button>
+            <section class="panel">
+                <h2>{{ "Edit Student" if edit_student else "Add Student" }}</h2>
+                <form method="post" action="{{ url_for('save_student') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     {% if edit_student %}
-                        <a class="button-link ghost" href="{{ url_for('dashboard') }}">Cancel Edit</a>
+                        <input type="hidden" name="student_id" value="{{ edit_student.id }}">
+                    {% endif %}
+                    <div class="grid">
+                        <div>
+                            <label for="student_label">Student label</label>
+                            <input id="student_label" name="student_label" type="text" value="{{ edit_student.student_label if edit_student else '' }}" required>
+                        </div>
+                        <div>
+                            <label for="user_name">ERP user id</label>
+                            <input id="user_name" name="user_name" type="text" value="{{ edit_student.user_name if edit_student else '' }}" required>
+                        </div>
+                        <div>
+                            <label for="password">ERP password</label>
+                            <input id="password" name="password" type="password" placeholder="{{ 'Leave blank to keep existing password' if edit_student else '' }}">
+                        </div>
+                        <div>
+                            <label for="site_login_username">Site login username</label>
+                            <input id="site_login_username" name="site_login_username" type="text" value="{{ edit_student.site_login_username if edit_student else '' }}" placeholder="Optional website login username">
+                        </div>
+                        <div>
+                            <label for="site_login_password">Site login password</label>
+                            <input id="site_login_password" name="site_login_password" type="password" placeholder="{{ 'Leave blank to keep the current site password' if edit_student else 'Leave blank to keep site login disabled' }}">
+                        </div>
+                        <div>
+                            <label for="whatsapp_number">WhatsApp number</label>
+                            <input id="whatsapp_number" name="whatsapp_number" type="text" value="{{ edit_student.whatsapp_number if edit_student else '' }}" placeholder="+91XXXXXXXXXX" required>
+                        </div>
+                        <div>
+                            <label for="telegram_chat_id">Telegram chat id</label>
+                            <input id="telegram_chat_id" name="telegram_chat_id" type="text" value="{{ edit_student.telegram_chat_id if edit_student else '' }}" placeholder="123456789, -100..., or @username">
+                        </div>
+                        <div>
+                            <label for="timezone">Timezone</label>
+                            <input id="timezone" name="timezone" type="text" value="{{ edit_student.timezone if edit_student else settings.local_timezone }}" required>
+                        </div>
+                    </div>
+                    <label class="check">
+                        <input name="enabled" type="checkbox" {% if edit_student and edit_student.enabled or not edit_student %}checked{% endif %}>
+                        Enable morning summary, lecture attendance checks, substitute lecture alerts, evening report, and monitoring alerts
+                    </label>
+                    <div class="actions">
+                        <button type="submit">Save Student</button>
+                        {% if edit_student %}
+                            <a class="button-link ghost" href="{{ url_for('dashboard') }}">Cancel Edit</a>
+                        {% endif %}
+                    </div>
+                </form>
+            </section>
+
+            <section class="panel">
+                <h2>New User Applications</h2>
+                <p class="meta">These are the latest public application requests submitted from the website. Telegram notifications are sent when a new request arrives.</p>
+                {% if application_requests %}
+                    {% for item in application_requests %}
+                        {% set application_view = application_request_views.get(item.id) %}
+                        <details>
+                            <summary>{{ application_view.created_at if application_view else item.created_at }} | {{ item.applicant_name }} | {{ item.student_label }}</summary>
+                            <p class="meta">
+                                ERP user id: {{ item.user_name }}<br>
+                                RegID: {{ item.reg_id or "Not provided" }}<br>
+                                WhatsApp: {{ item.whatsapp_number }}<br>
+                                Telegram: {{ item.telegram_chat_id or "Not provided" }}<br>
+                                Timezone: {{ item.timezone }}<br>
+                                Status: {{ item.status | title }}<br>
+                                Submitted from IP: {{ item.created_from_ip or "Not available" }}<br>
+                                Updated at: {{ application_view.updated_at if application_view else item.updated_at }}
+                            </p>
+                            <details>
+                                <summary>Reveal submitted ERP password</summary>
+                                <pre>{{ application_view.password_value if application_view and application_view.password_value else "Password could not be decrypted." }}</pre>
+                            </details>
+                            {% if item.note %}
+                                <pre>{{ item.note }}</pre>
+                            {% endif %}
+                        </details>
+                    {% endfor %}
+                {% else %}
+                    <p class="meta">No public applications have been submitted yet.</p>
+                {% endif %}
+            </section>
+        {% elif is_student_authenticated %}
+            <section class="panel">
+                <h2>Edit Profile</h2>
+                <p class="meta">
+                    Update your own profile details here. Changes are saved directly to the database and the admin is notified automatically on Telegram.
+                </p>
+                <form method="post" action="{{ url_for('student_profile_update') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="grid">
+                        <div>
+                            <label for="student_profile_label">Student label</label>
+                            <input id="student_profile_label" name="student_label" type="text" value="{{ current_student.student_label }}" required>
+                        </div>
+                        <div>
+                            <label for="student_profile_user_name">ERP user id</label>
+                            <input id="student_profile_user_name" name="user_name" type="text" value="{{ current_student.user_name }}" required>
+                        </div>
+                        <div>
+                            <label for="student_profile_password">ERP password</label>
+                            <input id="student_profile_password" name="password" type="password" placeholder="Leave blank to keep the current ERP password">
+                        </div>
+                        <div>
+                            <label for="student_profile_whatsapp">WhatsApp number</label>
+                            <input id="student_profile_whatsapp" name="whatsapp_number" type="text" value="{{ current_student.whatsapp_number }}" placeholder="+91XXXXXXXXXX" required>
+                        </div>
+                        <div>
+                            <label for="student_profile_telegram">Telegram chat id</label>
+                            <input id="student_profile_telegram" name="telegram_chat_id" type="text" value="{{ current_student.telegram_chat_id }}" placeholder="123456789, -100..., or @username">
+                        </div>
+                        <div>
+                            <label for="student_profile_timezone">Timezone</label>
+                            <input id="student_profile_timezone" name="timezone" type="text" value="{{ current_student.timezone }}" required>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button type="submit">Update Profile</button>
+                    </div>
+                </form>
+            </section>
+
+            <section class="panel">
+                <h2>Account Security</h2>
+                <p class="meta">
+                    Login username: <code>{{ current_student.site_login_username }}</code><br>
+                    Password changes require a verification code sent to your Telegram account.
+                </p>
+                <div class="actions">
+                    <form method="post" action="{{ url_for('student_password_change_request') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit">Send Password Change Code</button>
+                    </form>
+                    <a class="button-link ghost" href="{{ url_for('student_forgot_password') }}">Forgot Password</a>
+                </div>
+                <form method="post" action="{{ url_for('student_password_change_submit') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="grid">
+                        <div>
+                            <label for="student_reset_code">Verification code</label>
+                            <input id="student_reset_code" name="reset_code" type="text" inputmode="numeric" required>
+                        </div>
+                        <div>
+                            <label for="student_new_password">New password</label>
+                            <input id="student_new_password" name="new_password" type="password" autocomplete="new-password" required>
+                        </div>
+                        <div>
+                            <label for="student_confirm_password">Confirm new password</label>
+                            <input id="student_confirm_password" name="confirm_password" type="password" autocomplete="new-password" required>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button type="submit">Change Password</button>
+                    </div>
+                </form>
+            </section>
+        {% else %}
+            <section class="panel">
+                <h2>Create Application</h2>
+                <p class="meta">
+                    This website is showing the prototype view only. To try the live system, fill this application form and contact the owner directly after submitting it.
+                </p>
+                <div class="flash warning">
+                    Access request required. Submit the application below if you want to use the live dashboard and automation features.
+                    {% if settings.owner_telegram_contact %}
+                        Owner Telegram: <code>{{ settings.owner_telegram_contact }}</code>.
+                    {% endif %}
+                    {% if settings.owner_whatsapp_contact %}
+                        Owner WhatsApp: <code>{{ settings.owner_whatsapp_contact }}</code>.
                     {% endif %}
                 </div>
-            </form>
-        </section>
+                {% if settings.telegram_bot_link %}
+                    <p class="meta">
+                        Prefer Telegram? Open <a href="{{ settings.telegram_bot_link }}" target="_blank" rel="noopener noreferrer">the QUMS Telegram bot</a> and send <code>/apply</code>.
+                    </p>
+                {% endif %}
+                <form method="post" action="{{ url_for('submit_application') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="grid">
+                        <div>
+                            <label for="applicant_name">Full name</label>
+                            <input id="applicant_name" name="applicant_name" type="text" required>
+                        </div>
+                        <div>
+                            <label for="student_label">Preferred dashboard label</label>
+                            <input id="student_label" name="student_label" type="text" required>
+                        </div>
+                        <div>
+                            <label for="user_name">ERP user id</label>
+                            <input id="user_name" name="user_name" type="text" required>
+                        </div>
+                        <div>
+                            <label for="password">ERP password</label>
+                            <input id="password" name="password" type="password" required>
+                        </div>
+                        <div>
+                            <label for="reg_id">Registration id</label>
+                            <input id="reg_id" name="reg_id" type="text" placeholder="Optional">
+                        </div>
+                        <div>
+                            <label for="whatsapp_number">WhatsApp number</label>
+                            <input id="whatsapp_number" name="whatsapp_number" type="text" placeholder="+91XXXXXXXXXX" required>
+                        </div>
+                        <div>
+                            <label for="telegram_chat_id">Telegram username or chat id</label>
+                            <input id="telegram_chat_id" name="telegram_chat_id" type="text" placeholder="@username or 123456789">
+                        </div>
+                        <div>
+                            <label for="timezone">Timezone</label>
+                            <input id="timezone" name="timezone" type="text" value="{{ settings.local_timezone }}" required>
+                        </div>
+                    </div>
+                    <div>
+                        <label for="note">Application note</label>
+                        <textarea id="note" name="note" placeholder="Add any useful context, preferred timings, or extra instructions."></textarea>
+                    </div>
+                    <div class="actions">
+                        <button type="submit">Submit Application</button>
+                        <a class="button-link ghost" href="{{ url_for('login_alias', next=request.path) }}">Login</a>
+                    </div>
+                </form>
+            </section>
+        {% endif %}
 
         {% if preview_text %}
             <section class="panel">
@@ -456,250 +739,97 @@
             </section>
         {% endif %}
 
-        <section class="grid">
-            {% for student in students %}
-                <article class="student">
-                    {% set wa = whatsapp_statuses.get(student.id) %}
-                    {% set automation = student_automation_statuses.get(student.id) %}
-                    {% set student_view = student_dashboard_views.get(student.id) %}
-                    <h3>{{ student.student_label }}</h3>
-                    <p class="meta">
-                        ERP user id: {{ student.user_name }}<br>
-                        WhatsApp: {{ student.whatsapp_number }}<br>
-                        Telegram: {{ student.telegram_chat_id or "Not set" }}<br>
-                        RegID: {{ student.reg_id or "Not synced yet" }}<br>
-                        Session updated: {{ student.session_updated_at or "Not logged in yet" }}<br>
-                        ERP session: {{ student_view.erp_status if student_view else "Not started" }}
-                        {% if student_view and student_view.last_erp_sync_at %}
-                            <br>
-                            Last ERP sync at: {{ student_view.last_erp_sync_at }}
-                        {% endif %}
-                        {% if student_view and student_view.last_bot_action_at %}
-                            <br>
-                            Last bot action at: {{ student_view.last_bot_action_at }}
-                        {% endif %}
-                        {% if student_view and student_view.recent_activity %}
-                            <br>
-                            Recent bot activity: {{ student_view.recent_activity }}
-                        {% endif %}
-                    </p>
-                    {% if automation %}
-                        <div class="live-grid">
-                            <div class="live-card light">
-                                <div class="live-label">Student Time</div>
-                                <div class="live-value js-live-clock" data-base-iso="{{ automation.current_time_iso }}" data-timezone="{{ automation.timezone }}">
-                                    {{ automation.current_time_label }}
-                                </div>
-                                <div class="live-sub">Timezone: {{ automation.timezone }}</div>
-                            </div>
-                            <div class="live-card light">
-                                <div class="live-label">Next Attendance Scan</div>
-                                <div class="live-value">
-                                    {% if automation.next_attendance_scan_iso %}
-                                        <span class="js-countdown" data-target-iso="{{ automation.next_attendance_scan_iso }}">Calculating...</span>
-                                    {% else %}
-                                        No pending lecture scan
-                                    {% endif %}
-                                </div>
-                                <div class="live-sub">
-                                    {% if automation.next_attendance_scan_label %}
-                                        Next check: {{ automation.next_attendance_scan_label }}<br>
-                                        Lecture: {{ automation.next_attendance_subject }}
-                                    {% else %}
-                                        No scheduled lecture is waiting for a present, absent, or pending scan right now.
-                                    {% endif %}
-                                </div>
-                            </div>
-                            <div class="live-card light">
-                                <div class="live-label">Latest Attendance Marked</div>
-                                <div class="live-value">
-                                    {% if automation.latest_marked_status %}
-                                        {{ automation.latest_marked_status }}
-                                    {% else %}
-                                        No lecture marked yet
-                                    {% endif %}
-                                </div>
-                                <div class="live-sub">
-                                    {% if automation.latest_marked_at_label %}
-                                        {{ automation.latest_marked_subject }}<br>
-                                        Marked at: {{ automation.latest_marked_at_label }}
-                                    {% else %}
-                                        The timestamp will appear here after the bot detects a present or absent marking.
-                                    {% endif %}
-                                </div>
-                            </div>
-                        </div>
-                    {% endif %}
-                    {% if wa %}
-                        <div class="status {{ 'ready' if wa.ready else 'not-ready' }}">
-                            {{ wa.state.replace('_', ' ') | title }}
-                        </div>
-                        <p class="meta">
-                            WhatsApp readiness: {{ wa.detail }}<br>
-                            {% if wa.last_outbound_status %}
-                                Last outbound status: {{ wa.last_outbound_status }}
-                                {% if wa.last_error_code %}| Error: {{ wa.last_error_code }}{% endif %}
-                                <br>
-                            {% endif %}
-                            {% if wa.last_inbound_at %}
-                                Last inbound sandbox message: {{ wa.last_inbound_at }}<br>
-                            {% endif %}
-                            {% if wa.sandbox_expires_at %}
-                                Sandbox expires at: {{ wa.sandbox_expires_at }}<br>
-                            {% endif %}
-                            {% if wa.join_command %}
-                                Join command: <code>{{ wa.join_command }}</code> to <code>+14155238886</code>
-                            {% endif %}
-                        </p>
-                    {% endif %}
-                    <div class="actions">
-                        <a class="button-link ghost" href="{{ url_for('dashboard', edit=student.id) }}">Edit</a>
-                        <form method="post" action="{{ url_for('start_login', student_id=student.id) }}">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit">Start ERP Login</button>
-                        </form>
-                        {% if student_view and student_view.captcha_ready %}
-                            <a class="button-link secondary" href="{{ url_for('login_page', student_id=student.id) }}">Open Captcha</a>
-                        {% else %}
-                            <span class="button-link secondary disabled" title="Start ERP Login first to create a captcha session.">Open Captcha</span>
-                        {% endif %}
-                        <form method="post" action="{{ url_for('preview_today', student_id=student.id) }}">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="ghost">Preview Today</button>
-                        </form>
-                        <form method="post" action="{{ url_for('send_attendance_summary', student_id=student.id) }}">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="ghost">Send Attendance Summary</button>
-                        </form>
-                        <form method="post" action="{{ url_for('send_morning', student_id=student.id) }}">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit">Send Morning Summary</button>
-                        </form>
-                        <form method="post" action="{{ url_for('send_evening', student_id=student.id) }}">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="ghost">Send Day Report</button>
-                        </form>
-                        <form method="post" action="{{ url_for('send_shortage_report', student_id=student.id) }}">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="ghost">Send Shortage Report</button>
-                        </form>
-                        <form method="post" action="{{ url_for('send_test', student_id=student.id) }}">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="secondary">Send Channel Test</button>
-                        </form>
-                        <form method="post" action="{{ url_for('delete_student', student_id=student.id) }}" onsubmit="return confirm('Delete this student profile and its saved ERP session data?');">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="danger">Delete Profile</button>
-                        </form>
-                    </div>
-                </article>
+        <div id="student-cards-results">
+            {% if is_admin_authenticated or is_student_authenticated %}
+                {% include "partials/student_cards.html" %}
             {% else %}
-                <article class="student">
-                    <h3>No student configured</h3>
-                    <p class="meta">Save at least one student profile to start the bot.</p>
-                </article>
-            {% endfor %}
-        </section>
-
-        <section class="panel">
-            <h2>Message History</h2>
-            <form method="get" class="filter-form">
-                <input type="hidden" name="audit_q" value="{{ audit_log_filters.query }}">
-                <input type="hidden" name="audit_action" value="{{ audit_log_filters.action }}">
-                <div>
-                    <label for="message_q">Search message history</label>
-                    <input id="message_q" name="message_q" type="text" value="{{ message_history_filters.query }}" placeholder="student, title, recipient, body">
-                </div>
-                <div>
-                    <label for="message_channel">Channel</label>
-                    <select id="message_channel" name="message_channel">
-                        <option value="">All channels</option>
-                        {% for item in message_history_filter_options.channels %}
-                            <option value="{{ item }}" {% if message_history_filters.channel == item %}selected{% endif %}>{{ item | title }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div>
-                    <label for="message_category">Category</label>
-                    <select id="message_category" name="message_category">
-                        <option value="">All categories</option>
-                        {% for item in message_history_filter_options.categories %}
-                            <option value="{{ item }}" {% if message_history_filters.category == item %}selected{% endif %}>{{ item.replace('_', ' ') | title }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="actions">
-                    <button type="submit" class="ghost">Apply</button>
-                    <a class="button-link ghost" href="{{ url_for('dashboard', audit_q=audit_log_filters.query, audit_action=audit_log_filters.action) }}">Clear</a>
-                </div>
-            </form>
-            <div id="message-history-results">
-                {% include "partials/message_history_results.html" %}
-            </div>
-        </section>
-
-        <section class="panel">
-            <h2>Dead-Letter Queue</h2>
-            <div id="dead-letter-content">
-                {% include "partials/dead_letter_content.html" %}
-            </div>
-        </section>
-
-        <section class="panel">
-            <h2>Admin Audit Log</h2>
-            <form method="get" class="filter-form">
-                <input type="hidden" name="message_q" value="{{ message_history_filters.query }}">
-                <input type="hidden" name="message_channel" value="{{ message_history_filters.channel }}">
-                <input type="hidden" name="message_category" value="{{ message_history_filters.category }}">
-                <div>
-                    <label for="audit_q">Search audit log</label>
-                    <input id="audit_q" name="audit_q" type="text" value="{{ audit_log_filters.query }}" placeholder="actor, action, target, details">
-                </div>
-                <div>
-                    <label for="audit_action">Action</label>
-                    <select id="audit_action" name="audit_action">
-                        <option value="">All actions</option>
-                        {% for item in audit_log_filter_options.actions %}
-                            <option value="{{ item }}" {% if audit_log_filters.action == item %}selected{% endif %}>{{ item.replace('_', ' ') | title }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="actions">
-                    <button type="submit" class="ghost">Apply</button>
-                    <a class="button-link ghost" href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category) }}">Clear</a>
-                </div>
-            </form>
-            {% if audit_log %}
-                {% for item in audit_log %}
-                    <details>
-                        <summary>{{ item.created_at }} | {{ item.action.replace('_', ' ') | title }} | {{ item.target_type }} {{ item.target_id }}</summary>
-                        <p class="meta">
-                            Actor: {{ item.actor }}<br>
-                            Details: {{ item.details }}
-                        </p>
-                    </details>
-                {% endfor %}
-                <div class="pager">
-                    <div class="meta">Showing {{ audit_log|length }} of {{ audit_log_pagination.total_items }} audit record(s).</div>
-                    <div class="actions">
-                        {% if audit_log_pagination.has_prev %}
-                            <a class="button-link ghost" href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category, message_page=message_history_pagination.page, audit_q=audit_log_filters.query, audit_action=audit_log_filters.action, audit_page=audit_log_pagination.prev_page) }}">Previous</a>
-                        {% endif %}
-                        <span class="meta">Page {{ audit_log_pagination.page }} of {{ audit_log_pagination.total_pages }}</span>
-                        {% if audit_log_pagination.has_next %}
-                            <a class="button-link ghost" href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category, message_page=message_history_pagination.page, audit_q=audit_log_filters.query, audit_action=audit_log_filters.action, audit_page=audit_log_pagination.next_page) }}">Next</a>
-                        {% endif %}
-                    </div>
-                </div>
-            {% else %}
-                <p class="meta">{% if audit_log_filters.query or audit_log_filters.action %}No admin audit entries matched the current filters.{% else %}No admin audit entries are available yet.{% endif %}</p>
+                {% include "partials/public_prototype_cards.html" %}
             {% endif %}
-        </section>
+        </div>
+
+        {% if is_admin_authenticated or is_student_authenticated %}
+            <section class="panel">
+                <h2>Message History</h2>
+                <form method="get" class="filter-form">
+                    {% if is_admin_authenticated %}
+                        <input type="hidden" name="audit_q" value="{{ audit_log_filters.query }}">
+                        <input type="hidden" name="audit_action" value="{{ audit_log_filters.action }}">
+                    {% endif %}
+                    <div>
+                        <label for="message_q">Search message history</label>
+                        <input id="message_q" name="message_q" type="text" value="{{ message_history_filters.query }}" placeholder="student, title, recipient, body">
+                    </div>
+                    <div>
+                        <label for="message_channel">Channel</label>
+                        <select id="message_channel" name="message_channel">
+                            <option value="">All channels</option>
+                            {% for item in message_history_filter_options.channels %}
+                                <option value="{{ item }}" {% if message_history_filters.channel == item %}selected{% endif %}>{{ item | title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label for="message_category">Category</label>
+                        <select id="message_category" name="message_category">
+                            <option value="">All categories</option>
+                            {% for item in message_history_filter_options.categories %}
+                                <option value="{{ item }}" {% if message_history_filters.category == item %}selected{% endif %}>{{ item.replace('_', ' ') | title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="actions">
+                        <button type="submit" class="ghost">Apply</button>
+                        <a class="button-link ghost" href="{{ url_for('dashboard', audit_q=audit_log_filters.query, audit_action=audit_log_filters.action) }}">Clear</a>
+                    </div>
+                </form>
+                <div id="message-history-results">
+                    {% include "partials/message_history_results.html" %}
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>Dead-Letter Queue</h2>
+                <div id="dead-letter-content">
+                    {% include "partials/dead_letter_content.html" %}
+                </div>
+            </section>
+        {% endif %}
+
+        {% if is_admin_authenticated %}
+            <section class="panel">
+                <h2>Admin Audit Log</h2>
+                <form method="get" class="filter-form">
+                    <input type="hidden" name="message_q" value="{{ message_history_filters.query }}">
+                    <input type="hidden" name="message_channel" value="{{ message_history_filters.channel }}">
+                    <input type="hidden" name="message_category" value="{{ message_history_filters.category }}">
+                    <div>
+                        <label for="audit_q">Search audit log</label>
+                        <input id="audit_q" name="audit_q" type="text" value="{{ audit_log_filters.query }}" placeholder="actor, action, target, details">
+                    </div>
+                    <div>
+                        <label for="audit_action">Action</label>
+                        <select id="audit_action" name="audit_action">
+                            <option value="">All actions</option>
+                            {% for item in audit_log_filter_options.actions %}
+                                <option value="{{ item }}" {% if audit_log_filters.action == item %}selected{% endif %}>{{ item.replace('_', ' ') | title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="actions">
+                        <button type="submit" class="ghost">Apply</button>
+                        <a class="button-link ghost" href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category) }}">Clear</a>
+                    </div>
+                </form>
+                <div id="audit-log-results">
+                    {% include "partials/audit_log_results.html" %}
+                </div>
+            </section>
+        {% endif %}
     </div>
     <script>
         (function () {
             const refreshToggle = document.querySelector(".js-refresh-toggle");
-            const refreshSeconds = refreshToggle ? Number(refreshToggle.getAttribute("data-refresh-seconds") || "0") : 0;
+            const refreshSeconds = Number(document.body.getAttribute("data-refresh-seconds") || "0");
             const refreshStorageKey = "qums-dashboard-auto-refresh";
             let refreshTimer = null;
 
@@ -763,19 +893,19 @@
             }
 
             function syncAutoRefreshState() {
-                if (!refreshToggle || refreshSeconds <= 0) {
+                if (refreshSeconds <= 0) {
                     return;
                 }
-                const enabled = localStorage.getItem(refreshStorageKey) !== "off";
-                refreshToggle.textContent = "Auto-refresh: " + (enabled ? "on" : "off");
+                const enabled = refreshToggle ? (localStorage.getItem(refreshStorageKey) !== "off") : true;
+                if (refreshToggle) {
+                    refreshToggle.textContent = "Auto-refresh: " + (enabled ? "on" : "off");
+                }
                 if (refreshTimer) {
                     window.clearTimeout(refreshTimer);
                     refreshTimer = null;
                 }
                 if (enabled) {
-                    refreshTimer = window.setTimeout(function () {
-                        window.location.reload();
-                    }, refreshSeconds * 1000);
+                    scheduleNextRefresh();
                 }
             }
 
@@ -793,12 +923,56 @@
 
             let historyRefreshInFlight = false;
 
-            function refreshHistoryPanels() {
+            function getOpenDetailKeys(root) {
+                if (!root) {
+                    return [];
+                }
+                return Array.from(root.querySelectorAll("details[open][data-refresh-key]")).map(function (node) {
+                    return node.getAttribute("data-refresh-key");
+                }).filter(Boolean);
+            }
+
+            function restoreOpenDetailKeys(root, keys) {
+                if (!root || !Array.isArray(keys) || !keys.length) {
+                    return;
+                }
+                keys.forEach(function (key) {
+                    const node = root.querySelector('details[data-refresh-key="' + key + '"]');
+                    if (node) {
+                        node.open = true;
+                    }
+                });
+            }
+
+            function scheduleNextRefresh() {
+                if (refreshSeconds <= 0) {
+                    return;
+                }
+                if (refreshToggle && localStorage.getItem(refreshStorageKey) === "off") {
+                    return;
+                }
+                if (refreshTimer) {
+                    window.clearTimeout(refreshTimer);
+                }
+                refreshTimer = window.setTimeout(function () {
+                    refreshDashboardPanels();
+                }, refreshSeconds * 1000);
+            }
+
+            function refreshDashboardPanels() {
                 if (historyRefreshInFlight) {
                     return Promise.resolve();
                 }
                 historyRefreshInFlight = true;
                 const params = new URLSearchParams(window.location.search);
+                const historyRoot = document.getElementById("message-history-results");
+                const deadLetterRoot = document.getElementById("dead-letter-content");
+                const auditRoot = document.getElementById("audit-log-results");
+                const actionCenterRoot = document.getElementById("action-center-results");
+                const studentCardsRoot = document.getElementById("student-cards-results");
+                const historyOpenKeys = getOpenDetailKeys(historyRoot);
+                const deadLetterOpenKeys = getOpenDetailKeys(deadLetterRoot);
+                const auditOpenKeys = getOpenDetailKeys(auditRoot);
                 return fetch("/dashboard/live-data?" + params.toString(), {
                     headers: {
                         "X-Requested-With": "XMLHttpRequest",
@@ -810,20 +984,32 @@
                     }
                     return response.json();
                 }).then(function (payload) {
-                    const historyRoot = document.getElementById("message-history-results");
-                    const deadLetterRoot = document.getElementById("dead-letter-content");
                     if (historyRoot && typeof payload.message_history_html === "string") {
                         historyRoot.innerHTML = payload.message_history_html;
+                        restoreOpenDetailKeys(historyRoot, historyOpenKeys);
                     }
                     if (deadLetterRoot && typeof payload.dead_letter_html === "string") {
                         deadLetterRoot.innerHTML = payload.dead_letter_html;
+                        restoreOpenDetailKeys(deadLetterRoot, deadLetterOpenKeys);
+                    }
+                    if (auditRoot && typeof payload.audit_log_html === "string") {
+                        auditRoot.innerHTML = payload.audit_log_html;
+                        restoreOpenDetailKeys(auditRoot, auditOpenKeys);
+                    }
+                    if (actionCenterRoot && typeof payload.action_center_html === "string") {
+                        actionCenterRoot.innerHTML = payload.action_center_html;
+                    }
+                    if (studentCardsRoot && typeof payload.student_cards_html === "string") {
+                        studentCardsRoot.innerHTML = payload.student_cards_html;
                     }
                     renderQueueCounts(payload.outbound_summary || {});
                     bindDeadLetterRetryForms(deadLetterRoot || document);
+                    updateTimers();
                 }).catch(function () {
                     return null;
                 }).finally(function () {
                     historyRefreshInFlight = false;
+                    scheduleNextRefresh();
                 });
             }
 
@@ -868,7 +1054,7 @@
                                     if (row && row.isConnected) {
                                         row.remove();
                                     }
-                                    refreshHistoryPanels();
+                                    refreshDashboardPanels();
                                 }, 1500);
                             } else {
                                 button.textContent = "Retry Now";
@@ -888,7 +1074,6 @@
             window.__dashboardBaseNow = new Date();
             updateTimers();
             window.setInterval(updateTimers, 1000);
-            window.setInterval(refreshHistoryPanels, 15000);
             if (refreshToggle) {
                 refreshToggle.addEventListener("click", function () {
                     const enabled = localStorage.getItem(refreshStorageKey) !== "off";

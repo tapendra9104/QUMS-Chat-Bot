@@ -359,6 +359,117 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(len(history), 2)
         self.assertEqual({item.channel for item in history}, {"whatsapp", "telegram"})
 
+    def test_delivery_targets_respect_notification_channel_mode(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Routing Student",
+            user_name="routing_user",
+            password_encrypted="secret",
+            whatsapp_number="+911234567890",
+            telegram_chat_id="123456789",
+            email_address="",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json="[]",
+            timezone="Asia/Kolkata",
+        )
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(whatsapp=FakeWhatsApp(), telegram=telegram)
+
+        student = self.db.get_student(student_id)
+        assert student is not None
+        self.assertEqual(service._delivery_targets(student), [("telegram", "123456789")])
+
+        self.db.update_student_controls(
+            student_id=student_id,
+            enabled=True,
+            notification_channel_mode="paused",
+            disabled_actions_json="[]",
+        )
+        paused_student = self.db.get_student(student_id)
+        assert paused_student is not None
+        self.assertEqual(service._delivery_targets(paused_student), [])
+
+    def test_save_student_preserves_existing_controls_when_profile_is_edited(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Control Student",
+            user_name="control_user",
+            password_encrypted="secret",
+            whatsapp_number="+911234567890",
+            telegram_chat_id="123456789",
+            email_address="",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json='["send_morning","send_day_report"]',
+            timezone="Asia/Kolkata",
+        )
+        service = self._make_service()
+
+        service.save_student(
+            student_id=student_id,
+            student_label="Control Student Updated",
+            user_name="control_user_updated",
+            password="",
+            whatsapp_number="+911234567890",
+            telegram_chat_id="123456789",
+            email_address="",
+            enabled=True,
+            timezone="UTC",
+        )
+
+        updated_student = self.db.get_student(student_id)
+        assert updated_student is not None
+        self.assertEqual(updated_student.notification_channel_mode, "telegram_only")
+        self.assertEqual(
+            service.get_student_disabled_actions(updated_student),
+            {"send_morning", "send_day_report"},
+        )
+
+    def test_attendance_summary_report_prefers_timetable_faculty_names(self) -> None:
+        student_id = self._add_student(label="Attendance Summary Student", timezone="Asia/Kolkata")
+        erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Day/Period": "Monday",
+                        "P1": "Compiler Design(CS36313) (A-010),MD. IQBAL",
+                        "P2": "Artificial Intelligence(CS36311) (A-010),AMIT KUMAR",
+                    }
+                ],
+                "col": "Day/Period,P1,P2",
+            },
+            attendance_payload={
+                "state": [
+                    {
+                        "Subject": "Compiler Design",
+                        "SubjectCode": "CS36313",
+                        "EMPNAME": "Wrong Monthly Faculty",
+                        "TotalLecture": "19",
+                        "TotalPresent": "16",
+                        "Percentage": "84.21%",
+                    },
+                    {
+                        "Subject": "Artificial Intelligence",
+                        "SubjectCode": "CS36311",
+                        "EMPNAME": "Wrong AI Faculty",
+                        "TotalLecture": "14",
+                        "TotalPresent": "11",
+                        "Percentage": "78.57%",
+                    },
+                ]
+            },
+        )
+        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp(), telegram=FakeTelegram())
+
+        body = service.send_attendance_summary_report(student_id, target_date=date(2026, 3, 16), force=True)
+
+        self.assertIn("Compiler Design (CS36313) | Faculty: MD. IQBAL", body)
+        self.assertIn("Artificial Intelligence (CS36311) | Faculty: AMIT KUMAR", body)
+        self.assertNotIn("Wrong Monthly Faculty", body)
+        self.assertNotIn("Wrong AI Faculty", body)
+
     def test_send_attendance_summary_report_dispatches_to_whatsapp_and_telegram(self) -> None:
         student_id = self._add_student(label="Attendance Student", timezone="Asia/Kolkata")
         student = self.db.get_student(student_id)
@@ -375,6 +486,22 @@ class SchedulerServiceTests(unittest.TestCase):
             timezone=student.timezone,
         )
         erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Period": "09:00 - 10:00",
+                        "Subject": "Mathematics",
+                        "Employee": "Prof Timetable",
+                        "Time": "09:00 - 10:00",
+                    },
+                    {
+                        "Period": "10:00 - 11:00",
+                        "Subject": "Physics Lab",
+                        "Employee": "Prof Timetable Physics",
+                        "Time": "10:00 - 11:00",
+                    },
+                ]
+            },
             attendance_payload={
                 "state": [
                     {
@@ -409,12 +536,13 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("Total absent: 3", body)
         self.assertIn("Subject-wise Attendance", body)
         self.assertIn("Mathematics (MATH101)", body)
-        self.assertIn("Faculty: Prof A", body)
+        self.assertIn("Faculty: Prof Timetable", body)
         self.assertIn("Percentage: 75.00%", body)
         self.assertIn("Total lectures: 8", body)
         self.assertIn("Present: 6", body)
         self.assertIn("Absent: 2", body)
         self.assertIn("Physics Lab (PHYL102)", body)
+        self.assertIn("Faculty: Prof Timetable Physics", body)
         self.assertEqual(len(whatsapp.messages), 1)
         self.assertEqual(len(telegram.messages), 1)
         history = service.list_message_history()
@@ -436,6 +564,8 @@ class SchedulerServiceTests(unittest.TestCase):
         )
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "Demo Student"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "demo_user"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "skip"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "skip"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "demo-pass"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "+919876543210"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "self"})
@@ -454,6 +584,196 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(students[0].student_label, "Demo Student")
         self.assertEqual(students[0].telegram_chat_id, chat_id)
         self.assertIsNone(self.db.get_telegram_admin_session(chat_id))
+
+    def test_public_telegram_start_offers_application_flow(self) -> None:
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(telegram=telegram)
+
+        service._handle_telegram_message({"chat": {"id": "999001"}, "text": "/start"})
+
+        self.assertTrue(telegram.messages)
+        self.assertIn("QUMS Telegram Bot", telegram.messages[-1][2])
+        self.assertIn("/apply", telegram.messages[-1][2])
+
+    def test_public_telegram_apply_flow_submits_application_request(self) -> None:
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(telegram=telegram)
+        chat_id = "999001"
+
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "/apply"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "Tapendra Chaudhary"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "Tapendra"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "23030682"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "erp-pass"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "8027"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "+919634549096"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "self"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "Asia/Kolkata"})
+        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "Please add my profile."})
+        service._handle_telegram_callback(
+            {
+                "id": "cb-apply-save",
+                "data": "tgpub:session:save",
+                "message": {"chat": {"id": chat_id}},
+            }
+        )
+
+        requests = service.list_application_requests()
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].applicant_name, "Tapendra Chaudhary")
+        self.assertEqual(requests[0].student_label, "Tapendra")
+        self.assertTrue(any(msg_chat == "5570554765" and "New student application request" in body for msg_chat, _, body in telegram.messages))
+        self.assertTrue(any(msg_chat == chat_id and "Application submitted successfully." in body for msg_chat, _, body in telegram.messages))
+
+    def test_student_telegram_menu_shows_only_the_linked_profile(self) -> None:
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(telegram=telegram)
+        self.db.upsert_student(
+            student_id=None,
+            student_label="Own Student",
+            user_name="own_erp",
+            password_encrypted="secret",
+            whatsapp_number="+911111111111",
+            telegram_chat_id="2001",
+            email_address="",
+            enabled=True,
+            timezone="Asia/Kolkata",
+        )
+        self.db.upsert_student(
+            student_id=None,
+            student_label="Other Student",
+            user_name="other_erp",
+            password_encrypted="secret",
+            whatsapp_number="+922222222222",
+            telegram_chat_id="2002",
+            email_address="",
+            enabled=True,
+            timezone="Asia/Kolkata",
+        )
+
+        service._handle_telegram_message({"chat": {"id": "2001"}, "text": "/menu"})
+
+        self.assertEqual(len(telegram.messages), 1)
+        body = telegram.messages[-1][2]
+        self.assertIn("Student: Own Student", body)
+        self.assertIn("ERP user id: own_erp", body)
+        self.assertNotIn("Other Student", body)
+        self.assertNotIn("QUMS Admin Control", body)
+        self.assertNotIn("Student Profiles", body)
+
+    def test_student_telegram_students_command_remains_scoped_to_own_profile(self) -> None:
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(telegram=telegram)
+        self.db.upsert_student(
+            student_id=None,
+            student_label="Own Student",
+            user_name="own_erp",
+            password_encrypted="secret",
+            whatsapp_number="+911111111111",
+            telegram_chat_id="2001",
+            email_address="",
+            enabled=True,
+            timezone="Asia/Kolkata",
+        )
+        self.db.upsert_student(
+            student_id=None,
+            student_label="Other Student",
+            user_name="other_erp",
+            password_encrypted="secret",
+            whatsapp_number="+922222222222",
+            telegram_chat_id="2002",
+            email_address="",
+            enabled=True,
+            timezone="Asia/Kolkata",
+        )
+
+        service._handle_telegram_message({"chat": {"id": "2001"}, "text": "/students"})
+
+        self.assertEqual(len(telegram.messages), 1)
+        body = telegram.messages[-1][2]
+        self.assertIn("Student: Own Student", body)
+        self.assertNotIn("Other Student", body)
+
+    def test_student_telegram_preview_callback_uses_only_the_linked_profile(self) -> None:
+        telegram = FakeTelegram()
+        telegram.configured = True
+        erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Period": "09:00 - 10:00",
+                        "Subject": "Mathematics",
+                        "Employee": "Prof A",
+                        "Time": "09:00 - 10:00",
+                    }
+                ]
+            }
+        )
+        service = self._make_service(telegram=telegram, erp=erp)
+        self.db.upsert_student(
+            student_id=None,
+            student_label="Own Student",
+            user_name="own_erp",
+            password_encrypted="secret",
+            whatsapp_number="+911111111111",
+            telegram_chat_id="2001",
+            email_address="",
+            enabled=True,
+            timezone="Asia/Kolkata",
+        )
+        self.db.upsert_student(
+            student_id=None,
+            student_label="Other Student",
+            user_name="other_erp",
+            password_encrypted="secret",
+            whatsapp_number="+922222222222",
+            telegram_chat_id="2002",
+            email_address="",
+            enabled=True,
+            timezone="Asia/Kolkata",
+        )
+
+        service._handle_telegram_callback(
+            {
+                "id": "cb-self-preview",
+                "data": "tgs:preview",
+                "message": {"chat": {"id": "2001"}},
+            }
+        )
+
+        self.assertTrue(telegram.messages)
+        self.assertIn("Morning Schedule Update", telegram.messages[-1][2])
+        self.assertEqual(telegram.callback_answers[-1], ("cb-self-preview", "Processing request.", False))
+
+    def test_admin_telegram_applications_command_lists_saved_requests(self) -> None:
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(telegram=telegram)
+        service.submit_application_request(
+            applicant_name="Tapendra Chaudhary",
+            student_label="Tapendra",
+            user_name="23030682",
+            password="erp-pass",
+            whatsapp_number="+919634549096",
+            telegram_chat_id="@gunda872",
+            timezone="Asia/Kolkata",
+            reg_id="8027",
+            note="Please add my profile.",
+            created_from_ip="website",
+        )
+        telegram.messages.clear()
+
+        service._handle_telegram_message({"chat": {"id": "5570554765"}, "text": "/applications"})
+        service._handle_telegram_message({"chat": {"id": "5570554765"}, "text": "/application 1"})
+
+        self.assertEqual(len(telegram.messages), 2)
+        self.assertIn("Application Requests", telegram.messages[0][2])
+        self.assertIn("Tapendra", telegram.messages[0][2])
+        self.assertIn("ERP password: erp-pass", telegram.messages[1][2])
 
     def test_removed_telegram_export_callback_returns_removed_alert(self) -> None:
         student_id = self._add_student(label="Export Student", timezone="Asia/Kolkata")
@@ -508,6 +828,16 @@ class SchedulerServiceTests(unittest.TestCase):
             timezone="Asia/Kolkata",
         )
         erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Period": "09:00 - 10:00",
+                        "Subject": "Mathematics",
+                        "Employee": "Prof Timetable",
+                        "Time": "09:00 - 10:00",
+                    }
+                ]
+            },
             attendance_payload={
                 "state": [
                     {
@@ -530,7 +860,7 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(len(service.telegram.messages), 1)
         self.assertIn("Attendance Summary Report", service.telegram.messages[-1][2])
         self.assertIn("Totals present: 6", service.telegram.messages[-1][2])
-        self.assertIn("Faculty: Prof A", service.telegram.messages[-1][2])
+        self.assertIn("Faculty: Prof Timetable", service.telegram.messages[-1][2])
 
     def test_telegram_preview_callback_acknowledges_before_sending_preview(self) -> None:
         student_id = self._add_student(label="Preview Student", timezone="Asia/Kolkata")
@@ -592,6 +922,16 @@ class SchedulerServiceTests(unittest.TestCase):
             timezone="Asia/Kolkata",
         )
         erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Day/Period": "Friday",
+                        "P1": "Mathematics(MATH101) (A-010),Prof A",
+                        "P2": "Chemistry(CHEM101) (A-011),Prof B",
+                    }
+                ],
+                "col": "Day/Period,P1,P2",
+            },
             attendance_payload={
                 "state": [
                     {
@@ -627,6 +967,16 @@ class SchedulerServiceTests(unittest.TestCase):
             timezone="Asia/Kolkata",
         )
         erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Day/Period": "Friday",
+                        "P1": "Mathematics(MATH101) (A-010),Prof A",
+                        "P2": "Chemistry(CHEM101) (A-011),Prof B",
+                    }
+                ],
+                "col": "Day/Period,P1,P2",
+            },
             attendance_payload={
                 "state": [
                     {
@@ -1356,6 +1706,16 @@ class SchedulerServiceTests(unittest.TestCase):
         student = self.db.get_student(student_id)
         assert student is not None
         erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Day/Period": "Friday",
+                        "P1": "Mathematics(MATH101) (A-010),Prof A",
+                        "P2": "Chemistry(CHEM101) (A-011),Prof B",
+                    }
+                ],
+                "col": "Day/Period,P1,P2",
+            },
             attendance_payload={
                 "state": [
                     {
@@ -1415,6 +1775,16 @@ class SchedulerServiceTests(unittest.TestCase):
             percentage="87.50%",
         )
         erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Day/Period": "Friday",
+                        "P1": "Mathematics(MATH101) (A-010),Prof A",
+                        "P2": "Chemistry(CHEM101) (A-011),Prof B",
+                    }
+                ],
+                "col": "Day/Period,P1,P2",
+            },
             attendance_payload={
                 "state": [
                     {
@@ -1524,6 +1894,59 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("Morning Schedule Update", preview)
         self.assertEqual(len(whatsapp.messages), 0)
         self.assertEqual(service.list_message_history(), [])
+
+    def test_morning_summary_includes_class_location_from_timetable(self) -> None:
+        student_id = self._add_student(label="Room Student", timezone="Asia/Kolkata")
+        erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Day/Period": "Friday",
+                        "P1 09:00 - 09:55": "Artificial Intelligence(CS36311) (A-010),AMIT KUMAR",
+                    }
+                ],
+                "col": "Day/Period,P1 09:00 - 09:55",
+            }
+        )
+        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp())
+
+        preview = service.preview_today(student_id, target_date=date(2026, 3, 13))
+
+        self.assertIn("Class: A-010", preview)
+        self.assertIn("Faculty: AMIT KUMAR", preview)
+
+    def test_evening_report_includes_class_location(self) -> None:
+        student_id = self._add_student(label="Evening Room Student", timezone="Asia/Kolkata")
+        target_date = date(2026, 3, 13)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="artificial_intelligence",
+                    subject_name="Artificial Intelligence",
+                    teacher_name="AMIT KUMAR",
+                    raw_cell="Artificial Intelligence(CS36311) (A-010),AMIT KUMAR",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
+        self.db.mark_event_status(
+            event.id,
+            "notified_present",
+            status_recorded_at=datetime(2026, 3, 13, 10, 15, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+        service = self._make_service(whatsapp=FakeWhatsApp())
+
+        report = service.send_evening_report(student_id, target_date=target_date, force=True)
+
+        self.assertIn("Class: A-010", report)
+        self.assertIn("Faculty: AMIT KUMAR", report)
 
     def test_retry_sweep_recovers_failed_outbound_message(self) -> None:
         student_id = self._add_student(label="Retry Student", timezone="Asia/Kolkata")

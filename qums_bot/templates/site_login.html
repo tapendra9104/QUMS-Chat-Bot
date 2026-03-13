@@ -23,7 +23,7 @@
             border: 1px solid #d7e0ea;
             border-radius: 18px;
             box-shadow: 0 14px 30px rgba(10, 28, 38, 0.2);
-            max-width: 420px;
+            max-width: 440px;
             padding: 28px;
             width: 100%;
         }
@@ -45,14 +45,22 @@
             padding: 12px 14px;
             width: 100%;
         }
-        button {
+        button, .button-link {
             background: #0d6e8b;
             border: 0;
             border-radius: 10px;
             color: #fff;
             cursor: pointer;
+            display: inline-block;
             padding: 12px 16px;
+            text-align: center;
+            text-decoration: none;
             width: 100%;
+        }
+        .button-link.secondary {
+            background: #edf4f8;
+            color: #183247;
+            margin-top: 10px;
         }
         .flash {
             border-radius: 12px;
@@ -82,13 +90,12 @@
     <div class="wrap">
         <section class="card">
             <h1>QUMS Bot</h1>
-            <p class="meta">Admin sign in for the website dashboard.</p>
+            <p class="meta">Student sign in with the website login username and password created by the admin.</p>
             <p class="meta">
-                {% if recovery_configured %}
-                    Forgot your password? <a href="{{ url_for('admin_forgot_password') }}">Reset it with Telegram</a>.
-                {% else %}
-                    Telegram password recovery is not configured yet.
-                {% endif %}
+                Forgot your password? <a href="{{ url_for('student_forgot_password') }}">Reset it with Telegram</a>.
+            </p>
+            <p class="meta">
+                Need admin access instead? <a href="{{ admin_login_path }}">Open admin login</a>.
             </p>
 
             {% with messages = get_flashed_messages(with_categories=true) %}
@@ -99,17 +106,18 @@
                 {% endif %}
             {% endwith %}
 
-            <form method="post" action="{{ url_for('admin_login_submit') }}">
+            <form method="post" action="{{ url_for('student_login_submit') }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="next_path" value="{{ next_path }}">
-                <label for="username">Username</label>
-                <input id="username" name="username" type="text" autocomplete="username" required>
+                <label for="login_username">Login username</label>
+                <input id="login_username" name="login_username" type="text" autocomplete="username" required>
 
                 <label for="password">Password</label>
                 <input id="password" name="password" type="password" autocomplete="current-password" required>
 
                 <button type="submit">Sign In</button>
             </form>
+            <a class="button-link secondary" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
         </section>
     </div>
 </body>

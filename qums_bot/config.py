@@ -67,6 +67,9 @@ class Settings:
     telegram_api_base_url: str = "https://api.telegram.org"
     telegram_admin_chat_ids: tuple[str, ...] = ()
     telegram_poll_interval_seconds: int = 1
+    telegram_bot_link: str = ""
+    owner_telegram_contact: str = ""
+    owner_whatsapp_contact: str = ""
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
@@ -217,6 +220,9 @@ def load_settings() -> Settings:
         telegram_api_base_url=os.getenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org").rstrip("/"),
         telegram_admin_chat_ids=env_str_list("TELEGRAM_ADMIN_CHAT_IDS"),
         telegram_poll_interval_seconds=env_int("TELEGRAM_POLL_INTERVAL_SECONDS", 1, minimum=1, maximum=60),
+        telegram_bot_link=os.getenv("TELEGRAM_BOT_LINK", "https://t.me/QUMS_ALERT_BOT").strip(),
+        owner_telegram_contact=os.getenv("OWNER_TELEGRAM_CONTACT", "").strip(),
+        owner_whatsapp_contact=os.getenv("OWNER_WHATSAPP_CONTACT", "").strip(),
         smtp_host=os.getenv("SMTP_HOST", "").strip(),
         smtp_port=env_int("SMTP_PORT", 587, minimum=1, maximum=65535),
         smtp_username=os.getenv("SMTP_USERNAME", "").strip(),

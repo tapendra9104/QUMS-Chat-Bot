@@ -1,6 +1,6 @@
 {% if dead_letter_messages %}
     {% for item in dead_letter_messages %}
-        <details data-dead-letter-row="{{ item.idempotency_key }}">
+        <details data-dead-letter-row="{{ item.idempotency_key }}" data-refresh-key="dead:{{ item.idempotency_key }}">
             <summary>{{ item.updated_at }} | {{ item.category.replace('_', ' ') | title }} | {{ item.title }}</summary>
             <p class="meta">
                 Student id: {{ item.student_id }}<br>
@@ -10,11 +10,13 @@
                 Last error: {{ item.delivery_error_message or "Not available" }}<br>
                 Next retry: {{ item.next_retry_at or "No more retries" }}
             </p>
-            <form method="post" action="{{ url_for('retry_dead_letter', idempotency_key=item.idempotency_key) }}">
-                <div class="inline-feedback" hidden></div>
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="secondary js-dead-letter-retry">Retry Now</button>
-            </form>
+            {% if can_retry_dead_letters %}
+                <form method="post" action="{{ url_for('retry_dead_letter', idempotency_key=item.idempotency_key) }}">
+                    <div class="inline-feedback" hidden></div>
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="secondary js-dead-letter-retry">Retry Now</button>
+                </form>
+            {% endif %}
             <pre>{{ item.body }}</pre>
         </details>
     {% endfor %}

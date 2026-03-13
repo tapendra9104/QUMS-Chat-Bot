@@ -11,10 +11,15 @@ class Student:
     student_label: str
     user_name: str
     password_encrypted: str
+    site_login_username: str
+    site_password_hash: str
+    site_password_updated_at: str | None
     whatsapp_number: str
     telegram_chat_id: str
     email_address: str
     enabled: bool
+    notification_channel_mode: str
+    disabled_actions_json: str
     timezone: str
     reg_id: str | None
     student_name: str | None
@@ -169,6 +174,24 @@ class AdminAuditRecord:
     target_id: str
     details: str
     created_at: str
+
+
+@dataclass
+class ApplicationRequest:
+    id: int
+    applicant_name: str
+    student_label: str
+    user_name: str
+    password_encrypted: str
+    reg_id: str | None
+    whatsapp_number: str
+    telegram_chat_id: str
+    timezone: str
+    note: str | None
+    created_from_ip: str | None
+    status: str
+    created_at: str
+    updated_at: str
 
 
 @dataclass

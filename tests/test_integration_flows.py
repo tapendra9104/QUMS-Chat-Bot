@@ -620,6 +620,203 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(response.status_code, 302)
             self.assertEqual(response.headers["Location"], "/")
 
+    def test_root_shows_public_dashboard_with_login_and_application_when_admin_auth_enabled(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+
+            response = client.get("/")
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Create Application", html)
+            self.assertIn(">Login<", html)
+            self.assertIn("https://t.me/QUMS_ALERT_BOT", html)
+            self.assertNotIn("Admin Security", html)
+            self.assertNotIn(">Save Student<", html)
+
+    def test_public_root_shows_prototype_only_and_owner_contacts(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "OWNER_TELEGRAM_CONTACT": "@gunda872",
+            "OWNER_WHATSAPP_CONTACT": "+919634549096",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.save_student(
+                student_id=None,
+                student_label="Hidden Student",
+                user_name="hidden_erp",
+                password="erp-pass-123",
+                site_login_username="hidden-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            response = client.get("/")
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("prototype view only", html)
+            self.assertIn("@gunda872", html)
+            self.assertIn("+919634549096", html)
+            self.assertIn("Create Application", html)
+            self.assertNotIn("Hidden Student", html)
+
+    def test_public_live_data_stays_in_prototype_mode_without_real_students(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "OWNER_TELEGRAM_CONTACT": "@gunda872",
+            "OWNER_WHATSAPP_CONTACT": "+919634549096",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.save_student(
+                student_id=None,
+                student_label="Hidden Student",
+                user_name="hidden_erp",
+                password="erp-pass-123",
+                site_login_username="hidden-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            response = client.get("/dashboard/live-data")
+            payload = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Prototype Preview", payload["student_cards_html"])
+            self.assertIn("@gunda872", payload["student_cards_html"])
+            self.assertNotIn("Hidden Student", payload["student_cards_html"])
+
+    def test_login_page_renders_student_login_and_admin_link(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+
+            response = client.get("/login")
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("QUMS Bot", html)
+            self.assertIn("Student sign in", html)
+            self.assertIn("/admin/login?next=/", html)
+            self.assertIn("Reset it with Telegram", html)
+
+    def test_admin_login_page_uses_shared_qums_bot_branding(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+
+            response = client.get("/admin/login")
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("<title>QUMS Bot</title>", html)
+            self.assertIn("Admin sign in for the website dashboard.", html)
+            self.assertNotIn("QUMS Bot Admin", html)
+
+    def test_public_application_submission_saves_request_and_sends_telegram_notification(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            fake_session = FakeTelegramSession()
+            service.telegram._session = fake_session
+
+            csrf_token = self._extract_csrf_token(client.get("/").get_data(as_text=True))
+            response = client.post(
+                "/applications",
+                data={
+                    "csrf_token": csrf_token,
+                    "applicant_name": "Tapendra Chaudhary",
+                    "student_label": "Tapendra",
+                    "user_name": "23030682",
+                    "password": "erp-password",
+                    "reg_id": "8027",
+                    "whatsapp_number": "+919634549096",
+                    "telegram_chat_id": "@gunda872",
+                    "timezone": "Asia/Kolkata",
+                    "note": "Please add my profile for attendance alerts.",
+                },
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+            requests = service.list_application_requests()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0].student_label, "Tapendra")
+            self.assertEqual(requests[0].user_name, "23030682")
+            self.assertIn("Application submitted. The admin has been notified on Telegram.", html)
+            self.assertEqual(len(fake_session.calls), 1)
+            telegram_payload = fake_session.calls[0]["json"]
+            self.assertEqual(telegram_payload["chat_id"], "5570554765")
+            self.assertIn("New student application request", telegram_payload["text"])
+            self.assertIn("Tapendra Chaudhary", telegram_payload["text"])
+
     def test_admin_login_clears_stale_session_state(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
         env_values = {
@@ -650,7 +847,793 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(response.status_code, 302)
             with client.session_transaction() as session_state:
                 self.assertTrue(session_state.get("admin_authenticated"))
+                self.assertEqual(session_state.get("admin_username"), "admin")
                 self.assertNotIn("stale_key", session_state)
+
+    def test_dashboard_shows_admin_session_panel_after_login(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+            response = client.get("/")
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Dashboard Access", html)
+            self.assertIn("admin", html)
+            self.assertIn("/login", html)
+            self.assertIn("Admin Security", html)
+            self.assertIn("Logout", html)
+            self.assertNotIn("Create Application", html)
+
+    def test_student_login_shows_scoped_dashboard_without_admin_sections(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.save_student(
+                student_id=None,
+                student_label="Scoped Student",
+                user_name="scoped_erp",
+                password="erp-pass-123",
+                site_login_username="scoped-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(login_html)
+            response = client.post(
+                "/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "login_username": "scoped-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Account Security", html)
+            self.assertIn("Edit Profile", html)
+            self.assertIn("Message History", html)
+            self.assertIn("Dead-Letter Queue", html)
+            self.assertIn("scoped-user", html)
+            self.assertNotIn("Admin Security", html)
+            self.assertNotIn("Add Student", html)
+            self.assertNotIn("Create Application", html)
+            self.assertNotIn("Admin Audit Log", html)
+            self.assertNotIn("Delete Profile", html)
+
+    def test_student_profile_update_saves_changes_and_notifies_admin(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            fake_session = FakeTelegramSession()
+            app.config["service"].telegram._session = fake_session
+            client = app.test_client()
+            student_id = app.config["service"].save_student(
+                student_id=None,
+                student_label="Editable Student",
+                user_name="editable_erp",
+                password="erp-pass-123",
+                site_login_username="editable-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554766",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "login_username": "editable-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            update_csrf = self._extract_csrf_token(dashboard_html)
+            response = client.post(
+                "/student/profile/update",
+                data={
+                    "csrf_token": update_csrf,
+                    "student_label": "Editable Student Updated",
+                    "user_name": "editable_erp_2",
+                    "password": "",
+                    "whatsapp_number": "+919999999999",
+                    "telegram_chat_id": "@updateduser",
+                    "timezone": "UTC",
+                },
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+            student = app.config["service"].get_student(student_id)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Profile updated successfully.", html)
+            self.assertIsNotNone(student)
+            assert student is not None
+            self.assertEqual(student.student_label, "Editable Student Updated")
+            self.assertEqual(student.user_name, "editable_erp_2")
+            self.assertEqual(student.whatsapp_number, "+919999999999")
+            self.assertEqual(student.telegram_chat_id, "@updateduser")
+            self.assertEqual(student.timezone, "UTC")
+            texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
+            self.assertTrue(any("Student profile updated" in text for text in texts))
+            self.assertTrue(any("Editable Student Updated" in text for text in texts))
+
+    def test_student_dashboard_history_and_dead_letter_are_scoped(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            own_id = service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            other_id = service.save_student(
+                student_id=None,
+                student_label="Other Student",
+                user_name="other_erp",
+                password="erp-pass-123",
+                site_login_username="other-user",
+                site_login_password="site-pass-456",
+                whatsapp_number="+919876543210",
+                telegram_chat_id="5570554766",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            service.db.insert_message_history(
+                student_id=own_id,
+                channel="telegram",
+                recipient="5570554765",
+                category="attendance_update",
+                message_kind="attendance",
+                provider_sid="MSG-OWN",
+                title="Own Message",
+                body="Own body",
+                idempotency_key="own-msg",
+                delivery_status="delivered",
+            )
+            service.db.insert_message_history(
+                student_id=other_id,
+                channel="telegram",
+                recipient="5570554766",
+                category="attendance_update",
+                message_kind="attendance",
+                provider_sid="MSG-OTHER",
+                title="Other Message",
+                body="Other body",
+                idempotency_key="other-msg",
+                delivery_status="delivered",
+            )
+            service.db.claim_outbound_message(
+                idempotency_key="own-dead",
+                student_id=own_id,
+                channel="telegram",
+                recipient="5570554765",
+                category="attendance_update",
+                message_kind="attendance",
+                title="Own Dead Letter",
+                body="Own dead body",
+            )
+            service.db.mark_outbound_message_failed(
+                "own-dead",
+                "Own dead error",
+                retry_limit=0,
+                retry_backoff_seconds=60,
+            )
+            service.db.claim_outbound_message(
+                idempotency_key="other-dead",
+                student_id=other_id,
+                channel="telegram",
+                recipient="5570554766",
+                category="attendance_update",
+                message_kind="attendance",
+                title="Other Dead Letter",
+                body="Other dead body",
+            )
+            service.db.mark_outbound_message_failed(
+                "other-dead",
+                "Other dead error",
+                retry_limit=0,
+                retry_backoff_seconds=60,
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            html = client.get("/").get_data(as_text=True)
+            self.assertIn("Own Message", html)
+            self.assertIn("Own Dead Letter", html)
+            self.assertNotIn("Other Message", html)
+            self.assertNotIn("Other Dead Letter", html)
+            self.assertNotIn('action="/dead-letter/own-dead/retry"', html)
+
+    def test_student_dashboard_shows_only_the_logged_in_students_profile(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            service.save_student(
+                student_id=None,
+                student_label="Other Student",
+                user_name="other_erp",
+                password="erp-pass-456",
+                site_login_username="other-user",
+                site_login_password="site-pass-456",
+                whatsapp_number="+919876543210",
+                telegram_chat_id="5570554766",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(login_html)
+            response = client.post(
+                "/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Own Student", html)
+            self.assertNotIn("Other Student", html)
+            self.assertIn("Login username: <code>own-user</code>", html)
+
+    def test_student_dashboard_live_data_shows_only_the_logged_in_students_profile(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            service.save_student(
+                student_id=None,
+                student_label="Other Student",
+                user_name="other_erp",
+                password="erp-pass-456",
+                site_login_username="other-user",
+                site_login_password="site-pass-456",
+                whatsapp_number="+919876543210",
+                telegram_chat_id="5570554766",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            response = client.get("/dashboard/live-data")
+            payload = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Own Student", payload["student_cards_html"])
+            self.assertNotIn("Other Student", payload["student_cards_html"])
+
+    def test_admin_dashboard_edit_query_opens_the_selected_student_form(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            student_id = service.save_student(
+                student_id=None,
+                student_label="Editable Admin Student",
+                user_name="editable_admin_erp",
+                password="erp-pass-123",
+                site_login_username="editable-admin-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            response = client.get(f"/?edit={student_id}")
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Edit Student", html)
+            self.assertIn('value="Editable Admin Student"', html)
+
+    def test_admin_can_update_student_controls_from_dashboard(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            student_id = service.save_student(
+                student_id=None,
+                student_label="Controlled Student",
+                user_name="controlled_erp",
+                password="erp-pass-123",
+                site_login_username="controlled-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            update_csrf = self._extract_csrf_token(dashboard_html)
+            response = client.post(
+                f"/students/{student_id}/controls",
+                data={
+                    "csrf_token": update_csrf,
+                    "notification_channel_mode": "whatsapp_only",
+                    "disabled_actions": ["send_morning", "send_channel_test"],
+                },
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+            student = service.get_student(student_id)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIsNotNone(student)
+            assert student is not None
+            self.assertFalse(student.enabled)
+            self.assertEqual(student.notification_channel_mode, "whatsapp_only")
+            self.assertEqual(
+                service.get_student_disabled_actions(student),
+                {"send_morning", "send_channel_test"},
+            )
+            self.assertIn("Student controls updated.", html)
+            self.assertIn("Blocked", html)
+            self.assertIn("WhatsApp Only", html)
+
+    def test_blocked_student_send_route_is_rejected_from_admin_dashboard(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            student_id = service.save_student(
+                student_id=None,
+                student_label="Blocked Student",
+                user_name="blocked_erp",
+                password="erp-pass-123",
+                site_login_username="blocked-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            service.update_student_controls(
+                student_id=student_id,
+                enabled=False,
+                notification_channel_mode="all",
+                disabled_actions=[],
+            )
+
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            action_csrf = self._extract_csrf_token(dashboard_html)
+            response = client.post(
+                f"/students/{student_id}/send-morning",
+                data={"csrf_token": action_csrf},
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("This student profile is blocked.", html)
+
+    def test_student_forgot_password_reset_sends_code_and_telegram_notifications(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            fake_session = FakeTelegramSession()
+            app.config["service"].telegram._session = fake_session
+            client = app.test_client()
+            app.config["service"].save_student(
+                student_id=None,
+                student_label="Reset Student",
+                user_name="reset_erp",
+                password="erp-pass-123",
+                site_login_username="reset-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            forgot_html = client.get("/forgot-password").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(forgot_html)
+            request_response = client.post(
+                "/forgot-password/request",
+                data={"csrf_token": csrf_token, "login_username": "reset-user"},
+            )
+            self.assertEqual(request_response.status_code, 200)
+            self.assertTrue(fake_session.calls)
+
+            code_text = str(fake_session.calls[-1]["json"]["text"])
+            reset_code = re.search(r"Code:\s*(\d{6})", code_text).group(1)
+            reset_response = client.post(
+                "/forgot-password/reset",
+                data={
+                    "csrf_token": csrf_token,
+                    "login_username": "reset-user",
+                    "reset_code": reset_code,
+                    "new_password": "new-site-pass-123",
+                    "confirm_password": "new-site-pass-123",
+                },
+            )
+
+            self.assertEqual(reset_response.status_code, 302)
+            self.assertEqual(reset_response.headers["Location"], "/login")
+            self.assertGreaterEqual(len(fake_session.calls), 3)
+            texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
+            self.assertTrue(any("QUMS Bot password updated" in text for text in texts))
+            self.assertTrue(any("Student website password changed" in text for text in texts))
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            login_response = client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "reset-user",
+                    "password": "new-site-pass-123",
+                    "next_path": "/",
+                },
+            )
+            self.assertEqual(login_response.status_code, 302)
+
+    def test_signed_in_student_changes_password_with_telegram_code(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            fake_session = FakeTelegramSession()
+            app.config["service"].telegram._session = fake_session
+            client = app.test_client()
+            app.config["service"].save_student(
+                student_id=None,
+                student_label="Change Student",
+                user_name="change_erp",
+                password="erp-pass-123",
+                site_login_username="change-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "change-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+            dashboard_html = client.get("/").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(dashboard_html)
+            request_response = client.post(
+                "/student/password/request",
+                data={"csrf_token": csrf_token},
+                follow_redirects=True,
+            )
+            self.assertEqual(request_response.status_code, 200)
+            code_text = str(fake_session.calls[-1]["json"]["text"])
+            reset_code = re.search(r"Code:\s*(\d{6})", code_text).group(1)
+
+            change_response = client.post(
+                "/student/password/change",
+                data={
+                    "csrf_token": csrf_token,
+                    "reset_code": reset_code,
+                    "new_password": "changed-site-pass-123",
+                    "confirm_password": "changed-site-pass-123",
+                },
+                follow_redirects=True,
+            )
+            html = change_response.get_data(as_text=True)
+
+            self.assertEqual(change_response.status_code, 200)
+            self.assertIn("Your website password has been changed.", html)
+            texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
+            self.assertTrue(any("QUMS Bot password updated" in text for text in texts))
+            self.assertTrue(any("Student website password changed" in text for text in texts))
+
+            logout_csrf = self._extract_csrf_token(client.get("/").get_data(as_text=True))
+            client.post("/logout", data={"csrf_token": logout_csrf})
+            relogin_html = client.get("/login").get_data(as_text=True)
+            relogin_csrf = self._extract_csrf_token(relogin_html)
+            relogin_response = client.post(
+                "/login",
+                data={
+                    "csrf_token": relogin_csrf,
+                    "login_username": "change-user",
+                    "password": "changed-site-pass-123",
+                    "next_path": "/",
+                },
+            )
+            self.assertEqual(relogin_response.status_code, 302)
+
+    def test_admin_delete_student_sends_telegram_notification(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            fake_session = FakeTelegramSession()
+            app.config["service"].telegram._session = fake_session
+            client = app.test_client()
+            student_id = app.config["service"].save_student(
+                student_id=None,
+                student_label="Delete Student",
+                user_name="delete_erp",
+                password="erp-pass-123",
+                site_login_username="delete-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554766",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            admin_login_html = client.get("/admin/login").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(admin_login_html)
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            delete_csrf = self._extract_csrf_token(dashboard_html)
+            response = client.post(
+                f"/students/{student_id}/delete",
+                data={"csrf_token": delete_csrf},
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Student profile deleted.", html)
+            texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
+            self.assertTrue(any("Student profile deleted" in text for text in texts))
+            self.assertTrue(any("Delete Student" in text for text in texts))
 
     def test_admin_account_update_changes_login_credentials_and_recovery_username(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -1424,8 +2407,12 @@ class IntegrationFlowTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
+            self.assertIn("student_cards_html", payload)
+            self.assertIn("action_center_html", payload)
             self.assertIn("Unique live body", payload["message_history_html"])
             self.assertIn("Retry Title", payload["dead_letter_html"])
+            self.assertIn("audit_log_html", payload)
+            self.assertIn("Live Data Student", payload["student_cards_html"])
             self.assertEqual(payload["outbound_summary"]["dead_letter"], 1)
 
     def test_load_settings_sanitizes_invalid_operational_env_values(self) -> None:

@@ -8,6 +8,7 @@ from typing import Iterable
 
 from .models import (
     AdminAuditRecord,
+    ApplicationRequest,
     DailyAttendanceReport,
     LectureEvent,
     LectureSlot,
@@ -88,10 +89,15 @@ class Database:
                     student_label TEXT NOT NULL,
                     user_name TEXT NOT NULL,
                     password_encrypted TEXT NOT NULL,
+                    site_login_username TEXT NOT NULL DEFAULT '',
+                    site_password_hash TEXT NOT NULL DEFAULT '',
+                    site_password_updated_at TEXT,
                     whatsapp_number TEXT NOT NULL,
                     telegram_chat_id TEXT NOT NULL DEFAULT '',
                     email_address TEXT NOT NULL DEFAULT '',
                     enabled INTEGER NOT NULL DEFAULT 1,
+                    notification_channel_mode TEXT NOT NULL DEFAULT 'all',
+                    disabled_actions_json TEXT NOT NULL DEFAULT '[]',
                     timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
                     reg_id TEXT,
                     student_name TEXT,
@@ -249,6 +255,23 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS application_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    applicant_name TEXT NOT NULL,
+                    student_label TEXT NOT NULL,
+                    user_name TEXT NOT NULL,
+                    password_encrypted TEXT NOT NULL,
+                    reg_id TEXT,
+                    whatsapp_number TEXT NOT NULL,
+                    telegram_chat_id TEXT NOT NULL DEFAULT '',
+                    timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+                    note TEXT,
+                    created_from_ip TEXT,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS runtime_state (
                     state_key TEXT PRIMARY KEY,
                     state_value TEXT NOT NULL,
@@ -296,13 +319,21 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_admin_audit_recent
                     ON admin_audit_log (created_at DESC, id DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_application_requests_recent
+                    ON application_requests (created_at DESC, id DESC);
+
                 CREATE INDEX IF NOT EXISTS idx_telegram_admin_refresh
                     ON telegram_admin_chats (auto_refresh_enabled, updated_at DESC);
                 """
             )
             self._ensure_column(conn, "lecture_events", "status_recorded_at", "TEXT")
+            self._ensure_column(conn, "students", "site_login_username", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "students", "site_password_hash", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "students", "site_password_updated_at", "TEXT")
             self._ensure_column(conn, "students", "telegram_chat_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "students", "email_address", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "students", "notification_channel_mode", "TEXT NOT NULL DEFAULT 'all'")
+            self._ensure_column(conn, "students", "disabled_actions_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column(conn, "students", "erp_status_text", "TEXT")
             self._ensure_column(conn, "students", "erp_status_updated_at", "TEXT")
             self._ensure_column(conn, "students", "last_bot_activity_text", "TEXT")
@@ -391,6 +422,18 @@ class Database:
                     return self._student_from_row(row)
         return None
 
+    def get_student_by_site_login_username(self, normalized_username: str) -> Student | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM students
+                WHERE LOWER(site_login_username) = ?
+                """,
+                (normalized_username.strip().lower(),),
+            ).fetchone()
+        return self._student_from_row(row) if row else None
+
     def upsert_student(
         self,
         *,
@@ -398,10 +441,14 @@ class Database:
         student_label: str,
         user_name: str,
         password_encrypted: str | None,
+        site_login_username: str = "",
+        site_password_hash: str | None = None,
         whatsapp_number: str,
         telegram_chat_id: str,
         email_address: str,
         enabled: bool,
+        notification_channel_mode: str = "all",
+        disabled_actions_json: str = "[]",
         timezone: str,
     ) -> int:
         now = utcnow_iso()
@@ -411,21 +458,32 @@ class Database:
                 if not current:
                     raise StudentValidationError("Student not found.")
                 encrypted_password = password_encrypted or current["password_encrypted"]
+                resolved_site_password_hash = site_password_hash if site_password_hash is not None else current["site_password_hash"]
+                resolved_site_password_updated_at = (
+                    now if site_password_hash is not None and site_password_hash != current["site_password_hash"] else current["site_password_updated_at"]
+                )
                 conn.execute(
                     """
                     UPDATE students
-                    SET student_label = ?, user_name = ?, password_encrypted = ?, whatsapp_number = ?,
-                        telegram_chat_id = ?, email_address = ?, enabled = ?, timezone = ?, updated_at = ?
+                    SET student_label = ?, user_name = ?, password_encrypted = ?, site_login_username = ?,
+                        site_password_hash = ?, site_password_updated_at = ?, whatsapp_number = ?,
+                        telegram_chat_id = ?, email_address = ?, enabled = ?, notification_channel_mode = ?,
+                        disabled_actions_json = ?, timezone = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
                         student_label,
                         user_name,
                         encrypted_password,
+                        site_login_username,
+                        resolved_site_password_hash,
+                        resolved_site_password_updated_at,
                         whatsapp_number,
                         telegram_chat_id,
                         email_address,
                         1 if enabled else 0,
+                        notification_channel_mode,
+                        disabled_actions_json,
                         timezone,
                         now,
                         student_id,
@@ -438,25 +496,92 @@ class Database:
             cursor = conn.execute(
                 """
                 INSERT INTO students (
-                    student_label, user_name, password_encrypted, whatsapp_number, telegram_chat_id, email_address,
-                    enabled, timezone, created_at, updated_at
+                    student_label, user_name, password_encrypted, site_login_username, site_password_hash,
+                    site_password_updated_at, whatsapp_number, telegram_chat_id, email_address,
+                    enabled, notification_channel_mode, disabled_actions_json, timezone, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     student_label,
                     user_name,
                     password_encrypted,
+                    site_login_username,
+                    site_password_hash or "",
+                    now if site_password_hash else None,
                     whatsapp_number,
                     telegram_chat_id,
                     email_address,
                     1 if enabled else 0,
+                    notification_channel_mode,
+                    disabled_actions_json,
                     timezone,
                     now,
                     now,
                 ),
             )
             return int(cursor.lastrowid)
+
+    def update_student_controls(
+        self,
+        *,
+        student_id: int,
+        enabled: bool,
+        notification_channel_mode: str,
+        disabled_actions_json: str,
+    ) -> None:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            current = conn.execute("SELECT id FROM students WHERE id = ?", (student_id,)).fetchone()
+            if not current:
+                raise StudentValidationError("Student not found.")
+            conn.execute(
+                """
+                UPDATE students
+                SET enabled = ?,
+                    notification_channel_mode = ?,
+                    disabled_actions_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    1 if enabled else 0,
+                    notification_channel_mode,
+                    disabled_actions_json,
+                    now,
+                    student_id,
+                ),
+            )
+
+    def update_student_site_credentials(
+        self,
+        *,
+        student_id: int,
+        site_login_username: str | None = None,
+        site_password_hash: str | None = None,
+    ) -> None:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            current = conn.execute("SELECT * FROM students WHERE id = ?", (student_id,)).fetchone()
+            if not current:
+                raise StudentValidationError("Student not found.")
+            conn.execute(
+                """
+                UPDATE students
+                SET site_login_username = ?,
+                    site_password_hash = ?,
+                    site_password_updated_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    site_login_username if site_login_username is not None else current["site_login_username"],
+                    site_password_hash if site_password_hash is not None else current["site_password_hash"],
+                    now if site_password_hash is not None else current["site_password_updated_at"],
+                    now,
+                    student_id,
+                ),
+            )
 
     def delete_student(self, student_id: int) -> bool:
         with self._connect() as conn:
@@ -1434,28 +1559,57 @@ class Database:
         return cursor.rowcount > 0
 
     def get_dead_letter_messages(self, limit: int = 20) -> list[OutboundMessageRecord]:
+        return self.get_dead_letter_messages_for_student(student_id=None, limit=limit)
+
+    def get_dead_letter_messages_for_student(self, student_id: int | None, limit: int = 20) -> list[OutboundMessageRecord]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM outbound_messages
-                WHERE status = 'dead_letter'
-                ORDER BY updated_at DESC, idempotency_key DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            if student_id is None:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM outbound_messages
+                    WHERE status = 'dead_letter'
+                    ORDER BY updated_at DESC, idempotency_key DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM outbound_messages
+                    WHERE status = 'dead_letter' AND student_id = ?
+                    ORDER BY updated_at DESC, idempotency_key DESC
+                    LIMIT ?
+                    """,
+                    (student_id, limit),
+                ).fetchall()
         return [self._outbound_message_from_row(row) for row in rows]
 
     def get_outbound_queue_summary(self) -> dict[str, int]:
+        return self.get_outbound_queue_summary_for_student(student_id=None)
+
+    def get_outbound_queue_summary_for_student(self, student_id: int | None) -> dict[str, int]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT status, COUNT(*) AS count_value
-                FROM outbound_messages
-                GROUP BY status
-                """
-            ).fetchall()
+            if student_id is None:
+                rows = conn.execute(
+                    """
+                    SELECT status, COUNT(*) AS count_value
+                    FROM outbound_messages
+                    GROUP BY status
+                    """
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT status, COUNT(*) AS count_value
+                    FROM outbound_messages
+                    WHERE student_id = ?
+                    GROUP BY status
+                    """,
+                    (student_id,),
+                ).fetchall()
         summary = {"claimed": 0, "sent": 0, "failed": 0, "dead_letter": 0}
         for row in rows:
             summary[str(row["status"])] = int(row["count_value"])
@@ -1577,10 +1731,11 @@ class Database:
         query: str = "",
         channel: str = "",
         category: str = "",
+        student_id: int | None = None,
         limit: int,
         offset: int,
     ) -> list[MessageHistoryRecord]:
-        where_sql, params = self._message_history_where_clause(query=query, channel=channel, category=category)
+        where_sql, params = self._message_history_where_clause(query=query, channel=channel, category=category, student_id=student_id)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1606,8 +1761,9 @@ class Database:
         query: str = "",
         channel: str = "",
         category: str = "",
+        student_id: int | None = None,
     ) -> int:
-        where_sql, params = self._message_history_where_clause(query=query, channel=channel, category=category)
+        where_sql, params = self._message_history_where_clause(query=query, channel=channel, category=category, student_id=student_id)
         with self._connect() as conn:
             row = conn.execute(
                 f"""
@@ -1662,6 +1818,76 @@ class Database:
                 """,
                 (actor, action, target_type, target_id, details, utcnow_iso()),
             )
+
+    def insert_application_request(
+        self,
+        *,
+        applicant_name: str,
+        student_label: str,
+        user_name: str,
+        password_encrypted: str,
+        reg_id: str | None,
+        whatsapp_number: str,
+        telegram_chat_id: str,
+        timezone: str,
+        note: str | None,
+        created_from_ip: str | None,
+        status: str = "new",
+    ) -> int:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO application_requests (
+                    applicant_name, student_label, user_name, password_encrypted, reg_id,
+                    whatsapp_number, telegram_chat_id, timezone, note, created_from_ip,
+                    status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    applicant_name,
+                    student_label,
+                    user_name,
+                    password_encrypted,
+                    reg_id,
+                    whatsapp_number,
+                    telegram_chat_id,
+                    timezone,
+                    note,
+                    created_from_ip,
+                    status,
+                    now,
+                    now,
+                ),
+            )
+            request_id = int(cursor.lastrowid)
+        return request_id
+
+    def list_application_requests(self, limit: int = 20) -> list[ApplicationRequest]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM application_requests
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._application_request_from_row(row) for row in rows]
+
+    def get_application_request(self, application_id: int) -> ApplicationRequest | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM application_requests
+                WHERE id = ?
+                """,
+                (application_id,),
+            ).fetchone()
+        return self._application_request_from_row(row) if row else None
 
     def get_recent_admin_audit_log(self, limit: int | None = 50) -> list[AdminAuditRecord]:
         with self._connect() as conn:
@@ -1735,9 +1961,13 @@ class Database:
         query: str,
         channel: str,
         category: str,
+        student_id: int | None,
     ) -> tuple[str, tuple[object, ...]]:
         conditions: list[str] = []
         params: list[object] = []
+        if student_id is not None:
+            conditions.append("mh.student_id = ?")
+            params.append(student_id)
         if channel:
             conditions.append("LOWER(mh.channel) = ?")
             params.append(channel.strip().lower())
@@ -1799,10 +2029,15 @@ class Database:
             student_label=row["student_label"],
             user_name=row["user_name"],
             password_encrypted=row["password_encrypted"],
+            site_login_username=row["site_login_username"],
+            site_password_hash=row["site_password_hash"],
+            site_password_updated_at=row["site_password_updated_at"],
             whatsapp_number=row["whatsapp_number"],
             telegram_chat_id=row["telegram_chat_id"],
             email_address=row["email_address"],
             enabled=bool(row["enabled"]),
+            notification_channel_mode=row["notification_channel_mode"] or "all",
+            disabled_actions_json=row["disabled_actions_json"] or "[]",
             timezone=row["timezone"],
             reg_id=row["reg_id"],
             student_name=row["student_name"],
@@ -1908,6 +2143,24 @@ class Database:
             target_id=row["target_id"],
             details=row["details"],
             created_at=row["created_at"],
+        )
+
+    def _application_request_from_row(self, row: sqlite3.Row) -> ApplicationRequest:
+        return ApplicationRequest(
+            id=row["id"],
+            applicant_name=row["applicant_name"],
+            student_label=row["student_label"],
+            user_name=row["user_name"],
+            password_encrypted=row["password_encrypted"],
+            reg_id=row["reg_id"],
+            whatsapp_number=row["whatsapp_number"],
+            telegram_chat_id=row["telegram_chat_id"],
+            timezone=row["timezone"],
+            note=row["note"],
+            created_from_ip=row["created_from_ip"],
+            status=row["status"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     def _telegram_admin_chat_from_row(self, row: sqlite3.Row) -> TelegramAdminChat:
