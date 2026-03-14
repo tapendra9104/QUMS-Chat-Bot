@@ -3,6 +3,15 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
+.tmp-pytest-cache/
+.tmp-test/
+tmp-test2/
+tmp-runtime-check/
+backups/
+manual-checks/
+sqlite-local-check.db
+sqlite-test.db
 data/
 logs/
 /*.html

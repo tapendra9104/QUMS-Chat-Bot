@@ -1,38 +1,35 @@
-# QUMS Multi-Channel Bot
+# QUMS Telegram Bot
 
 Local Python bot for the Quantum University ERP.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/tapendra9104/QUMS-Chat-Bot)
 
 What it does:
-- stores ERP user id, password, WhatsApp number, and Telegram chat id in a local SQLite database
+- stores ERP user id, password, and Telegram chat id in a local SQLite database
 - starts a manual ERP login session and shows the captcha in a local dashboard
 - submits the ERP login only after you type the captcha yourself
 - fetches the daily timetable, substitutions, and attendance summary from the ERP
 - uses each student's configured timezone for scheduled morning dispatches and daily date calculations
-- sends the same notification to every configured channel for the student: WhatsApp and Telegram
+- sends notifications through Telegram
 - includes substitute lecture details in the morning schedule with faculty and timing information
-- detects new same-day substitute assignments later and sends a live WhatsApp alert
+- detects new same-day substitute assignments later and sends a live Telegram alert
 - checks attendance after lectures and sends `present`, `absent`, or `not marked yet`
 - sends one end-of-day attendance report after the final lecture check window closes
 - sends low-attendance threshold alerts and shortage warnings when attendance gets risky
 - detects ERP attendance corrections and notifies when a lecture is revised later
 - treats holiday / no-class / cancelled-class timetable rows as non-lecture entries so they do not trigger attendance pending alerts
 - treats an empty Sunday timetable as an `Off Day` fallback so it does not appear as a missing routine
-- warns before the Twilio sandbox expires and reminds the user to send the current `join <code>` manually from WhatsApp
 - alerts when the ERP session has expired and manual login is required again
 - keeps a sent-message history, dead-letter queue, action center, audit log, CSV exports, and live auto-refresh dashboard state
 - persists attendance marked timestamps and shows them in lecture alerts, daily reports, and the dashboard
-- validates Twilio webhook signatures, rate-limits sensitive routes, and can send delivery events back into message history
 - supports idempotent outbound alerts so automatic retries and restarts do not duplicate the same logical message
 - retries transient delivery failures automatically per channel and escalates exhausted items into a dead-letter queue
-- supports inbound WhatsApp commands like `help`, `today`, `next`, `attendance`, and `login status`
+- supports Telegram bot commands for admins and students
 - supports optional `RQ` worker dispatch for multi-instance-safe periodic jobs
 
 What it does not do:
 - it does not solve or bypass the ERP captcha automatically
 - it does not clone the ERP website
-- it cannot auto-join a Twilio WhatsApp sandbox session on behalf of the user
 
 ## Render deployment
 
@@ -53,25 +50,59 @@ Multi-instance notes:
 - set `REDIS_URL`
 - run a separate worker with `python worker.py`
 - use a shared application database before splitting web and worker processes; separate local SQLite files are not enough
-- keep `PUBLIC_BASE_URL` set so Twilio callbacks validate correctly behind your public host
+- keep `PUBLIC_BASE_URL` set so Telegram links and dashboard URLs stay correct behind your public host
 - the app now uses database-backed periodic slot claims and outbound idempotency keys to avoid duplicate scheduler work and duplicate alerts
 
 Before deploying on Render, set these environment variables in the Render dashboard:
 - `ADMIN_USERNAME`
 - `ADMIN_PASSWORD`
-- `TWILIO_ACCOUNT_SID`
-- `TWILIO_AUTH_TOKEN`
+- `TELEGRAM_BOT_TOKEN`
 
-For testing on sandbox:
-- keep `TWILIO_WHATSAPP_MODE=sandbox`
-- keep `TWILIO_WHATSAPP_FROM=whatsapp:+14155238886`
-- set `TWILIO_SANDBOX_JOIN_CODE` if you want the dashboard to show the exact join command
+## VPS deployment
 
-For real production delivery:
-- change `TWILIO_WHATSAPP_MODE=production`
-- change `TWILIO_WHATSAPP_FROM` to your approved WhatsApp-enabled Twilio sender
-- set `TWILIO_CONTENT_SID_DEFAULT` or the specific morning and attendance template SIDs
-- do not rely on the sandbox for daily automated notifications
+For a small Ubuntu VPS, the repo now includes two deployment helpers:
+- `scripts/deploy_vps.ps1` uploads the current local workspace from Windows / PowerShell
+- `scripts/deploy_vps.py` uploads the current local workspace over SSH/SFTP with password auth
+- `scripts/bootstrap_vps.sh` installs packages, builds the virtualenv, writes systemd + Nginx config, and starts the app
+
+Recommended flow from this workspace:
+
+```powershell
+.\scripts\deploy_vps.ps1 -Host 203.0.113.10 -User root -UploadEnv
+```
+
+If you want a password-based deploy path:
+
+```powershell
+python .\scripts\deploy_vps.py --host 203.0.113.10 --user root --password "your-password"
+```
+
+The Python deploy helper reads your local `.env` as source input, fills in missing production values, and auto-generates an admin password if one is missing.
+
+If your VPS login user is not `root`, use sudo:
+
+```powershell
+.\scripts\deploy_vps.ps1 -Host 203.0.113.10 -User ubuntu -UseSudo -UploadEnv
+```
+
+Helpful flags:
+- `-UploadEnv` copies the local `.env` to the VPS so deployment can stay non-interactive
+- `-EnvPath .env.production` lets you upload a different env file
+- `-ServerName bot.example.com` sets the Nginx `server_name`
+- `-PublicBaseUrl https://bot.example.com` seeds the production `PUBLIC_BASE_URL`
+- `-IdentityFile C:\path\to\id_rsa` uses a specific SSH key
+
+What the VPS scripts do:
+- upload this current workspace as a tarball instead of forcing a GitHub clone
+- preserve the remote `.env`, `data/`, and `logs/` directories across code updates
+- run the app as a dedicated `qumsbot` system user instead of `root`
+- configure Nginx to reverse proxy to the Flask / Waitress app on `127.0.0.1:5000`
+- create a `systemd` service named `qums-bot`
+
+Notes:
+- `PUBLIC_BASE_URL` should be your real public URL for production use
+- put a real domain and TLS in front of the VPS for production use
+- the bootstrap script also still supports direct Git-based deployment if you prefer to run it manually on the server
 
 ## ERP endpoints used
 
@@ -96,9 +127,7 @@ Because of that, the bot infers lecture results like this:
 ## Requirements
 
 - Python 3.14+
-- at least one delivery channel:
-  - a Twilio WhatsApp sender
-  - or a Telegram bot token
+- a Telegram bot token for live notifications and bot commands
 
 Copy `.env.example` to `.env` and fill in:
 
@@ -121,8 +150,8 @@ LOCAL_TIMEZONE=Asia/Kolkata
 MORNING_DIGEST_TIME=06:30
 EVENING_REPORT_TIME=19:00
 ATTENDANCE_POLL_INTERVAL_MINUTES=1
-SUBSTITUTION_POLL_INTERVAL_MINUTES=1
-MONITOR_POLL_INTERVAL_MINUTES=1
+SUBSTITUTION_POLL_INTERVAL_MINUTES=5
+MONITOR_POLL_INTERVAL_MINUTES=10
 SANDBOX_EXPIRY_WARNING_MINUTES=10
 LECTURE_GRACE_MINUTES=20
 ATTENDANCE_CORRECTION_LOOKBACK_DAYS=14
@@ -139,16 +168,6 @@ ADMIN_RATE_LIMIT_COUNT=10
 ADMIN_RATE_LIMIT_WINDOW_SECONDS=60
 SENTRY_DSN=
 SENTRY_TRACES_SAMPLE_RATE=0.0
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_WHATSAPP_MODE=sandbox
-TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
-TWILIO_SANDBOX_JOIN_CODE=
-TWILIO_STATUS_MESSAGE_LIMIT=50
-TWILIO_STATUS_CALLBACK_URL=
-TWILIO_CONTENT_SID_DEFAULT=
-TWILIO_CONTENT_SID_MORNING=
-TWILIO_CONTENT_SID_ATTENDANCE=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_API_BASE_URL=https://api.telegram.org
 ```
@@ -193,43 +212,17 @@ http://127.0.0.1:5000
 6. Use `Preview Today` or `Send Morning Summary`.
 7. Review recent sent alerts in the dashboard message history panel.
 
-## WhatsApp inbound commands
+## Telegram commands
 
-Configure Twilio's inbound webhook to point at:
-
-```text
-POST /webhooks/twilio/inbound
-```
-
-Available commands:
-- `help`
-- `today`
-- `next`
-- `attendance`
-- `login status`
-
-## Twilio modes
-
-### Sandbox mode
-
-- set `TWILIO_WHATSAPP_MODE=sandbox`
-- use `TWILIO_WHATSAPP_FROM=whatsapp:+14155238886`
-- each recipient must send the current `join <code>` command from their own WhatsApp account
-- sandbox access expires after roughly 72 hours and must be renewed by the user
-- the dashboard can display the exact join command if you set `TWILIO_SANDBOX_JOIN_CODE`
-- the bot can warn shortly before expiry, but the actual `join <code>` message still must be sent manually from the recipient's WhatsApp
-
-### Production mode
-
-- set `APP_ENV=production`
-- set `USE_WAITRESS=1`
-- set `TWILIO_WHATSAPP_MODE=production`
-- use a WhatsApp-enabled Twilio sender, not the sandbox number
-- configure approved content template SIDs for scheduled messages:
-  - `TWILIO_CONTENT_SID_DEFAULT`
-  - or `TWILIO_CONTENT_SID_MORNING` and `TWILIO_CONTENT_SID_ATTENDANCE`
-
-The sender code uses template SIDs automatically for scheduled morning messages, lecture attendance notifications, and the end-of-day attendance report when production mode is enabled.
+The bot supports Telegram-driven admin and student actions, including:
+- `/menu`
+- `/dashboard`
+- `/students`
+- `/attendance`
+- `/morning`
+- `/dayreport`
+- `/shortage`
+- `/startlogin`
 
 ## Deployment notes
 
@@ -239,12 +232,8 @@ The sender code uses template SIDs automatically for scheduled morning messages,
 - ERP login still requires a manual captcha refresh flow through the dashboard when the ERP session expires
 - the deployed dashboard should always be protected with `ADMIN_USERNAME` and `ADMIN_PASSWORD`
 - if lecture end times are missing from the routine, the end-of-day report falls back to `EVENING_REPORT_TIME`
-- set `PUBLIC_BASE_URL` or `TWILIO_STATUS_CALLBACK_URL` if you want validated Twilio delivery callbacks
+- set `PUBLIC_BASE_URL` if you want correct Telegram-linked dashboard URLs
 - set `SENTRY_DSN` if you want unhandled errors reported to Sentry
-
-## Important Twilio note
-
-Scheduled business-initiated WhatsApp messages can require an approved template outside the 24-hour customer service window. Sandbox cannot be auto-joined by the server, because the user must send the `join` command from their own WhatsApp account.
 
 ## Project structure
 

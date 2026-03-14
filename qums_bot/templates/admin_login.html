@@ -5,10 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>QUMS Bot</title>
     <style>
+        :root {
+            --page-bg: #eef3f5;
+            --page-ink: #173346;
+            --panel-bg: rgba(255, 255, 255, 0.92);
+            --panel-border: rgba(23, 51, 70, 0.12);
+            --panel-shadow: 0 24px 48px rgba(15, 36, 48, 0.16);
+            --accent: #0f6f87;
+            --accent-strong: #0a5369;
+            --muted: #5d7282;
+        }
         body {
-            background: linear-gradient(135deg, #102d3f, #1c6e8c);
-            color: #183247;
-            font-family: "Segoe UI", Tahoma, sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(46, 148, 170, 0.18), transparent 32%),
+                radial-gradient(circle at bottom right, rgba(16, 47, 69, 0.18), transparent 28%),
+                linear-gradient(180deg, #f7fafb 0%, var(--page-bg) 100%);
+            color: var(--page-ink);
+            font-family: "Aptos", "Trebuchet MS", "Segoe UI", sans-serif;
             margin: 0;
             min-height: 100vh;
         }
@@ -16,19 +29,35 @@
             display: grid;
             min-height: 100vh;
             place-items: center;
-            padding: 24px;
+            padding: 24px 18px;
         }
         .card {
-            background: #fff;
-            border: 1px solid #d7e0ea;
-            border-radius: 18px;
-            box-shadow: 0 14px 30px rgba(10, 28, 38, 0.2);
-            max-width: 420px;
-            padding: 28px;
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--panel-border);
+            border-radius: 24px;
+            box-shadow: var(--panel-shadow);
+            max-width: 460px;
+            overflow: hidden;
+            padding: 0;
             width: 100%;
         }
+        .hero {
+            background:
+                radial-gradient(circle at top left, rgba(255, 255, 255, 0.18), transparent 34%),
+                linear-gradient(135deg, #102f45 0%, #15586f 52%, #1a7d89 100%);
+            color: #f4fbfd;
+            padding: 28px 28px 22px;
+        }
+        .content {
+            padding: 24px 28px 28px;
+        }
         h1 {
+            letter-spacing: -0.03em;
             margin-top: 0;
+        }
+        p {
+            line-height: 1.55;
         }
         label {
             display: block;
@@ -38,24 +67,47 @@
         }
         input[type="text"],
         input[type="password"] {
+            background: rgba(255, 255, 255, 0.96);
             border: 1px solid #bfd0dc;
-            border-radius: 10px;
+            border-radius: 12px;
             box-sizing: border-box;
+            color: var(--page-ink);
+            font: inherit;
             margin-bottom: 14px;
             padding: 12px 14px;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease;
             width: 100%;
+        }
+        input[type="text"]:focus,
+        input[type="password"]:focus {
+            border-color: rgba(15, 111, 135, 0.7);
+            box-shadow: 0 0 0 4px rgba(15, 111, 135, 0.14);
+            outline: none;
         }
         button {
-            background: #0d6e8b;
+            background: linear-gradient(135deg, var(--accent) 0%, #1482a0 100%);
             border: 0;
-            border-radius: 10px;
+            border-radius: 12px;
+            box-shadow: 0 16px 26px rgba(15, 111, 135, 0.18);
             color: #fff;
             cursor: pointer;
+            font: inherit;
+            font-weight: 600;
             padding: 12px 16px;
+            transition: transform 0.18s ease, box-shadow 0.18s ease;
             width: 100%;
         }
+        button:hover {
+            box-shadow: 0 20px 34px rgba(15, 111, 135, 0.22);
+            transform: translateY(-1px);
+        }
+        button:focus-visible {
+            box-shadow: 0 0 0 4px rgba(15, 111, 135, 0.18);
+            outline: none;
+        }
         .flash {
-            border-radius: 12px;
+            border-radius: 14px;
+            box-shadow: 0 12px 22px rgba(23, 51, 70, 0.06);
             margin-bottom: 12px;
             padding: 12px 14px;
         }
@@ -68,48 +120,66 @@
             border: 1px solid #abd9bb;
         }
         .meta {
-            color: #5c7284;
+            color: var(--muted);
             font-size: 0.92rem;
         }
         .meta a {
-            color: #0d6e8b;
+            color: var(--accent-strong);
             font-weight: 600;
             text-decoration: none;
+        }
+        .meta a:hover {
+            color: #083f52;
+        }
+        @media (max-width: 720px) {
+            .card {
+                border-radius: 20px;
+            }
+            .hero {
+                padding: 24px 20px 20px;
+            }
+            .content {
+                padding: 20px;
+            }
         }
     </style>
 </head>
 <body>
     <div class="wrap">
         <section class="card">
-            <h1>QUMS Bot</h1>
-            <p class="meta">Admin sign in for the website dashboard.</p>
-            <p class="meta">
-                {% if recovery_configured %}
-                    Forgot your password? <a href="{{ url_for('admin_forgot_password') }}">Reset it with Telegram</a>.
-                {% else %}
-                    Telegram password recovery is not configured yet.
-                {% endif %}
-            </p>
+            <div class="hero">
+                <h1>QUMS Bot</h1>
+                <p class="meta" style="color: rgba(244, 251, 253, 0.82); margin-bottom: 0;">Admin sign in for the website dashboard.</p>
+            </div>
+            <div class="content">
+                <p class="meta">
+                    {% if recovery_configured %}
+                        Forgot your password? <a href="{{ url_for('admin_forgot_password') }}">Reset it with Telegram</a>.
+                    {% else %}
+                        Telegram password recovery is not configured yet.
+                    {% endif %}
+                </p>
 
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <div class="flash {{ category }}">{{ message }}</div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                            <div class="flash {{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
 
-            <form method="post" action="{{ url_for('admin_login_submit') }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <input type="hidden" name="next_path" value="{{ next_path }}">
-                <label for="username">Username</label>
-                <input id="username" name="username" type="text" autocomplete="username" required>
+                <form method="post" action="{{ url_for('admin_login_submit') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="next_path" value="{{ next_path }}">
+                    <label for="username">Username</label>
+                    <input id="username" name="username" type="text" autocomplete="username" required>
 
-                <label for="password">Password</label>
-                <input id="password" name="password" type="password" autocomplete="current-password" required>
+                    <label for="password">Password</label>
+                    <input id="password" name="password" type="password" autocomplete="current-password" required>
 
-                <button type="submit">Sign In</button>
-            </form>
+                    <button type="submit">Sign In</button>
+                </form>
+            </div>
         </section>
     </div>
 </body>

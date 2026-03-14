@@ -5,30 +5,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>QUMS Bot Dashboard</title>
     <style>
+        :root {
+            --page-bg: #eef3f5;
+            --page-ink: #173346;
+            --panel-bg: rgba(255, 255, 255, 0.88);
+            --panel-border: rgba(23, 51, 70, 0.10);
+            --panel-shadow: 0 22px 48px rgba(15, 36, 48, 0.10);
+            --accent: #0f6f87;
+            --accent-strong: #0a5369;
+            --accent-soft: #dff1f4;
+            --muted: #5d7282;
+            --danger: #b13b3b;
+            --warning: #c27c10;
+            --success: #1d7a4c;
+        }
         body {
-            background: #f4f7fb;
-            color: #183247;
-            font-family: "Segoe UI", Tahoma, sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(46, 148, 170, 0.16), transparent 34%),
+                radial-gradient(circle at top right, rgba(18, 52, 77, 0.16), transparent 28%),
+                linear-gradient(180deg, #f7fafb 0%, var(--page-bg) 100%);
+            color: var(--page-ink);
+            font-family: "Aptos", "Trebuchet MS", "Segoe UI", sans-serif;
+            line-height: 1.5;
             margin: 0;
+            min-height: 100vh;
         }
         .wrap {
             margin: 0 auto;
-            max-width: 1100px;
-            padding: 24px;
+            max-width: 1180px;
+            padding: 32px 24px 56px;
         }
         .hero, .panel, .student {
-            background: #fff;
-            border: 1px solid #d7e0ea;
-            border-radius: 16px;
-            box-shadow: 0 8px 20px rgba(24, 50, 71, 0.06);
-            margin-bottom: 20px;
-            padding: 20px;
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--panel-border);
+            border-radius: 20px;
+            box-shadow: var(--panel-shadow);
+            margin-bottom: 22px;
+            padding: 22px;
         }
         .hero {
-            background: linear-gradient(135deg, #12344d, #1f6f8b);
-            color: #fff;
+            background:
+                radial-gradient(circle at top left, rgba(255, 255, 255, 0.20), transparent 30%),
+                linear-gradient(135deg, #102f45 0%, #15586f 52%, #1a7d89 100%);
+            color: #f4fbfd;
+            overflow: hidden;
+            position: relative;
+        }
+        .hero::after {
+            background: linear-gradient(120deg, rgba(255, 255, 255, 0.10), transparent 45%);
+            content: "";
+            inset: 0;
+            pointer-events: none;
+            position: absolute;
+        }
+        .hero > * {
+            position: relative;
+            z-index: 1;
         }
         h1, h2, h3 {
+            letter-spacing: -0.02em;
             margin-top: 0;
         }
         .grid {
@@ -68,6 +104,12 @@
             margin-top: 6px;
             opacity: 0.9;
         }
+        a {
+            color: var(--accent-strong);
+        }
+        a:hover {
+            color: #083f52;
+        }
         label {
             display: block;
             font-size: 0.92rem;
@@ -76,16 +118,30 @@
         }
         input[type="text"],
         input[type="password"],
+        input[type="email"],
         textarea {
+            background: rgba(255, 255, 255, 0.94);
             border: 1px solid #bfd0dc;
-            border-radius: 10px;
+            border-radius: 12px;
             box-sizing: border-box;
+            color: var(--page-ink);
+            font: inherit;
             padding: 10px 12px;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
             width: 100%;
         }
         textarea {
             min-height: 110px;
             resize: vertical;
+        }
+        input[type="text"]:focus,
+        input[type="password"]:focus,
+        input[type="email"]:focus,
+        textarea:focus,
+        select:focus {
+            border-color: rgba(15, 111, 135, 0.70);
+            box-shadow: 0 0 0 4px rgba(15, 111, 135, 0.14);
+            outline: none;
         }
         .check {
             align-items: center;
@@ -94,6 +150,7 @@
             margin-top: 10px;
         }
         .actions {
+            align-items: center;
             display: flex;
             flex-wrap: wrap;
             gap: 10px;
@@ -136,24 +193,41 @@
             margin-top: 0;
         }
         button, .button-link {
-            background: #0d6e8b;
+            background: linear-gradient(135deg, var(--accent) 0%, #1482a0 100%);
             border: 0;
-            border-radius: 10px;
+            border-radius: 12px;
+            box-shadow: 0 14px 26px rgba(15, 111, 135, 0.16);
             color: #fff;
             cursor: pointer;
             display: inline-block;
+            font: inherit;
+            font-weight: 600;
             padding: 10px 14px;
             text-decoration: none;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
         }
         button.secondary, .button-link.secondary {
-            background: #5d7a8f;
+            background: linear-gradient(135deg, #5d7a8f 0%, #6d8ea4 100%);
         }
         button.danger {
-            background: #b13b3b;
+            background: linear-gradient(135deg, #a83838 0%, var(--danger) 100%);
         }
         button.ghost, .button-link.ghost {
-            background: #edf4f8;
-            color: #183247;
+            background: rgba(237, 244, 248, 0.96);
+            box-shadow: none;
+            color: var(--page-ink);
+        }
+        button:hover, .button-link:hover {
+            box-shadow: 0 18px 30px rgba(15, 111, 135, 0.20);
+            transform: translateY(-1px);
+        }
+        button.ghost:hover, .button-link.ghost:hover {
+            background: #dcebf1;
+            box-shadow: 0 10px 18px rgba(23, 51, 70, 0.08);
+        }
+        button:focus-visible, .button-link:focus-visible {
+            box-shadow: 0 0 0 4px rgba(15, 111, 135, 0.18);
+            outline: none;
         }
         .button-link.disabled, button:disabled {
             cursor: not-allowed;
@@ -161,7 +235,8 @@
             pointer-events: none;
         }
         .flash {
-            border-radius: 12px;
+            border-radius: 14px;
+            box-shadow: 0 12px 22px rgba(23, 51, 70, 0.06);
             margin-bottom: 12px;
             padding: 12px 14px;
         }
@@ -178,7 +253,7 @@
             border: 1px solid #f0cf8c;
         }
         .meta {
-            color: #5c7284;
+            color: var(--muted);
             font-size: 0.92rem;
         }
         .status {
@@ -198,12 +273,12 @@
             color: #9d2d2d;
         }
         code {
-            background: #edf4f8;
+            background: rgba(232, 241, 245, 0.95);
             border-radius: 6px;
             padding: 2px 6px;
         }
         pre {
-            background: #0f2230;
+            background: linear-gradient(180deg, #102634 0%, #0f2230 100%);
             border-radius: 14px;
             color: #eaf3f7;
             overflow-x: auto;
@@ -267,18 +342,44 @@
             color: #9d2d2d;
         }
         select {
+            background: rgba(255, 255, 255, 0.94);
             border: 1px solid #bfd0dc;
-            border-radius: 10px;
+            border-radius: 12px;
             box-sizing: border-box;
+            color: var(--page-ink);
+            font: inherit;
             padding: 10px 12px;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease;
             width: 100%;
+        }
+        @media (max-width: 720px) {
+            .wrap {
+                padding: 18px 14px 36px;
+            }
+            .hero, .panel, .student {
+                border-radius: 18px;
+                padding: 18px;
+            }
+            .live-grid, .grid, .student-control-grid, .filter-form {
+                grid-template-columns: 1fr;
+            }
+            .actions, .pager {
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .actions > *, .pager > * {
+                width: 100%;
+            }
+            button, .button-link {
+                text-align: center;
+            }
         }
     </style>
 </head>
-<body data-refresh-seconds="{{ settings.dashboard_auto_refresh_seconds }}">
+<body data-refresh-seconds="{{ settings.dashboard_auto_refresh_seconds }}" data-dashboard-auth-role="{% if is_admin_authenticated %}admin{% elif is_student_authenticated %}student{% else %}public{% endif %}">
     <div class="wrap">
         <section class="hero">
-            <h1>QUMS Multi-Channel Bot</h1>
+            <h1>QUMS Telegram Bot</h1>
             <p>
                 {% if is_admin_authenticated %}
                     This is the admin dashboard for the QUMS automation bot. ERP login is supported only through manual CAPTCHA entry in the dashboard.
@@ -298,16 +399,12 @@
                     Substitution poll interval: {{ settings.substitution_poll_interval_minutes }} minutes |
                     Monitor poll interval: {{ settings.monitor_poll_interval_minutes }} minutes |
                     Dashboard auto-refresh: {{ settings.dashboard_auto_refresh_seconds }} seconds |
-                    Sandbox warning window: {{ settings.sandbox_expiry_warning_minutes }} minutes |
                     Low attendance thresholds: {{ settings.low_attendance_thresholds | join(', ') }}% |
                     Scheduler config: {{ "Enabled" if settings.run_scheduler else "Disabled" }} |
                     Scheduler active: {{ "Yes" if scheduler_active else "No" }} |
                     Task queue mode: {{ settings.task_queue_mode }} |
                     Sentry: {{ "Enabled" if sentry_enabled else "Disabled" }} |
-                    Twilio configured: {{ "Yes" if twilio_configured else "No" }} |
-                    Telegram configured: {{ "Yes" if telegram_configured else "No" }} |
-                    Mode: {{ settings.twilio_whatsapp_mode }} |
-                    Sender: {{ settings.twilio_whatsapp_from or "Not set" }}
+                    Telegram configured: {{ "Yes" if telegram_configured else "No" }}
                 </p>
             {% else %}
                 <p class="meta">
@@ -321,25 +418,6 @@
                 {% if settings.telegram_bot_link %}
                     <p class="meta">
                         Telegram bot: <a href="{{ settings.telegram_bot_link }}" target="_blank" rel="noopener noreferrer">{{ settings.telegram_bot_link }}</a>
-                    </p>
-                {% endif %}
-            {% endif %}
-            {% if is_admin_authenticated %}
-                <p class="meta">
-                    Sandbox cannot auto-join from this page. Twilio requires the user to send the join command from their own WhatsApp account.
-                </p>
-                {% if settings.twilio_whatsapp_mode == "sandbox" %}
-                    <p class="meta">
-                        Sandbox sender: <code>whatsapp:+14155238886</code>
-                        {% if settings.twilio_sandbox_join_code %}
-                            | Current join command: <code>join {{ settings.twilio_sandbox_join_code }}</code>
-                        {% else %}
-                            | Set <code>TWILIO_SANDBOX_JOIN_CODE</code> in <code>.env</code> if you want the dashboard to display the exact join command.
-                        {% endif %}
-                    </p>
-                {% else %}
-                    <p class="meta">
-                        Production mode expects a WhatsApp-enabled sender and approved template SIDs for scheduled messages.
                     </p>
                 {% endif %}
             {% endif %}
@@ -534,12 +612,9 @@
                             <input id="site_login_password" name="site_login_password" type="password" placeholder="{{ 'Leave blank to keep the current site password' if edit_student else 'Leave blank to keep site login disabled' }}">
                         </div>
                         <div>
-                            <label for="whatsapp_number">WhatsApp number</label>
-                            <input id="whatsapp_number" name="whatsapp_number" type="text" value="{{ edit_student.whatsapp_number if edit_student else '' }}" placeholder="+91XXXXXXXXXX" required>
-                        </div>
-                        <div>
-                            <label for="telegram_chat_id">Telegram chat id</label>
-                            <input id="telegram_chat_id" name="telegram_chat_id" type="text" value="{{ edit_student.telegram_chat_id if edit_student else '' }}" placeholder="123456789, -100..., or @username">
+                            <label for="telegram_chat_id">Telegram chat id (numeric)</label>
+                            <input id="telegram_chat_id" name="telegram_chat_id" type="text" value="{{ edit_student.telegram_chat_id if edit_student else '' }}" placeholder="123456789 or -1001234567890">
+                            <div class="meta">Open the bot and send <code>/start</code> first. Do not enter an <code>@username</code>.</div>
                         </div>
                         <div>
                             <label for="timezone">Timezone</label>
@@ -570,17 +645,15 @@
                             <p class="meta">
                                 ERP user id: {{ item.user_name }}<br>
                                 RegID: {{ item.reg_id or "Not provided" }}<br>
-                                WhatsApp: {{ item.whatsapp_number }}<br>
                                 Telegram: {{ item.telegram_chat_id or "Not provided" }}<br>
                                 Timezone: {{ item.timezone }}<br>
                                 Status: {{ item.status | title }}<br>
                                 Submitted from IP: {{ item.created_from_ip or "Not available" }}<br>
                                 Updated at: {{ application_view.updated_at if application_view else item.updated_at }}
                             </p>
-                            <details>
-                                <summary>Reveal submitted ERP password</summary>
-                                <pre>{{ application_view.password_value if application_view and application_view.password_value else "Password could not be decrypted." }}</pre>
-                            </details>
+                            <div class="meta">
+                                ERP password: submitted securely and hidden from admin views.
+                            </div>
                             {% if item.note %}
                                 <pre>{{ item.note }}</pre>
                             {% endif %}
@@ -612,12 +685,8 @@
                             <input id="student_profile_password" name="password" type="password" placeholder="Leave blank to keep the current ERP password">
                         </div>
                         <div>
-                            <label for="student_profile_whatsapp">WhatsApp number</label>
-                            <input id="student_profile_whatsapp" name="whatsapp_number" type="text" value="{{ current_student.whatsapp_number }}" placeholder="+91XXXXXXXXXX" required>
-                        </div>
-                        <div>
                             <label for="student_profile_telegram">Telegram chat id</label>
-                            <input id="student_profile_telegram" name="telegram_chat_id" type="text" value="{{ current_student.telegram_chat_id }}" placeholder="123456789, -100..., or @username">
+                            <input id="student_profile_telegram" name="telegram_chat_id" type="text" value="{{ current_student.telegram_chat_id }}" placeholder="123456789 or -1001234567890">
                         </div>
                         <div>
                             <label for="student_profile_timezone">Timezone</label>
@@ -675,9 +744,6 @@
                     {% if settings.owner_telegram_contact %}
                         Owner Telegram: <code>{{ settings.owner_telegram_contact }}</code>.
                     {% endif %}
-                    {% if settings.owner_whatsapp_contact %}
-                        Owner WhatsApp: <code>{{ settings.owner_whatsapp_contact }}</code>.
-                    {% endif %}
                 </div>
                 {% if settings.telegram_bot_link %}
                     <p class="meta">
@@ -708,12 +774,9 @@
                             <input id="reg_id" name="reg_id" type="text" placeholder="Optional">
                         </div>
                         <div>
-                            <label for="whatsapp_number">WhatsApp number</label>
-                            <input id="whatsapp_number" name="whatsapp_number" type="text" placeholder="+91XXXXXXXXXX" required>
-                        </div>
-                        <div>
-                            <label for="telegram_chat_id">Telegram username or chat id</label>
-                            <input id="telegram_chat_id" name="telegram_chat_id" type="text" placeholder="@username or 123456789">
+                            <label for="telegram_chat_id">Telegram chat id (numeric)</label>
+                            <input id="telegram_chat_id" name="telegram_chat_id" type="text" placeholder="123456789 or -1001234567890">
+                            <div class="meta">Open the bot and send <code>/start</code> first, then use the numeric chat id.</div>
                         </div>
                         <div>
                             <label for="timezone">Timezone</label>
@@ -830,6 +893,7 @@
         (function () {
             const refreshToggle = document.querySelector(".js-refresh-toggle");
             const refreshSeconds = Number(document.body.getAttribute("data-refresh-seconds") || "0");
+            const dashboardAuthRole = document.body.getAttribute("data-dashboard-auth-role") || "public";
             const refreshStorageKey = "qums-dashboard-auto-refresh";
             let refreshTimer = null;
 
@@ -959,6 +1023,30 @@
                 }, refreshSeconds * 1000);
             }
 
+            function parseJsonResponse(response) {
+                const contentType = response.headers.get("content-type") || "";
+                if (contentType.toLowerCase().indexOf("application/json") === -1) {
+                    if (response.redirected && response.url) {
+                        window.location.href = response.url;
+                        return Promise.reject(new Error("redirect"));
+                    }
+                    if (!response.ok) {
+                        if (dashboardAuthRole !== "public") {
+                            window.location.reload();
+                        }
+                        return Promise.reject(new Error("invalid-response"));
+                    }
+                    return Promise.reject(new Error("unexpected-response"));
+                }
+                return response.json().then(function (payload) {
+                    if (!response.ok && payload && payload.reload) {
+                        window.location.href = payload.login_url || window.location.href;
+                        return Promise.reject(new Error("reload"));
+                    }
+                    return { ok: response.ok, payload: payload };
+                });
+            }
+
             function refreshDashboardPanels() {
                 if (historyRefreshInFlight) {
                     return Promise.resolve();
@@ -976,14 +1064,16 @@
                 return fetch("/dashboard/live-data?" + params.toString(), {
                     headers: {
                         "X-Requested-With": "XMLHttpRequest",
-                        "Accept": "application/json"
+                        "Accept": "application/json",
+                        "X-Dashboard-Auth-Role": dashboardAuthRole
                     }
                 }).then(function (response) {
-                    if (!response.ok) {
-                        throw new Error("refresh failed");
+                    return parseJsonResponse(response);
+                }).then(function (result) {
+                    if (!result.ok) {
+                        throw new Error((result.payload && result.payload.message) || "refresh failed");
                     }
-                    return response.json();
-                }).then(function (payload) {
+                    const payload = result.payload;
                     if (historyRoot && typeof payload.message_history_html === "string") {
                         historyRoot.innerHTML = payload.message_history_html;
                         restoreOpenDetailKeys(historyRoot, historyOpenKeys);
@@ -1039,9 +1129,7 @@
                                 "Accept": "application/json"
                             }
                         }).then(function (response) {
-                            return response.json().then(function (payload) {
-                                return { ok: response.ok, payload: payload };
-                            });
+                            return parseJsonResponse(response);
                         }).then(function (result) {
                             if (!result.ok && result.payload && result.payload.reload) {
                                 window.location.reload();

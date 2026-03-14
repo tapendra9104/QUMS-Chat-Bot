@@ -50,7 +50,8 @@ def datetime_from_iso(value: str | None) -> datetime | None:
 
 class Database:
     def __init__(self, path: Path) -> None:
-        self.path = path
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
     def _connect(self):
@@ -96,7 +97,7 @@ class Database:
                     telegram_chat_id TEXT NOT NULL DEFAULT '',
                     email_address TEXT NOT NULL DEFAULT '',
                     enabled INTEGER NOT NULL DEFAULT 1,
-                    notification_channel_mode TEXT NOT NULL DEFAULT 'all',
+                    notification_channel_mode TEXT NOT NULL DEFAULT 'telegram_only',
                     disabled_actions_json TEXT NOT NULL DEFAULT '[]',
                     timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
                     reg_id TEXT,
@@ -332,7 +333,7 @@ class Database:
             self._ensure_column(conn, "students", "site_password_updated_at", "TEXT")
             self._ensure_column(conn, "students", "telegram_chat_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "students", "email_address", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(conn, "students", "notification_channel_mode", "TEXT NOT NULL DEFAULT 'all'")
+            self._ensure_column(conn, "students", "notification_channel_mode", "TEXT NOT NULL DEFAULT 'telegram_only'")
             self._ensure_column(conn, "students", "disabled_actions_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column(conn, "students", "erp_status_text", "TEXT")
             self._ensure_column(conn, "students", "erp_status_updated_at", "TEXT")
@@ -369,6 +370,13 @@ class Database:
                         END
                     ),
                     last_bot_action_at = COALESCE(last_bot_action_at, updated_at)
+                """
+            )
+            conn.execute(
+                """
+                UPDATE students
+                SET notification_channel_mode = 'telegram_only'
+                WHERE notification_channel_mode IN ('all', 'whatsapp_only')
                 """
             )
             self._ensure_column(conn, "message_history", "idempotency_key", "TEXT")
@@ -447,7 +455,7 @@ class Database:
         telegram_chat_id: str,
         email_address: str,
         enabled: bool,
-        notification_channel_mode: str = "all",
+        notification_channel_mode: str = "telegram_only",
         disabled_actions_json: str = "[]",
         timezone: str,
     ) -> int:
@@ -2036,7 +2044,7 @@ class Database:
             telegram_chat_id=row["telegram_chat_id"],
             email_address=row["email_address"],
             enabled=bool(row["enabled"]),
-            notification_channel_mode=row["notification_channel_mode"] or "all",
+            notification_channel_mode=row["notification_channel_mode"] or "telegram_only",
             disabled_actions_json=row["disabled_actions_json"] or "[]",
             timezone=row["timezone"],
             reg_id=row["reg_id"],

@@ -9,7 +9,6 @@ from urllib.parse import urlsplit
 
 from flask import Flask, Response, current_app, flash, jsonify, redirect, render_template, request, session, url_for
 from apscheduler.schedulers.base import STATE_RUNNING
-from twilio.request_validator import RequestValidator
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .monitoring import init_monitoring
@@ -27,7 +26,6 @@ from .service import (
 from .task_queue import TaskDispatcher
 from .telegram import TelegramError
 from .whatsapp import WhatsAppError
-from .security import decrypt_text
 
 
 ADMIN_RESET_STATE_KEY = "admin_password_reset"
@@ -75,6 +73,8 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
     @app.before_request
     def require_dashboard_access():
         endpoint = request.endpoint or ""
+        if not endpoint:
+            return None
         public_endpoints = {
             "healthz",
             "dashboard",
@@ -91,8 +91,6 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "admin_forgot_password",
             "admin_forgot_password_request",
             "admin_forgot_password_reset",
-            "twilio_status_webhook",
-            "twilio_inbound_webhook",
             "static",
         }
         admin_only_endpoints = {
@@ -128,22 +126,31 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 return None
             if not _admin_auth_enabled():
                 return None
-            return redirect(url_for("admin_login", next=request.path))
+            return _auth_required_response(
+                url_for("admin_login", next=request.path),
+                "Admin sign-in required. Please sign in again.",
+            )
         if endpoint in student_only_endpoints:
             if _is_student_authenticated():
                 return None
-            return redirect(url_for("login_alias", next=request.path))
+            return _auth_required_response(
+                url_for("login_alias", next=request.path),
+                "Student sign-in required. Please sign in again.",
+            )
         if _is_admin_authenticated() or _is_student_authenticated() or not _admin_auth_enabled():
             return None
-        return redirect(url_for("login_alias", next=request.path))
+        return _auth_required_response(
+            url_for("login_alias", next=request.path),
+            "Please sign in to continue.",
+        )
 
     @app.before_request
     def verify_csrf_token():
         if request.method != "POST":
             return None
+        if not request.endpoint:
+            return None
         if request.endpoint in {
-            "twilio_status_webhook",
-            "twilio_inbound_webhook",
             "static",
         }:
             return None
@@ -587,7 +594,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 password=supplied_erp_password,
                 site_login_username=student.site_login_username,
                 site_login_password="",
-                whatsapp_number=request.form.get("whatsapp_number", ""),
+                whatsapp_number="",
                 telegram_chat_id=request.form.get("telegram_chat_id", ""),
                 email_address="",
                 enabled=student.enabled,
@@ -651,8 +658,6 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 "status": "ok",
                 "app_env": service.settings.app_env,
                 "use_waitress": service.settings.use_waitress,
-                "twilio_mode": service.settings.twilio_whatsapp_mode,
-                "twilio_configured": service.whatsapp.configured,
                 "telegram_configured": service.telegram.configured,
                 "student_count": len(students),
                 "task_queue_mode": service.settings.task_queue_mode,
@@ -661,52 +666,6 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 "sentry_enabled": bool(app.config.get("sentry_enabled")),
                 "outbound_queue": service.get_outbound_queue_summary(),
             }
-        )
-
-    @app.post("/webhooks/twilio/status")
-    def twilio_status_webhook():
-        limit_response = _enforce_rate_limit(
-            bucket=f"twilio-status:{_client_ip()}",
-            limit=settings.webhook_rate_limit_count,
-            window_seconds=settings.webhook_rate_limit_window_seconds,
-        )
-        if limit_response is not None:
-            return limit_response
-        if not _validate_twilio_signature(settings):
-            return ("Invalid Twilio signature.", 403)
-
-        _service().record_twilio_delivery_status(
-            provider_sid=request.form.get("MessageSid", "").strip(),
-            delivery_status=request.form.get("MessageStatus", "").strip() or "unknown",
-            delivery_error_code=request.form.get("ErrorCode", "").strip() or None,
-            delivery_error_message=request.form.get("ErrorMessage", "").strip() or None,
-        )
-        return ("", 204)
-
-    @app.post("/webhooks/twilio/inbound")
-    def twilio_inbound_webhook():
-        limit_response = _enforce_rate_limit(
-            bucket=f"twilio-inbound:{_client_ip()}",
-            limit=settings.webhook_rate_limit_count,
-            window_seconds=settings.webhook_rate_limit_window_seconds,
-        )
-        if limit_response is not None:
-            return limit_response
-        if not _validate_twilio_signature(settings):
-            return ("Invalid Twilio signature.", 403)
-
-        reply_text = _service().handle_inbound_whatsapp_command(
-            from_number=request.form.get("From", ""),
-            body=request.form.get("Body", ""),
-        )
-        escaped = (
-            reply_text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
-        return Response(
-            f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{escaped}</Message></Response>',
-            mimetype="application/xml",
         )
 
     @app.post("/students")
@@ -734,7 +693,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 password=request.form.get("password", ""),
                 site_login_username=request.form.get("site_login_username", ""),
                 site_login_password=request.form.get("site_login_password", ""),
-                whatsapp_number=request.form.get("whatsapp_number", ""),
+                whatsapp_number="",
                 telegram_chat_id=request.form.get("telegram_chat_id", ""),
                 email_address="",
                 enabled=request.form.get("enabled") == "on",
@@ -768,7 +727,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             updated_student = service.update_student_controls(
                 student_id=student_id,
                 enabled=request.form.get("enabled") == "on",
-                notification_channel_mode=request.form.get("notification_channel_mode", "all"),
+                notification_channel_mode=request.form.get("notification_channel_mode", "telegram_only"),
                 disabled_actions=request.form.getlist("disabled_actions"),
             )
         except StudentValidationError as exc:
@@ -809,7 +768,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 student_label=request.form.get("student_label", ""),
                 user_name=request.form.get("user_name", ""),
                 password=request.form.get("password", ""),
-                whatsapp_number=request.form.get("whatsapp_number", ""),
+                whatsapp_number="",
                 telegram_chat_id=request.form.get("telegram_chat_id", ""),
                 timezone=request.form.get("timezone", ""),
                 reg_id=request.form.get("reg_id", ""),
@@ -1160,15 +1119,15 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         service = _service()
         is_admin_authenticated = _is_admin_authenticated()
         is_student_authenticated = _is_student_authenticated()
+        if _expects_authenticated_dashboard_request() and not (is_admin_authenticated or is_student_authenticated):
+            return _auth_required_response(
+                _dashboard_reauth_url(request.path),
+                "Your dashboard session expired. Please sign in again.",
+            )
         current_student = _current_student()
         students = [current_student] if is_student_authenticated and current_student else (service.list_students() if is_admin_authenticated else [])
         student_dashboard_views = _build_student_dashboard_views(students)
         dashboard_now = service._local_now()
-        whatsapp_statuses = {
-            student.id: service.get_whatsapp_status(student)
-            for student in students
-            if is_admin_authenticated or is_student_authenticated
-        }
         student_automation_statuses = {
             student.id: service.get_student_automation_status(student, now=dashboard_now)
             for student in students
@@ -1198,7 +1157,6 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             _build_action_center(
                 students=students,
                 student_dashboard_views=student_dashboard_views,
-                whatsapp_statuses=whatsapp_statuses,
                 outbound_summary=outbound_summary,
                 dead_letters=dead_letter_messages,
                 dashboard_now=dashboard_now,
@@ -1212,7 +1170,6 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                     "partials/student_cards.html" if (is_admin_authenticated or is_student_authenticated) else "partials/public_prototype_cards.html",
                     students=students,
                     student_dashboard_views=student_dashboard_views,
-                    whatsapp_statuses=whatsapp_statuses,
                     student_automation_statuses=student_automation_statuses,
                     is_admin_authenticated=is_admin_authenticated,
                     is_student_authenticated=is_student_authenticated,
@@ -1282,6 +1239,29 @@ def _is_ajax_request() -> bool:
     requested_with = request.headers.get("X-Requested-With", "")
     accept = request.headers.get("Accept", "")
     return requested_with == "XMLHttpRequest" or "application/json" in accept.lower()
+
+
+def _auth_required_response(login_url: str, message: str):
+    if _is_ajax_request():
+        return jsonify({"message": message, "reload": True, "login_url": login_url}), 401
+    return redirect(login_url)
+
+
+def _dashboard_auth_role() -> str:
+    role = request.headers.get("X-Dashboard-Auth-Role", "").strip().lower()
+    if role in {"admin", "student", "public"}:
+        return role
+    return "public"
+
+
+def _expects_authenticated_dashboard_request() -> bool:
+    return _dashboard_auth_role() in {"admin", "student"}
+
+
+def _dashboard_reauth_url(next_path: str) -> str:
+    if _dashboard_auth_role() == "admin":
+        return url_for("admin_login", next=next_path)
+    return url_for("login_alias", next=next_path)
 
 
 def _csrf_retry_location() -> str:
@@ -1588,7 +1568,6 @@ def _describe_student_profile_changes(previous_student, updated_student, *, erp_
     field_pairs = [
         ("student label", previous_student.student_label, updated_student.student_label),
         ("ERP user id", previous_student.user_name, updated_student.user_name),
-        ("WhatsApp", previous_student.whatsapp_number, updated_student.whatsapp_number),
         ("Telegram", previous_student.telegram_chat_id or "Not set", updated_student.telegram_chat_id or "Not set"),
         ("timezone", previous_student.timezone, updated_student.timezone),
     ]
@@ -1678,11 +1657,6 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
         "pagination": {"page": 1, "per_page": 20, "total_items": 0, "total_pages": 1, "has_prev": False, "has_next": False, "prev_page": 1, "next_page": 1},
     }
     admin_account = _get_admin_account_state()
-    whatsapp_statuses = {
-        student.id: service.get_whatsapp_status(student)
-        for student in students
-        if is_admin_authenticated or is_student_authenticated
-    }
     student_automation_statuses = {
         student.id: service.get_student_automation_status(student, now=dashboard_now)
         for student in students
@@ -1691,7 +1665,6 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
         _build_action_center(
             students=students,
             student_dashboard_views=student_dashboard_views,
-            whatsapp_statuses=whatsapp_statuses,
             outbound_summary=outbound_summary,
             dead_letters=dead_letter_messages,
             dashboard_now=dashboard_now,
@@ -1717,7 +1690,6 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
         student_dashboard_views=student_dashboard_views,
         edit_student=edit_student,
         preview_text=preview_text,
-        whatsapp_statuses=whatsapp_statuses,
         student_automation_statuses=student_automation_statuses,
         message_history=message_state["rows"],
         message_history_filter_options=message_history_options,
@@ -1739,7 +1711,6 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
         can_retry_dead_letters=is_admin_authenticated,
         application_requests=application_requests,
         application_request_views=_build_application_request_views(application_requests),
-        twilio_configured=service.whatsapp.configured,
         telegram_configured=service.telegram.configured,
         settings=settings,
         scheduler_overview=_build_scheduler_overview(dashboard_now),
@@ -1976,19 +1947,12 @@ def _build_student_dashboard_views(students):
 
 
 def _build_application_request_views(application_requests):
-    settings = _service().settings
     views: dict[int, dict[str, str | None]] = {}
     for item in application_requests:
-        password_value = None
-        if item.password_encrypted:
-            try:
-                password_value = decrypt_text(settings.app_secret, item.password_encrypted)
-            except Exception:
-                password_value = None
         views[item.id] = {
             "created_at": _format_dashboard_timestamp(item.created_at) or item.created_at,
             "updated_at": _format_dashboard_timestamp(item.updated_at) or item.updated_at,
-            "password_value": password_value,
+            "password_value": None,
         }
     return views
 
@@ -2021,7 +1985,7 @@ def _format_dashboard_timestamp(value):
     return service._format_datetime(parsed.astimezone(service.timezone))
 
 
-def _build_action_center(*, students, student_dashboard_views, whatsapp_statuses, outbound_summary, dead_letters, dashboard_now):
+def _build_action_center(*, students, student_dashboard_views, outbound_summary, dead_letters, dashboard_now):
     service = _service()
     items: list[dict[str, str]] = []
     for student in students:
@@ -2049,32 +2013,6 @@ def _build_action_center(*, students, student_dashboard_views, whatsapp_statuses
                     "level": "critical",
                     "title": f"{student.student_label}: ERP session expired",
                     "detail": erp_status or "ERP login is required again.",
-                }
-            )
-        wa = whatsapp_statuses.get(student.id)
-        if wa and wa.sandbox_expires_at:
-            try:
-                expires_at = service._parse_datetime(wa.sandbox_expires_at)
-            except ValueError:
-                expires_at = None
-            if expires_at:
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=service.timezone)
-                remaining = expires_at.astimezone(service.timezone) - dashboard_now
-                if remaining <= timedelta(minutes=service.settings.sandbox_expiry_warning_minutes):
-                    items.append(
-                        {
-                            "level": "warning",
-                            "title": f"{student.student_label}: Sandbox expiring",
-                            "detail": f"WhatsApp sandbox expires at {service._format_datetime(expires_at.astimezone(service.timezone))}.",
-                        }
-                    )
-        if wa and not wa.ready:
-            items.append(
-                {
-                    "level": "warning",
-                    "title": f"{student.student_label}: WhatsApp not ready",
-                    "detail": wa.detail,
                 }
             )
     failed_count = outbound_summary.get("failed", 0)
@@ -2206,20 +2144,6 @@ def _csv_response(content: str, filename: str) -> Response:
         mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
-def _validate_twilio_signature(settings) -> bool:
-    if not settings.twilio_auth_token:
-        return False
-    signature = request.headers.get("X-Twilio-Signature", "")
-    if not signature:
-        return False
-    validator = RequestValidator(settings.twilio_auth_token)
-    url = request.url
-    if settings.public_base_url:
-        url = f"{settings.public_base_url}{request.path}"
-    params = {key: value for key, value in request.form.items()}
-    return validator.validate(url, params, signature)
 
 
 def _enforce_rate_limit(*, bucket: str, limit: int, window_seconds: int):

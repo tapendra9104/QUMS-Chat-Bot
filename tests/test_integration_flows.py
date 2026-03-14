@@ -10,10 +10,9 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from twilio.request_validator import RequestValidator
-
 from qums_bot.app import create_app
 from qums_bot.config import Settings, load_settings
+from qums_bot.db import Database
 from qums_bot.errors import AppConfigurationError, StudentValidationError
 from qums_bot.erp_client import AuthenticationRequired, ERPClient
 from qums_bot.models import PendingLogin
@@ -38,41 +37,6 @@ def env_context(values: dict[str, str]):
                     os.environ[key] = original
 
     return EnvContext()
-
-
-class FakeFetchedMessage:
-    def __init__(self, sid: str, status: str = "sent") -> None:
-        self.sid = sid
-        self.status = status
-        self.error_code = None
-        self.error_message = None
-
-
-class FakeMessagesApi:
-    def __init__(self) -> None:
-        self.created_payloads: list[dict[str, str]] = []
-
-    def create(self, **kwargs):
-        self.created_payloads.append(kwargs)
-        return FakeFetchedMessage(f"SM{len(self.created_payloads)}", status="queued")
-
-    def __call__(self, sid: str):
-        class Resource:
-            def __init__(self, sid_value: str) -> None:
-                self.sid_value = sid_value
-
-            def fetch(self):
-                return FakeFetchedMessage(self.sid_value, status="sent")
-
-        return Resource(sid)
-
-    def list(self, limit: int = 50):
-        return []
-
-
-class FakeTwilioClient:
-    def __init__(self) -> None:
-        self.messages = FakeMessagesApi()
 
 
 class FakeTelegramResponse:
@@ -126,7 +90,11 @@ class FakeERPSession:
 
 class IntegrationFlowTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="qums-integration-"))
+        tmp_root = Path("tmp-test2")
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        self.tmp = tmp_root / self.id().replace(".", "_")
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        self.tmp.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -214,7 +182,7 @@ class IntegrationFlowTests(unittest.TestCase):
         self.assertEqual(slots[0].subject_name, "Holiday")
         self.assertIn("Holiday", slots[0].note)
 
-    def test_whatsapp_sender_attaches_status_callback(self) -> None:
+    def test_whatsapp_sender_reports_removed(self) -> None:
         settings = Settings(
             base_url="https://example.com",
             database_path=self.tmp / "bot.sqlite3",
@@ -264,12 +232,9 @@ class IntegrationFlowTests(unittest.TestCase):
             twilio_content_sid_attendance="",
         )
         sender = WhatsAppSender(settings)
-        sender._client = FakeTwilioClient()
 
-        sender.send_text("+911234567890", "Test delivery", message_kind="attendance")
-
-        payload = sender._client.messages.created_payloads[0]
-        self.assertEqual(payload["status_callback"], "https://bot.example.com/webhooks/twilio/status")
+        with self.assertRaisesRegex(Exception, "WhatsApp delivery has been removed"):
+            sender.send_text("+911234567890", "Test delivery", message_kind="attendance")
 
     def test_telegram_sender_omits_null_reply_markup_for_plain_text(self) -> None:
         settings = Settings(
@@ -333,6 +298,64 @@ class IntegrationFlowTests(unittest.TestCase):
         payload = sender._session.calls[0]["json"]
         self.assertNotIn("reply_markup", payload)
 
+    def test_telegram_sender_rejects_username_delivery_targets(self) -> None:
+        settings = Settings(
+            base_url="https://example.com",
+            database_path=self.tmp / "bot.sqlite3",
+            app_secret="secret",
+            app_env="development",
+            use_waitress=False,
+            waitress_threads=8,
+            dashboard_auto_refresh_seconds=30,
+            run_scheduler=False,
+            task_queue_mode="inline",
+            redis_url="",
+            task_queue_name="qums-bot",
+            admin_username="",
+            admin_password="",
+            admin_telegram_username="",
+            local_timezone="Asia/Kolkata",
+            morning_digest_time="06:30",
+            evening_report_time="19:00",
+            attendance_poll_interval_minutes=10,
+            substitution_poll_interval_minutes=5,
+            monitor_poll_interval_minutes=5,
+            sandbox_expiry_warning_minutes=10,
+            lecture_grace_minutes=20,
+            attendance_correction_lookback_days=14,
+            attendance_shortage_buffer_lectures=1,
+            delivery_retry_limit=3,
+            delivery_retry_backoff_seconds=1,
+            low_attendance_thresholds=(75, 70, 65),
+            flask_host="127.0.0.1",
+            flask_port=5000,
+            public_base_url="https://bot.example.com",
+            webhook_rate_limit_count=60,
+            webhook_rate_limit_window_seconds=60,
+            admin_rate_limit_count=10,
+            admin_rate_limit_window_seconds=60,
+            sentry_dsn="",
+            sentry_traces_sample_rate=0.0,
+            twilio_account_sid="",
+            twilio_auth_token="",
+            twilio_whatsapp_mode="sandbox",
+            twilio_whatsapp_from="whatsapp:+14155238886",
+            twilio_sandbox_join_code="demo-code",
+            twilio_status_message_limit=50,
+            twilio_status_callback_url="",
+            twilio_content_sid_default="",
+            twilio_content_sid_morning="",
+            twilio_content_sid_attendance="",
+            telegram_bot_token="token",
+            telegram_api_base_url="https://api.telegram.org",
+            telegram_admin_chat_ids=("5570554765",),
+            telegram_poll_interval_seconds=5,
+        )
+        sender = TelegramSender(settings)
+
+        with self.assertRaises(TelegramError):
+            sender.send_text("@QUMS_ALERT_BOT", "Plain Telegram test")
+
     def test_erp_client_maps_403_json_endpoint_to_authentication_required(self) -> None:
         settings = Settings(
             base_url="https://example.com",
@@ -388,7 +411,7 @@ class IntegrationFlowTests(unittest.TestCase):
         with self.assertRaises(AuthenticationRequired):
             client._post_json(session, "/Account/GetStudentDetail", {})
 
-    def test_twilio_status_webhook_requires_valid_signature_and_updates_history(self) -> None:
+    def test_removed_twilio_webhooks_are_not_exposed(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
         env_values = {
             "DATABASE_PATH": str(db_path),
@@ -396,158 +419,12 @@ class IntegrationFlowTests(unittest.TestCase):
             "USE_WAITRESS": "0",
             "RUN_SCHEDULER": "0",
             "PUBLIC_BASE_URL": "https://bot.example.com",
-            "TWILIO_ACCOUNT_SID": "sid",
-            "TWILIO_AUTH_TOKEN": "token",
-            "TWILIO_WHATSAPP_FROM": "whatsapp:+14155238886",
-            "TWILIO_WHATSAPP_MODE": "sandbox",
         }
         with env_context(env_values):
             app = create_app(start_scheduler=False)
             client = app.test_client()
-            service = app.config["service"]
-            service.whatsapp._client = FakeTwilioClient()
-            student_id = service.save_student(
-                student_id=None,
-                student_label="Webhook Student",
-                user_name="demo",
-                password="password",
-                whatsapp_number="+911234567890",
-                telegram_chat_id="",
-                email_address="",
-                enabled=True,
-                timezone="Asia/Kolkata",
-            )
-            student = service.get_student(student_id)
-            assert student is not None
-            service._send_whatsapp(
-                student,
-                "Attendance Update\n\nStatus: Present",
-                message_kind="attendance",
-                history_category="attendance_update",
-                idempotency_key="attendance_update:webhook-test",
-            )
-            history = service.list_message_history()
-            self.assertEqual(len(history), 1)
-            provider_sid = history[0].provider_sid
-
-            form_data = {
-                "MessageSid": provider_sid,
-                "MessageStatus": "delivered",
-                "ErrorCode": "",
-                "ErrorMessage": "",
-            }
-            validator = RequestValidator("token")
-            signature = validator.compute_signature(
-                "https://bot.example.com/webhooks/twilio/status",
-                form_data,
-            )
-
-            bad_response = client.post("/webhooks/twilio/status", data=form_data)
-            self.assertEqual(bad_response.status_code, 403)
-
-            good_response = client.post(
-                "/webhooks/twilio/status",
-                data=form_data,
-                headers={"X-Twilio-Signature": signature},
-            )
-            self.assertEqual(good_response.status_code, 204)
-
-            updated = service.list_message_history()[0]
-            self.assertEqual(updated.delivery_status, "delivered")
-
-    def test_twilio_inbound_webhook_supports_help_command(self) -> None:
-        db_path = self.tmp / "bot.sqlite3"
-        env_values = {
-            "DATABASE_PATH": str(db_path),
-            "APP_SECRET": "secret",
-            "USE_WAITRESS": "0",
-            "RUN_SCHEDULER": "0",
-            "PUBLIC_BASE_URL": "https://bot.example.com",
-            "TWILIO_ACCOUNT_SID": "sid",
-            "TWILIO_AUTH_TOKEN": "token",
-            "TWILIO_WHATSAPP_FROM": "whatsapp:+14155238886",
-            "TWILIO_WHATSAPP_MODE": "sandbox",
-        }
-        with env_context(env_values):
-            app = create_app(start_scheduler=False)
-            client = app.test_client()
-            service = app.config["service"]
-            service.save_student(
-                student_id=None,
-                student_label="Inbound Student",
-                user_name="demo",
-                password="password",
-                whatsapp_number="+911234567890",
-                telegram_chat_id="",
-                email_address="",
-                enabled=True,
-                timezone="Asia/Kolkata",
-            )
-            form_data = {
-                "From": "whatsapp:+911234567890",
-                "Body": "help",
-            }
-            validator = RequestValidator("token")
-            signature = validator.compute_signature(
-                "https://bot.example.com/webhooks/twilio/inbound",
-                form_data,
-            )
-
-            response = client.post(
-                "/webhooks/twilio/inbound",
-                data=form_data,
-                headers={"X-Twilio-Signature": signature},
-            )
-
-            self.assertEqual(response.status_code, 200)
-            self.assertIn("QUMS Bot Commands", response.get_data(as_text=True))
-
-    def test_twilio_inbound_webhook_matches_canonical_whatsapp_numbers(self) -> None:
-        db_path = self.tmp / "bot.sqlite3"
-        env_values = {
-            "DATABASE_PATH": str(db_path),
-            "APP_SECRET": "secret",
-            "USE_WAITRESS": "0",
-            "RUN_SCHEDULER": "0",
-            "PUBLIC_BASE_URL": "https://bot.example.com",
-            "TWILIO_ACCOUNT_SID": "sid",
-            "TWILIO_AUTH_TOKEN": "token",
-            "TWILIO_WHATSAPP_FROM": "whatsapp:+14155238886",
-            "TWILIO_WHATSAPP_MODE": "sandbox",
-        }
-        with env_context(env_values):
-            app = create_app(start_scheduler=False)
-            client = app.test_client()
-            service = app.config["service"]
-            service.save_student(
-                student_id=None,
-                student_label="Canonical Student",
-                user_name="demo_canonical",
-                password="password",
-                whatsapp_number="whatsapp: +91 98765 43210",
-                telegram_chat_id="",
-                email_address="",
-                enabled=True,
-                timezone="Asia/Kolkata",
-            )
-            form_data = {
-                "From": "whatsapp:+919876543210",
-                "Body": "help",
-            }
-            validator = RequestValidator("token")
-            signature = validator.compute_signature(
-                "https://bot.example.com/webhooks/twilio/inbound",
-                form_data,
-            )
-
-            response = client.post(
-                "/webhooks/twilio/inbound",
-                data=form_data,
-                headers={"X-Twilio-Signature": signature},
-            )
-
-            self.assertEqual(response.status_code, 200)
-            self.assertIn("QUMS Bot Commands", response.get_data(as_text=True))
+            self.assertEqual(client.post("/webhooks/twilio/status").status_code, 404)
+            self.assertEqual(client.post("/webhooks/twilio/inbound").status_code, 404)
 
     def test_healthz_reports_runtime_scheduler_state(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -797,7 +674,7 @@ class IntegrationFlowTests(unittest.TestCase):
                     "password": "erp-password",
                     "reg_id": "8027",
                     "whatsapp_number": "+919634549096",
-                    "telegram_chat_id": "@gunda872",
+                    "telegram_chat_id": "5570554766",
                     "timezone": "Asia/Kolkata",
                     "note": "Please add my profile for attendance alerts.",
                 },
@@ -816,6 +693,61 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(telegram_payload["chat_id"], "5570554765")
             self.assertIn("New student application request", telegram_payload["text"])
             self.assertIn("Tapendra Chaudhary", telegram_payload["text"])
+            self.assertIn("ERP password: Submitted securely in the website application.", telegram_payload["text"])
+            self.assertNotIn("erp-password", telegram_payload["text"])
+
+    def test_admin_dashboard_hides_application_request_passwords(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.submit_application_request(
+                applicant_name="Tapendra Chaudhary",
+                student_label="Tapendra",
+                user_name="23030682",
+                password="erp-password",
+                whatsapp_number="+919634549096",
+                telegram_chat_id="5570554766",
+                timezone="Asia/Kolkata",
+                reg_id="8027",
+                note="Please add my profile for attendance alerts.",
+                created_from_ip="website",
+            )
+
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            html = client.get("/").get_data(as_text=True)
+
+            self.assertIn("ERP password: submitted securely and hidden from admin views.", html)
+            self.assertNotIn("Reveal submitted ERP password", html)
+            self.assertNotIn("erp-password", html)
+
+    def test_database_init_creates_missing_parent_directories(self) -> None:
+        db_path = self.tmp / "nested" / "data" / "bot.sqlite3"
+
+        db = Database(db_path)
+        db.init()
+
+        self.assertTrue(db_path.parent.exists())
+        self.assertTrue(db_path.exists())
 
     def test_admin_login_clears_stale_session_state(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -992,7 +924,7 @@ class IntegrationFlowTests(unittest.TestCase):
                     "user_name": "editable_erp_2",
                     "password": "",
                     "whatsapp_number": "+919999999999",
-                    "telegram_chat_id": "@updateduser",
+                    "telegram_chat_id": "5570554766",
                     "timezone": "UTC",
                 },
                 follow_redirects=True,
@@ -1007,7 +939,7 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(student.student_label, "Editable Student Updated")
             self.assertEqual(student.user_name, "editable_erp_2")
             self.assertEqual(student.whatsapp_number, "+919999999999")
-            self.assertEqual(student.telegram_chat_id, "@updateduser")
+            self.assertEqual(student.telegram_chat_id, "5570554766")
             self.assertEqual(student.timezone, "UTC")
             texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
             self.assertTrue(any("Student profile updated" in text for text in texts))
@@ -1340,7 +1272,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 f"/students/{student_id}/controls",
                 data={
                     "csrf_token": update_csrf,
-                    "notification_channel_mode": "whatsapp_only",
+                    "notification_channel_mode": "telegram_only",
                     "disabled_actions": ["send_morning", "send_channel_test"],
                 },
                 follow_redirects=True,
@@ -1352,14 +1284,14 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIsNotNone(student)
             assert student is not None
             self.assertFalse(student.enabled)
-            self.assertEqual(student.notification_channel_mode, "whatsapp_only")
+            self.assertEqual(student.notification_channel_mode, "telegram_only")
             self.assertEqual(
                 service.get_student_disabled_actions(student),
                 {"send_morning", "send_channel_test"},
             )
             self.assertIn("Student controls updated.", html)
             self.assertIn("Blocked", html)
-            self.assertIn("WhatsApp Only", html)
+            self.assertIn("Telegram Only", html)
 
     def test_blocked_student_send_route_is_rejected_from_admin_dashboard(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -1837,6 +1769,65 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIsInstance(payload, dict)
             self.assertTrue(payload.get("reload"))
             self.assertIn("session expired", str(payload.get("message", "")).lower())
+
+    def test_authenticated_dashboard_live_data_returns_reauth_hint_when_session_is_missing(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+
+            response = client.get(
+                "/dashboard/live-data",
+                headers={
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json",
+                    "X-Dashboard-Auth-Role": "admin",
+                },
+            )
+
+            self.assertEqual(response.status_code, 401)
+            payload = response.get_json()
+            self.assertIsInstance(payload, dict)
+            self.assertTrue(payload.get("reload"))
+            self.assertIn("/admin/login", str(payload.get("login_url", "")))
+            self.assertIn("sign in again", str(payload.get("message", "")).lower())
+
+    def test_admin_only_ajax_request_returns_reauth_hint_before_csrf_validation(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+
+            response = client.post(
+                "/dead-letter/test-message/retry",
+                headers={
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json",
+                },
+            )
+
+            self.assertEqual(response.status_code, 401)
+            payload = response.get_json()
+            self.assertIsInstance(payload, dict)
+            self.assertTrue(payload.get("reload"))
+            self.assertIn("/admin/login", str(payload.get("login_url", "")))
+            self.assertIn("admin sign-in required", str(payload.get("message", "")).lower())
 
     def test_html_pages_disable_caching(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -2483,7 +2474,7 @@ class IntegrationFlowTests(unittest.TestCase):
         self.assertEqual(settings.local_timezone, "Asia/Kolkata")
         self.assertEqual(settings.attendance_poll_interval_minutes, 1)
         self.assertEqual(settings.substitution_poll_interval_minutes, 1)
-        self.assertEqual(settings.monitor_poll_interval_minutes, 1)
+        self.assertEqual(settings.monitor_poll_interval_minutes, 10)
         self.assertEqual(settings.sandbox_expiry_warning_minutes, 1)
         self.assertEqual(settings.lecture_grace_minutes, 0)
         self.assertEqual(settings.attendance_correction_lookback_days, 1)

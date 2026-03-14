@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import hashlib
 from io import StringIO
 import json
+import logging
 import re
 from typing import Iterable
 from zoneinfo import ZoneInfo
@@ -25,11 +26,13 @@ from .parsers import (
     parse_substitutions,
     parse_timetable_slots,
 )
-from .security import decrypt_text, encrypt_text
+from .security import encrypt_text
 from .telegram import TelegramError, TelegramSender
 from .whatsapp import WhatsAppChannelStatus, WhatsAppError, WhatsAppSender
 from .errors import StudentValidationError
 from werkzeug.security import generate_password_hash
+
+logger = logging.getLogger(__name__)
 
 
 class NotificationDeliveryError(Exception):
@@ -51,11 +54,11 @@ STUDENT_ACTION_LABELS: dict[str, str] = {
 STUDENT_ACTION_ORDER: tuple[str, ...] = tuple(STUDENT_ACTION_LABELS.keys())
 
 NOTIFICATION_CHANNEL_MODE_LABELS: dict[str, str] = {
-    "all": "All Channels",
-    "whatsapp_only": "WhatsApp Only",
     "telegram_only": "Telegram Only",
     "paused": "Paused",
 }
+
+ERP_SESSION_MONITOR_COOLDOWN_MINUTES = 15
 
 
 class BotService:
@@ -199,8 +202,17 @@ class BotService:
         now: datetime | None = None,
     ) -> dict[str, str | None]:
         student_now = self._now_for_student(student, now or self._local_now())
+        today_events = self.db.get_lecture_events_for_day(student.id, student_now.date())
         next_pending = self.db.get_next_pending_lecture_event(student.id)
         latest_recorded = self.db.get_latest_recorded_lecture_event(student.id)
+        timetable_context = self._automation_timetable_context(student_now, today_events)
+
+        next_scan = self._estimate_next_attendance_scan(student, student_now)
+        next_scan_iso = None
+        next_scan_label = None
+        if next_scan is not None:
+            next_scan_iso = next_scan.isoformat()
+            next_scan_label = self._format_datetime(next_scan)
 
         next_pending_iso = None
         next_pending_label = None
@@ -226,9 +238,27 @@ class BotService:
             "timezone": student.timezone,
             "current_time_iso": student_now.isoformat(),
             "current_time_label": self._format_datetime(student_now),
-            "next_attendance_scan_iso": next_pending_iso,
-            "next_attendance_scan_label": next_pending_label,
+            "next_attendance_scan_iso": next_scan_iso,
+            "next_attendance_scan_label": next_scan_label,
+            "attendance_poll_interval_minutes": str(self.settings.attendance_poll_interval_minutes),
+            "next_due_attendance_check_iso": next_pending_iso,
+            "next_due_attendance_check_label": next_pending_label,
             "next_attendance_subject": next_pending_subject,
+            "timetable_lecture_label": (
+                str(timetable_context["label"])
+                if timetable_context is not None and timetable_context.get("label")
+                else None
+            ),
+            "timetable_lecture_subject": (
+                str(timetable_context["subject_name"])
+                if timetable_context is not None and timetable_context.get("subject_name")
+                else None
+            ),
+            "timetable_lecture_time_label": (
+                str(timetable_context["time_label"])
+                if timetable_context is not None and timetable_context.get("time_label")
+                else None
+            ),
             "latest_marked_at_iso": latest_recorded_iso,
             "latest_marked_at_label": latest_recorded_label,
             "latest_marked_subject": latest_recorded_subject,
@@ -280,52 +310,13 @@ class BotService:
         if self.notifications_paused(student):
             raise ERPClientError("Notifications are paused for this student profile.")
         if not self._delivery_targets(student):
-            channel_mode = self.get_student_notification_channel_mode(student)
-            if channel_mode == "whatsapp_only":
-                raise ERPClientError("WhatsApp-only delivery is selected, but no reachable WhatsApp number is configured.")
-            if channel_mode == "telegram_only":
-                raise ERPClientError("Telegram-only delivery is selected, but no reachable Telegram chat id is configured.")
-            raise ERPClientError(
-                "No delivery channel is configured for this student. "
-                "Add at least one reachable WhatsApp number or Telegram chat id."
-            )
+            raise ERPClientError("Telegram delivery is selected, but no reachable Telegram chat id is configured.")
 
     def delete_student(self, student_id: int) -> bool:
         return self.db.delete_student(student_id)
 
     def get_whatsapp_status(self, student: Student):
-        try:
-            return self.whatsapp.get_channel_status(student.whatsapp_number)
-        except Exception as exc:
-            configured = getattr(
-                self.whatsapp,
-                "configured",
-                bool(
-                    self.settings.twilio_account_sid
-                    and self.settings.twilio_auth_token
-                    and self.settings.twilio_whatsapp_from
-                ),
-            )
-            join_command = None
-            if self.settings.twilio_whatsapp_mode == "sandbox":
-                join_command = (
-                    f"join {self.settings.twilio_sandbox_join_code}"
-                    if self.settings.twilio_sandbox_join_code
-                    else "join <code>"
-                )
-            return WhatsAppChannelStatus(
-                configured=bool(configured),
-                mode=self.settings.twilio_whatsapp_mode,
-                sender=self.settings.twilio_whatsapp_from or "whatsapp:+14155238886",
-                ready=False,
-                state="status_check_failed",
-                detail=f"Live WhatsApp status lookup failed: {exc}",
-                join_command=join_command,
-                last_inbound_at=None,
-                sandbox_expires_at=None,
-                last_outbound_status=None,
-                last_error_code=None,
-            )
+        return self.whatsapp.get_channel_status(student.whatsapp_number)
 
     def save_student(
         self,
@@ -354,7 +345,7 @@ class BotService:
         canonical_email = self._normalize_email_address(email_address)
         resolved_notification_mode = self._normalize_notification_channel_mode(
             notification_channel_mode if notification_channel_mode is not None else (
-                current_student.notification_channel_mode if current_student else "all"
+                current_student.notification_channel_mode if current_student else "telegram_only"
             )
         )
         resolved_disabled_actions = self._normalize_disabled_student_actions(
@@ -491,7 +482,6 @@ class BotService:
                 student_label=cleaned_label,
                 user_name=cleaned_user_name,
                 reg_id=cleaned_reg_id,
-                whatsapp_number=canonical_whatsapp,
                 telegram_chat_id=canonical_telegram,
                 timezone=cleaned_timezone,
                 note=cleaned_note,
@@ -686,67 +676,6 @@ class BotService:
         self._send_whatsapp(student, body, message_kind="generic", history_category="test_message")
         return body
 
-    def record_twilio_delivery_status(
-        self,
-        *,
-        provider_sid: str,
-        delivery_status: str,
-        delivery_error_code: str | None,
-        delivery_error_message: str | None,
-    ) -> bool:
-        if not provider_sid:
-            return False
-        error_code = None
-        if delivery_error_code:
-            try:
-                error_code = int(delivery_error_code)
-            except ValueError:
-                error_code = None
-        return self.db.update_delivery_status_by_provider_sid(
-            provider_sid=provider_sid,
-            delivery_status=delivery_status or "unknown",
-            delivery_error_code=error_code,
-            delivery_error_message=delivery_error_message,
-        )
-
-    def handle_inbound_whatsapp_command(
-        self,
-        *,
-        from_number: str,
-        body: str,
-        now: datetime | None = None,
-    ) -> str:
-        student = self._find_student_by_whatsapp_number(from_number)
-        if not student:
-            return (
-                "This WhatsApp number is not linked to any student profile in the QUMS bot dashboard. "
-                "Ask the admin to save your profile first."
-            )
-        if not student.enabled:
-            return "This student profile is currently blocked. Contact the admin to restore access."
-
-        command = " ".join((body or "").strip().lower().split())
-        current = self._now_for_student(student, now or self._local_now())
-        try:
-            if command in {"help", "menu", ""}:
-                return self._render_inbound_help()
-            if command == "today":
-                return self.preview_today(student.id, target_date=current.date())
-            if command == "next":
-                return self._render_next_lecture(student, current)
-            if command == "attendance":
-                return self._render_attendance_snapshot(student)
-            if command in {"login status", "status"}:
-                return self._render_login_status(student, current)
-        except AuthenticationRequired:
-            return "ERP session expired. Open the dashboard and complete login again with a fresh captcha."
-        except ERPClientError as exc:
-            return f"QUMS command failed: {exc}"
-
-        return (
-            "Unknown command. Send one of: help, today, next, attendance, login status."
-        )
-
     def run_telegram_inbound_sweep(self) -> None:
         if not self.telegram.configured:
             return
@@ -764,14 +693,15 @@ class BotService:
                 timeout_seconds=0,
                 allowed_updates=["message", "callback_query"],
             )
-        except TelegramError:
+        except TelegramError as exc:
+            logger.warning("Telegram getUpdates failed: %s", exc)
             return
         for update in updates:
             update_id = int(update.get("update_id", 0))
             try:
                 self._handle_telegram_update(update)
             except Exception:
-                pass
+                logger.exception("Telegram update handling failed for update_id=%s", update_id or "unknown")
             finally:
                 if update_id:
                     self.db.upsert_runtime_state(
@@ -1716,12 +1646,6 @@ class BotService:
                 return
             else:
                 payload["password"] = normalized
-        elif step == "whatsapp_number":
-            if not (is_edit and lower_value == "skip"):
-                if not normalized:
-                    self._send_telegram_text(chat_id, "WhatsApp number is required. Send the number or /cancel.")
-                    return
-                payload["whatsapp_number"] = normalized
         elif step == "telegram_chat_id":
             if lower_value == "self":
                 payload["telegram_chat_id"] = chat_id
@@ -1757,7 +1681,6 @@ class BotService:
             "site_login_username",
             "site_login_password",
             "password",
-            "whatsapp_number",
             "telegram_chat_id",
             "timezone",
             "enabled",
@@ -1840,11 +1763,6 @@ class BotService:
             payload["password"] = normalized
         elif step == "reg_id":
             payload["reg_id"] = "" if lower_value == "skip" else normalized
-        elif step == "whatsapp_number":
-            if not normalized:
-                self._send_telegram_text(chat_id, "WhatsApp number is required.")
-                return
-            payload["whatsapp_number"] = normalized
         elif step == "telegram_chat_id":
             if lower_value in {"self", "skip"}:
                 payload["telegram_chat_id"] = chat_id if lower_value == "self" else ""
@@ -1865,7 +1783,6 @@ class BotService:
             "user_name",
             "password",
             "reg_id",
-            "whatsapp_number",
             "telegram_chat_id",
             "timezone",
             "note",
@@ -1919,7 +1836,7 @@ class BotService:
                 "site_login_username": student.site_login_username,
                 "site_login_password": "",
                 "password": "",
-                "whatsapp_number": student.whatsapp_number,
+                "whatsapp_number": "",
                 "telegram_chat_id": student.telegram_chat_id,
                 "timezone": student.timezone,
                 "enabled": bool(student.enabled),
@@ -1955,7 +1872,6 @@ class BotService:
             "user_name": "",
             "password": "",
             "reg_id": "",
-            "whatsapp_number": "",
             "telegram_chat_id": chat_id,
             "timezone": self.settings.local_timezone,
             "note": "",
@@ -1985,7 +1901,7 @@ class BotService:
             password=str(payload.get("password") or ""),
             site_login_username=str(payload.get("site_login_username") or ""),
             site_login_password=str(payload.get("site_login_password") or ""),
-            whatsapp_number=str(payload.get("whatsapp_number") or ""),
+            whatsapp_number="",
             telegram_chat_id=str(payload.get("telegram_chat_id") or ""),
             email_address="",
             enabled=bool(payload.get("enabled")),
@@ -2016,7 +1932,7 @@ class BotService:
             student_label=str(payload.get("student_label") or ""),
             user_name=str(payload.get("user_name") or ""),
             password=str(payload.get("password") or ""),
-            whatsapp_number=str(payload.get("whatsapp_number") or ""),
+            whatsapp_number="",
             telegram_chat_id=str(payload.get("telegram_chat_id") or ""),
             timezone=str(payload.get("timezone") or self.settings.local_timezone),
             reg_id=str(payload.get("reg_id") or ""),
@@ -2119,7 +2035,6 @@ class BotService:
                     "id": student.id,
                     "label": student.student_label,
                     "user_name": student.user_name,
-                    "whatsapp": student.whatsapp_number or "Not set",
                     "telegram": student.telegram_chat_id or "Not set",
                     "reg_id": student.reg_id or "Not synced yet",
                     "session_updated_at": student.session_updated_at or "Not logged in yet",
@@ -2156,7 +2071,6 @@ class BotService:
                 [
                     f"- {student['label']}",
                     f"  ERP user id: {student['user_name']}",
-                    f"  WhatsApp: {student['whatsapp']}",
                     f"  Telegram: {student['telegram']}",
                     f"  RegID: {student['reg_id']}",
                     f"  Session updated: {student['session_updated_at']}",
@@ -2184,7 +2098,6 @@ class BotService:
                 [
                     f"{student.id}. {student.student_label}",
                     f"  ERP user id: {student.user_name}",
-                    f"  WhatsApp: {student.whatsapp_number}",
                     f"  Telegram: {student.telegram_chat_id or 'Not set'}",
                     f"  RegID: {student.reg_id or 'Not synced yet'}",
                     f"  Session updated: {student.session_updated_at or 'Not logged in yet'}",
@@ -2206,7 +2119,6 @@ class BotService:
                 f"Student: {student.student_label}",
                 "",
                 f"ERP user id: {student.user_name}",
-                f"WhatsApp: {student.whatsapp_number}",
                 f"Telegram: {student.telegram_chat_id or 'Not set'}",
                 f"RegID: {student.reg_id or 'Not synced yet'}",
                 f"Session updated: {student.session_updated_at or 'Not logged in yet'}",
@@ -2231,7 +2143,6 @@ class BotService:
                 [
                     f"{item.id}. {item.applicant_name} -> {item.student_label}",
                     f"  ERP user id: {item.user_name}",
-                    f"  WhatsApp: {item.whatsapp_number}",
                     f"  Telegram: {item.telegram_chat_id or 'Not provided'}",
                     f"  Status: {item.status.title()}",
                     f"  Submitted: {item.created_at}",
@@ -2242,21 +2153,14 @@ class BotService:
         return "\n".join(lines).rstrip()
 
     def _build_telegram_application_detail_text(self, application: ApplicationRequest) -> str:
-        password_value = "Password could not be decrypted."
-        if application.password_encrypted:
-            try:
-                password_value = decrypt_text(self.settings.app_secret, application.password_encrypted)
-            except Exception:
-                password_value = "Password could not be decrypted."
         lines = [
             f"Application Request: {application.id}",
             "",
             f"Applicant: {application.applicant_name}",
             f"Preferred label: {application.student_label}",
             f"ERP user id: {application.user_name}",
-            f"ERP password: {password_value}",
+            "ERP password: Submitted securely and hidden from admin views.",
             f"RegID: {application.reg_id or 'Not provided'}",
-            f"WhatsApp: {application.whatsapp_number}",
             f"Telegram: {application.telegram_chat_id or 'Not provided'}",
             f"Timezone: {application.timezone}",
             f"Status: {application.status.title()}",
@@ -2483,10 +2387,8 @@ class BotService:
             return "ERP password\nSend your ERP password so the admin can add your profile."
         if step == "reg_id":
             return "Registration id\nSend your RegID, or send skip."
-        if step == "whatsapp_number":
-            return "WhatsApp number\nSend your WhatsApp number in +91XXXXXXXXXX format."
         if step == "telegram_chat_id":
-            return "Telegram username or chat id\nSend self to use this chat, send @username, numeric chat id, or send skip."
+            return "Telegram chat id\nSend self to use this chat, send a numeric chat id, or send skip."
         if step == "timezone":
             return f"Timezone\nSend your timezone or send {self.settings.local_timezone}."
         if step == "note":
@@ -2503,7 +2405,6 @@ class BotService:
                 f"ERP user id: {payload.get('user_name') or 'Not set'}",
                 f"ERP password: {'Provided' if payload.get('password') else 'Not set'}",
                 f"RegID: {payload.get('reg_id') or 'Not provided'}",
-                f"WhatsApp: {payload.get('whatsapp_number') or 'Not set'}",
                 f"Telegram: {payload.get('telegram_chat_id') or 'Not provided'}",
                 f"Timezone: {payload.get('timezone') or self.settings.local_timezone}",
                 f"Note: {payload.get('note') or 'Not provided'}",
@@ -2534,14 +2435,11 @@ class BotService:
             if is_edit:
                 return "ERP password\nSend the new password, or send skip to keep the existing password."
             return "ERP password\nSend the ERP password for the new student profile."
-        if step == "whatsapp_number":
-            current = f"Current WhatsApp: {payload.get('whatsapp_number')}" if is_edit else ""
-            return f"WhatsApp number{suffix}\n{current}".strip()
         if step == "telegram_chat_id":
             current = f"Current Telegram: {payload.get('telegram_chat_id') or 'Not set'}" if is_edit else ""
             lines = [
                 "Telegram chat id",
-                "Send a numeric chat id, @username, https://t.me/username, self, or skip.",
+                "Send a numeric chat id, self, or skip.",
             ]
             if current:
                 lines.append(current)
@@ -2573,7 +2471,6 @@ class BotService:
                 f"Site login username: {payload.get('site_login_username') or 'Disabled'}",
                 f"Site login password: {'Updated' if payload.get('site_login_password') else 'Keep existing / disabled'}",
                 f"Password: {'Updated' if payload.get('password') else 'Keep existing / not set'}",
-                f"WhatsApp: {payload.get('whatsapp_number') or 'Not set'}",
                 f"Telegram: {payload.get('telegram_chat_id') or 'Not set'}",
                 f"Timezone: {payload.get('timezone') or self.settings.local_timezone}",
                 f"Enabled: {'Yes' if payload.get('enabled') else 'No'}",
@@ -2790,15 +2687,7 @@ class BotService:
             student_now = self._now_for_student(student, current)
 
             try:
-                channel_status = self.whatsapp.get_channel_status(student.whatsapp_number)
-            except Exception as exc:
-                self.db.update_student_status(student.id, f"WhatsApp channel check failed: {exc}")
-                channel_status = None
-
-            try:
-                if channel_status:
-                    self._check_sandbox_expiry(student, channel_status, student_now)
-                self._check_erp_session(student, channel_status, student_now)
+                self._check_erp_session(student, None, student_now)
             except (WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
                 self.db.update_student_status(student.id, f"Delivery failed: {exc}")
 
@@ -2837,7 +2726,28 @@ class BotService:
             if not student.enabled:
                 continue
             student_now = self._now_for_student(student, now)
-            student_events = events_by_student.get(student.id, [])
+            try:
+                self._ensure_attendance_tracking_for_date(student, student_now.date(), detected_at=student_now)
+            except AuthenticationRequired:
+                self._handle_authentication_required(student, detected_at=student_now)
+                continue
+            except ERPClientError as exc:
+                self.db.update_student_status(student.id, f"Attendance routine sync failed: {exc}")
+                continue
+
+            student_events = list(events_by_student.get(student.id, []))
+            tracked_today_events = self.db.get_lecture_events_for_day(student.id, student_now.date())
+            tracked_today_pending = [
+                event
+                for event in tracked_today_events
+                if event.check_after and event.status in {"scheduled", "notified_unmarked"}
+            ]
+            known_ids = {event.id for event in student_events}
+            student_events.extend(
+                event
+                for event in tracked_today_pending
+                if event.id not in known_ids
+            )
             due_events = [
                 event
                 for event in student_events
@@ -2856,6 +2766,48 @@ class BotService:
                 self.db.update_student_status(student.id, f"Delivery failed: {exc}")
 
         self.run_evening_sweep(now=now)
+
+    def _ensure_attendance_tracking_for_date(
+        self,
+        student: Student,
+        target_date: date,
+        *,
+        detected_at: datetime,
+    ) -> None:
+        existing_events = self.db.get_lecture_events_for_day(student.id, target_date)
+        if existing_events:
+            return
+
+        timetable_payload = self.erp.get_timetable(student)
+        substitutions_payload = self.erp.get_substitutions(student)
+        substitutions = parse_substitutions(substitutions_payload, target_date)
+        slots = parse_timetable_slots(timetable_payload, target_date)
+        if not slots:
+            slots = parse_timetable_slots(substitutions_payload, target_date)
+        if not slots:
+            slots = self._default_non_lecture_slots(target_date, substitutions)
+
+        self.db.replace_lecture_events(
+            student_id=student.id,
+            event_date=target_date,
+            slots=slots,
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        lecture_events = self.db.get_lecture_events_for_day(student.id, target_date)
+        self._sync_substitutions(
+            student=student,
+            target_date=target_date,
+            substitutions=substitutions,
+            lecture_events=lecture_events,
+            source="attendance_bootstrap",
+            send_alerts=False,
+            detected_at=detected_at,
+        )
+        self.db.mark_student_erp_sync(student.id)
+        self.db.update_student_bot_activity(
+            student.id,
+            f"Background attendance tracking synced today's lecture routine for {target_date.isoformat()}.",
+        )
 
     def run_evening_sweep(self, *, now: datetime | None = None) -> None:
         current = now or self._local_now()
@@ -2971,59 +2923,7 @@ class BotService:
         channel_status: WhatsAppChannelStatus,
         now: datetime,
     ) -> None:
-        if channel_status.mode != "sandbox":
-            return
-
-        if channel_status.state == "sandbox_join_required":
-            join_help = channel_status.join_command or "join <code>"
-            self.db.update_student_status(
-                student.id,
-                (
-                    "Twilio sandbox is not ready. "
-                    f"The message `{join_help}` must be sent manually from the recipient's WhatsApp again."
-                ),
-            )
-            return
-
-        if not channel_status.ready or not channel_status.sandbox_expires_at:
-            return
-
-        expires_at = self._parse_datetime(channel_status.sandbox_expires_at)
-        if not expires_at:
-            return
-
-        expires_local = expires_at.astimezone(now.tzinfo or self.timezone)
-        remaining = expires_local - now
-        if remaining <= timedelta(0):
-            return
-        if remaining > timedelta(minutes=self.settings.sandbox_expiry_warning_minutes):
-            return
-
-        notification_key = expires_at.astimezone(timezone.utc).replace(microsecond=0).isoformat()
-        if self.db.has_notification_event(student.id, "sandbox_expiry_warning", notification_key):
-            return
-
-        body = self._render_sandbox_expiry_reminder(
-            student=student,
-            channel_status=channel_status,
-            expires_at=expires_local,
-            detected_at=now,
-            remaining=remaining,
-        )
-        self._send_whatsapp(
-            student,
-            body,
-            message_kind="attendance",
-            history_category="sandbox_expiry_warning",
-            idempotency_key=f"sandbox_expiry_warning:{student.id}:{notification_key}",
-        )
-        self.db.upsert_notification_event(
-            student_id=student.id,
-            category="sandbox_expiry_warning",
-            notification_key=notification_key,
-            message_text=body,
-        )
-        self.db.update_student_status(student.id, f"Sandbox expiry warning sent for {student.whatsapp_number}.")
+        return
 
     def _check_erp_session(
         self,
@@ -3033,6 +2933,8 @@ class BotService:
     ) -> None:
         if not student.session_cookies:
             return
+        if not self._should_probe_erp_session(student, now):
+            return
 
         try:
             self.erp.ensure_authenticated(student)
@@ -3040,6 +2942,30 @@ class BotService:
             self._handle_authentication_required(student, detected_at=now, channel_status=channel_status)
         except ERPClientError as exc:
             self.db.update_student_bot_activity(student.id, f"ERP session check failed: {exc}")
+
+    def _should_probe_erp_session(self, student: Student, now: datetime) -> bool:
+        threshold = timedelta(
+            minutes=max(
+                self.settings.monitor_poll_interval_minutes,
+                ERP_SESSION_MONITOR_COOLDOWN_MINUTES,
+            )
+        )
+        latest_activity: datetime | None = None
+        for raw_value in (student.last_erp_sync_at, student.session_updated_at):
+            if not raw_value:
+                continue
+            try:
+                parsed = self._parse_datetime(raw_value)
+            except ValueError:
+                continue
+            if parsed is None:
+                continue
+            normalized = parsed.astimezone(now.tzinfo or self.timezone)
+            if latest_activity is None or normalized > latest_activity:
+                latest_activity = normalized
+        if latest_activity is None:
+            return True
+        return (now - latest_activity) >= threshold
 
     def _handle_authentication_required(
         self,
@@ -3056,14 +2982,8 @@ class BotService:
         if self.db.has_notification_event(student.id, "erp_session_expired", student.session_updated_at):
             return
 
-        status = channel_status
-        if status is None:
-            try:
-                status = self.whatsapp.get_channel_status(student.whatsapp_number)
-            except Exception as exc:
-                self.db.update_student_bot_activity(student.id, f"ERP session expired and WhatsApp status lookup failed: {exc}")
-                return
-        if not status.ready:
+        targets = self._delivery_targets(student)
+        if not targets:
             return
 
         body = self._render_erp_session_expired_alert(student, detected_at=detected_at)
@@ -3284,14 +3204,30 @@ class BotService:
         self.db.mark_student_erp_sync(student.id)
         snapshots = self.db.get_attendance_snapshots(student.id)
         baseline_snapshots = {key: dict(value) for key, value in snapshots.items()}
+        lecture_update_sent = False
+        live_candidate_events = self._live_attendance_candidate_events(student, now, due_events)
+        if live_candidate_events:
+            lecture_update_sent = self._process_live_attendance_candidates(
+                student,
+                live_candidate_events,
+                now,
+                attendance=attendance,
+                snapshots=snapshots,
+            )
         if due_events:
-            self._process_due_events(
+            lecture_update_sent = self._process_due_events(
                 student,
                 due_events,
                 now,
                 attendance=attendance,
                 snapshots=snapshots,
-            )
+            ) or lecture_update_sent
+        self._emit_lecture_finish_notifications(
+            student,
+            self.db.get_lecture_events_for_day(student.id, now.date()),
+            now,
+            attendance,
+        )
         self._detect_attendance_corrections(student, attendance, snapshots, now)
         self._detect_attendance_summary_changes(
             student,
@@ -3299,9 +3235,219 @@ class BotService:
             baseline_snapshots,
             now,
             lecture_events=due_events,
+            suppress_notification=lecture_update_sent,
         )
         self._sync_attendance_snapshots(student, attendance)
         self._evaluate_attendance_risk(student, attendance, now, lecture_events=due_events)
+
+    def _live_attendance_candidate_events(
+        self,
+        student: Student,
+        now: datetime,
+        due_events: list[LectureEvent],
+    ) -> list[LectureEvent]:
+        due_event_ids = {event.id for event in due_events}
+        now_naive = now.replace(tzinfo=None)
+        candidates: list[LectureEvent] = []
+        for event in self.db.get_lecture_events_for_day(student.id, now.date()):
+            if event.is_break or event.id in due_event_ids or event.status != "scheduled":
+                continue
+            if self._event_has_started_by(event, now_naive):
+                candidates.append(event)
+        return candidates
+
+    def _process_live_attendance_candidates(
+        self,
+        student: Student,
+        events: list[LectureEvent],
+        now: datetime,
+        *,
+        attendance,
+        snapshots: dict[str, dict],
+    ) -> bool:
+        if not events:
+            return False
+        next_check = now.replace(tzinfo=None) + timedelta(
+            minutes=self.settings.attendance_poll_interval_minutes
+        )
+        now_naive = now.replace(tzinfo=None)
+        grouped_events: dict[str, dict[str, object]] = {}
+        unmatched_events: list[LectureEvent] = []
+        sent_attendance_update = False
+
+        for event in sorted(
+            events,
+            key=lambda item: (
+                item.event_date.isoformat(),
+                item.start_time.isoformat() if item.start_time else "99:99",
+                item.id,
+            ),
+        ):
+            record = match_attendance_record(attendance, event.subject_key, event.subject_name)
+            if not record:
+                unmatched_events.append(event)
+                continue
+            key = record.subject_key or event.subject_key
+            bucket = grouped_events.setdefault(key, {"record": record, "events": []})
+            bucket["events"].append(event)
+
+        for event in unmatched_events:
+            if not self._event_has_finished_by(event, now_naive):
+                continue
+            self._mark_event_pending_update(student, event, now=now, next_check=next_check)
+
+        for bucket in grouped_events.values():
+            record = bucket["record"]
+            subject_events = list(bucket["events"])
+            snapshot = snapshots.get(record.subject_key)
+            previous_lecture = int(snapshot["total_lecture"]) if snapshot else 0
+            previous_present = int(snapshot["total_present"]) if snapshot else 0
+            lecture_delta = max(0, record.total_lecture - previous_lecture)
+            present_delta = max(0, record.total_present - previous_present)
+
+            if lecture_delta > 0:
+                resolved_count = min(lecture_delta, len(subject_events))
+                resolved_present_count = min(present_delta, resolved_count)
+                inferred_from_batch = resolved_count > 1
+                for index, event in enumerate(subject_events):
+                    if index < resolved_count:
+                        was_present = index < resolved_present_count
+                        final_status = "notified_present" if was_present else "notified_absent"
+                        body = self._render_attendance_message(
+                            event,
+                            was_present,
+                            record,
+                            detected_at=now,
+                            inferred_from_batch=inferred_from_batch,
+                            batch_size=resolved_count,
+                        )
+                        self._send_whatsapp(
+                            student,
+                            body,
+                            message_kind="attendance",
+                            history_category="attendance_update",
+                            idempotency_key=f"attendance_update:{event.id}:{final_status}",
+                        )
+                        self.db.mark_event_status(event.id, final_status, status_recorded_at=now)
+                        self.db.update_student_status(
+                            student.id,
+                            (
+                                f"Attendance marked {'present' if was_present else 'absent'} for "
+                                f"{record.subject_name} at {self._format_datetime(now)}."
+                            ),
+                        )
+                        sent_attendance_update = True
+                        continue
+
+                    if not self._event_has_finished_by(event, now_naive):
+                        continue
+                    self._mark_event_pending_update(student, event, now=now, next_check=next_check)
+
+                self.db.upsert_attendance_snapshot(
+                    student_id=student.id,
+                    subject_key=record.subject_key,
+                    subject_name=record.subject_name,
+                    subject_code=record.subject_code,
+                    teacher_name=record.teacher_name,
+                    total_lecture=record.total_lecture,
+                    total_present=record.total_present,
+                    percentage=record.percentage,
+                )
+                snapshots[record.subject_key] = {
+                    "total_lecture": record.total_lecture,
+                    "total_present": record.total_present,
+                }
+                continue
+
+            for event in subject_events:
+                if not self._event_has_finished_by(event, now_naive):
+                    continue
+                self._mark_event_pending_update(student, event, now=now, next_check=next_check)
+        return sent_attendance_update
+
+    def _mark_event_pending_update(
+        self,
+        student: Student,
+        event: LectureEvent,
+        *,
+        now: datetime,
+        next_check: datetime,
+    ) -> None:
+        body = self._render_not_marked_message(event)
+        if event.status == "scheduled":
+            self._send_whatsapp(
+                student,
+                body,
+                message_kind="attendance",
+                history_category="attendance_pending",
+                idempotency_key=f"attendance_pending:{event.id}",
+            )
+        self.db.mark_event_status(event.id, "notified_unmarked", next_check_after=next_check)
+        if self._event_has_finished_by(event, now.replace(tzinfo=None)):
+            self._record_lecture_finish_notification(student, event, body)
+
+    def _emit_lecture_finish_notifications(
+        self,
+        student: Student,
+        events: list[LectureEvent],
+        now: datetime,
+        attendance,
+    ) -> None:
+        now_naive = now.replace(tzinfo=None)
+        for event in sorted(
+            events,
+            key=lambda item: (
+                item.event_date.isoformat(),
+                item.end_time.isoformat() if item.end_time else item.start_time.isoformat() if item.start_time else "99:99",
+                item.id,
+            ),
+        ):
+            if event.is_break or not self._event_has_finished_by(event, now_naive):
+                continue
+            if self._has_lecture_finish_notification(student, event):
+                continue
+            if self._status_was_recorded_in_current_scan(event, now):
+                continue
+
+            if event.status in {"scheduled", "notified_unmarked"}:
+                body = self._render_not_marked_message(event)
+            else:
+                record = match_attendance_record(attendance, event.subject_key, event.subject_name)
+                body = self._render_lecture_finished_status_message(
+                    event,
+                    record=record,
+                    detected_at=now,
+                )
+
+            self._send_whatsapp(
+                student,
+                body,
+                message_kind="attendance",
+                history_category="lecture_finished_status",
+                idempotency_key=f"lecture_finished_status:{event.id}",
+            )
+            self._record_lecture_finish_notification(student, event, body)
+
+    def _has_lecture_finish_notification(self, student: Student, event: LectureEvent) -> bool:
+        return self.db.has_notification_event(
+            student.id,
+            "lecture_finished_status",
+            str(event.id),
+        )
+
+    def _status_was_recorded_in_current_scan(self, event: LectureEvent, now: datetime) -> bool:
+        if not event.status_recorded_at:
+            return False
+        recorded_at = self._normalize_event_datetime(event.status_recorded_at, now.tzinfo)
+        return recorded_at == now.replace(microsecond=0)
+
+    def _record_lecture_finish_notification(self, student: Student, event: LectureEvent, body: str) -> None:
+        self.db.upsert_notification_event(
+            student_id=student.id,
+            category="lecture_finished_status",
+            notification_key=str(event.id),
+            message_text=body,
+        )
 
     def _sync_attendance_snapshots(self, student: Student, attendance) -> None:
         for record in attendance:
@@ -3324,6 +3470,7 @@ class BotService:
         now: datetime,
         *,
         lecture_events: list[LectureEvent] | None = None,
+        suppress_notification: bool = False,
     ) -> None:
         if not attendance or not previous_snapshots:
             return
@@ -3436,6 +3583,14 @@ class BotService:
             current_present_total=current_present_total,
             current_lecture_total=current_lecture_total,
         )
+        if suppress_notification:
+            self.db.upsert_notification_event(
+                student_id=student.id,
+                category="attendance_summary_change",
+                notification_key=state_key,
+                message_text=body,
+            )
+            return
         self._send_whatsapp(
             student,
             body,
@@ -3582,7 +3737,15 @@ class BotService:
         totals_lecture = sum(record.total_lecture for record in attendance)
         overall_percentage = self._safe_percentage(totals_present, totals_lecture)
         shortage_threshold = self._attendance_shortage_warning_threshold()
+        subject_references = self._build_weekly_subject_reference_map(student, now.date())
+        shortage_items = self._attendance_shortage_items(
+            attendance,
+            lecture_events=teacher_events,
+            subject_references=subject_references,
+        )
         for threshold in self.settings.low_attendance_thresholds:
+            if threshold == shortage_threshold:
+                continue
             if totals_lecture and overall_percentage < threshold:
                 notification_key = f"overall:{threshold}:{totals_present}:{totals_lecture}"
                 if not self.db.has_notification_event(student.id, "low_attendance_overall", notification_key):
@@ -3613,6 +3776,8 @@ class BotService:
             percentage = self._parse_percentage(record.percentage, record.total_present, record.total_lecture)
             teacher_name = self._resolve_risk_teacher_name(record, teacher_events)
             for threshold in self.settings.low_attendance_thresholds:
+                if threshold == shortage_threshold:
+                    continue
                 if record.total_lecture and percentage < threshold:
                     notification_key = (
                         f"{record.subject_key}:{threshold}:{record.total_present}:{record.total_lecture}"
@@ -3642,44 +3807,35 @@ class BotService:
                             notification_key=notification_key,
                             message_text=body,
                         )
-
-            remaining_absences = self._absences_remaining_before_threshold(
-                record.total_present,
-                record.total_lecture,
-                shortage_threshold,
-            )
-            if percentage > shortage_threshold:
-                continue
-            notification_key = (
-                f"{record.subject_key}:{shortage_threshold}:{record.total_present}:{record.total_lecture}:shortage"
-            )
-            if self.db.has_notification_event(student.id, "attendance_shortage_subject", notification_key):
-                continue
-            body = self._render_shortage_warning_message(
-                subject_name=self._format_subject_label(record.subject_name, record.subject_code),
-                teacher_name=teacher_name,
-                present=record.total_present,
-                total=record.total_lecture,
-                percentage=percentage,
+        if not shortage_items:
+            return
+        notification_key = self._attendance_shortage_notification_key(
+            shortage_items,
+            threshold=shortage_threshold,
+        )
+        if self.db.has_notification_event(student.id, "attendance_shortage_report_auto", notification_key):
+            return
+        body = "\n".join(
+            self._shortage_report_lines(
+                student_name=student.student_name or student.student_label,
+                shortage_items=shortage_items,
+                generated_at=now,
                 threshold=shortage_threshold,
-                remaining_absences=remaining_absences,
-                detected_at=now,
             )
-            self._send_whatsapp(
-                student,
-                body,
-                message_kind="attendance",
-                history_category="attendance_shortage_warning",
-                idempotency_key=(
-                    f"attendance_shortage_subject:{student.id}:{record.subject_key}:{shortage_threshold}:{record.total_present}:{record.total_lecture}"
-                ),
-            )
-            self.db.upsert_notification_event(
-                student_id=student.id,
-                category="attendance_shortage_subject",
-                notification_key=notification_key,
-                message_text=body,
-            )
+        )
+        self._send_whatsapp(
+            student,
+            body,
+            message_kind="attendance",
+            history_category="attendance_shortage_report",
+            idempotency_key=f"attendance_shortage_report_auto:{student.id}:{notification_key}",
+        )
+        self.db.upsert_notification_event(
+            student_id=student.id,
+            category="attendance_shortage_report_auto",
+            notification_key=notification_key,
+            message_text=body,
+        )
 
     def _process_due_events(
         self,
@@ -3689,7 +3845,7 @@ class BotService:
         *,
         attendance=None,
         snapshots: dict[str, dict] | None = None,
-    ) -> None:
+    ) -> bool:
         if attendance is None:
             payload = self.erp.get_attendance_summary(student)
             attendance = parse_attendance_summary(payload)
@@ -3700,6 +3856,7 @@ class BotService:
         )
         grouped_events: dict[str, dict[str, object]] = {}
         unmatched_events: list[LectureEvent] = []
+        sent_attendance_update = False
 
         for event in sorted(
             events,
@@ -3760,17 +3917,10 @@ class BotService:
                                 f"{record.subject_name} at {self._format_datetime(now)}."
                             ),
                         )
+                        sent_attendance_update = True
                         continue
 
-                    if event.status == "scheduled":
-                        self._send_whatsapp(
-                            student,
-                            self._render_not_marked_message(event),
-                            message_kind="attendance",
-                            history_category="attendance_pending",
-                            idempotency_key=f"attendance_pending:{event.id}",
-                        )
-                    self.db.mark_event_status(event.id, "notified_unmarked", next_check_after=next_check)
+                    self._mark_event_pending_update(student, event, now=now, next_check=next_check)
 
                 self.db.upsert_attendance_snapshot(
                     student_id=student.id,
@@ -3789,15 +3939,8 @@ class BotService:
                 continue
 
             for event in subject_events:
-                if event.status == "scheduled":
-                    self._send_whatsapp(
-                        student,
-                        self._render_not_marked_message(event),
-                        message_kind="attendance",
-                        history_category="attendance_pending",
-                        idempotency_key=f"attendance_pending:{event.id}",
-                    )
-                self.db.mark_event_status(event.id, "notified_unmarked", next_check_after=next_check)
+                self._mark_event_pending_update(student, event, now=now, next_check=next_check)
+        return sent_attendance_update
 
     def _send_evening_report_if_due(
         self,
@@ -4198,7 +4341,7 @@ class BotService:
         event_teacher = self._resolve_teacher_name_from_events(record, lecture_events)
         if event_teacher and event_teacher != "Not available":
             return event_teacher
-        return "Not available"
+        return str(getattr(record, "teacher_name", "") or "").strip() or "Not available"
 
     def _resolve_subject_class_location(
         self,
@@ -4234,6 +4377,28 @@ class BotService:
         generated_at: datetime,
     ) -> str:
         threshold = self._attendance_shortage_warning_threshold()
+        shortage_items = self._attendance_shortage_items(
+            attendance,
+            lecture_events=lecture_events,
+            subject_references=subject_references,
+        )
+        return "\n".join(
+            self._shortage_report_lines(
+                student_name=student_name,
+                shortage_items=shortage_items,
+                generated_at=generated_at,
+                threshold=threshold,
+            )
+        )
+
+    def _attendance_shortage_items(
+        self,
+        attendance,
+        *,
+        lecture_events: list[LectureEvent],
+        subject_references: dict[str, dict[str, str]] | None,
+    ) -> list[dict[str, object]]:
+        threshold = self._attendance_shortage_warning_threshold()
         shortage_items: list[dict[str, object]] = []
         for record in attendance:
             percentage = self._parse_percentage(record.percentage, record.total_present, record.total_lecture)
@@ -4241,6 +4406,7 @@ class BotService:
                 continue
             shortage_items.append(
                 {
+                    "subject_key": getattr(record, "subject_key", ""),
                     "subject_name": self._format_subject_label(record.subject_name, record.subject_code),
                     "teacher_name": self._resolve_subject_faculty_name(
                         record,
@@ -4257,46 +4423,8 @@ class BotService:
                     ),
                 }
             )
-
         shortage_items.sort(key=lambda item: (item["percentage"], str(item["subject_name"]).lower()))
-        totals_present = sum(max(int(item["present"]), 0) for item in shortage_items)
-        totals_lecture = sum(max(int(item["total"]), 0) for item in shortage_items)
-        total_absent = max(totals_lecture - totals_present, 0)
-        lines = [
-            "Attendance Shortage Report",
-            "",
-            f"Student: {student_name or 'student'}",
-            f"Generated at: {self._format_datetime(generated_at)}",
-            f"Threshold: {threshold}% per subject",
-            "Scope: totals below include only subjects currently at risk.",
-            f"Totals present: {totals_present}",
-            f"Total lectures: {totals_lecture}",
-            f"Total absent: {total_absent}",
-            "",
-        ]
-        if not shortage_items:
-            lines.extend(
-                [
-                    "Status: Clear",
-                    "No subject is currently at or below the attendance shortage threshold.",
-                ]
-            )
-            return "\n".join(lines)
-
-        lines.append("Subjects At Risk")
-        for item in shortage_items:
-            remaining_absences = int(item["remaining_absences"])
-            risk_text = (
-                "No more safe absences remain."
-                if remaining_absences <= 0
-                else f"{remaining_absences} safe absence(s) remain before further risk."
-            )
-            lines.append(
-                f"- {item['subject_name']} | Faculty: {item['teacher_name']} | "
-                f"Attendance: {int(item['present'])}/{int(item['total'])} ({float(item['percentage']):.2f}%) | "
-                f"Risk: {risk_text}"
-            )
-        return "\n".join(lines)
+        return shortage_items
 
     def _build_attendance_summary_report(
         self,
@@ -4322,6 +4450,12 @@ class BotService:
         total_present = sum(max(int(item.total_present), 0) for item in attendance)
         total_lecture = sum(max(int(item.total_lecture), 0) for item in attendance)
         total_absent = max(total_lecture - total_present, 0)
+        shortage_threshold = self._attendance_shortage_warning_threshold()
+        shortage_items = self._attendance_shortage_items(
+            attendance,
+            lecture_events=lecture_events,
+            subject_references=subject_references,
+        )
         lines = [
             "Attendance Summary Report",
             "",
@@ -4335,8 +4469,21 @@ class BotService:
                 f"({self._safe_percentage(total_present, total_lecture):.2f}%)"
             ),
             "",
-            "Subject-wise Attendance",
         ]
+        lines.extend(
+            self._shortage_report_lines(
+                student_name=student_name,
+                shortage_items=shortage_items,
+                generated_at=generated_at,
+                threshold=shortage_threshold,
+            )
+        )
+        lines.extend(
+            [
+                "",
+            "Subject-wise Attendance",
+            ]
+        )
         sorted_attendance = sorted(
             attendance,
             key=lambda item: (
@@ -4372,6 +4519,73 @@ class BotService:
             return 0
         safe_absences = int((present / threshold_ratio) - total)
         return max(safe_absences, 0)
+
+    def _attendance_shortage_notification_key(
+        self,
+        shortage_items: list[dict[str, object]],
+        *,
+        threshold: int,
+    ) -> str:
+        payload = {
+            "threshold": threshold,
+            "items": [
+                {
+                    "subject_key": str(item.get("subject_key") or ""),
+                    "present": int(item["present"]),
+                    "total": int(item["total"]),
+                }
+                for item in shortage_items
+            ],
+        }
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _shortage_report_lines(
+        self,
+        *,
+        student_name: str,
+        shortage_items: list[dict[str, object]],
+        generated_at: datetime,
+        threshold: int,
+    ) -> list[str]:
+        totals_present = sum(max(int(item["present"]), 0) for item in shortage_items)
+        totals_lecture = sum(max(int(item["total"]), 0) for item in shortage_items)
+        total_absent = max(totals_lecture - totals_present, 0)
+        lines = [
+            "Attendance Shortage Report",
+            "",
+            f"Student: {student_name or 'student'}",
+            f"Generated at: {self._format_datetime(generated_at)}",
+            f"Threshold: {threshold}% per subject",
+            "Scope: totals below include only subjects currently at risk.",
+            f"Totals present: {totals_present}",
+            f"Total lectures: {totals_lecture}",
+            f"Total absent: {total_absent}",
+            "",
+        ]
+        if not shortage_items:
+            lines.extend(
+                [
+                    "Status: Clear",
+                    "No subject is currently at or below the attendance shortage threshold.",
+                ]
+            )
+            return lines
+
+        lines.append("Subjects At Risk")
+        for item in shortage_items:
+            remaining_absences = int(item["remaining_absences"])
+            risk_text = (
+                "No more safe absences remain."
+                if remaining_absences <= 0
+                else f"{remaining_absences} safe absence(s) remain before further risk."
+            )
+            lines.append(
+                f"- {item['subject_name']} | Faculty: {item['teacher_name']} | "
+                f"Attendance: {int(item['present'])}/{int(item['total'])} ({float(item['percentage']):.2f}%) | "
+                f"Risk: {risk_text}"
+            )
+        return lines
 
     def _report_idempotency_key(self, *, base_key: str, force: bool, now: datetime) -> str:
         if not force:
@@ -4574,6 +4788,9 @@ class BotService:
                 f"ERP user id: {student.user_name}",
                 f"Detected at: {self._format_datetime(detected_at)}",
                 "Status: ERP session expired",
+                "",
+                "Impact:",
+                "Lecture-end attendance scans and summary checks are paused until ERP login is restored.",
                 "",
                 "Action required:",
                 "Open the dashboard and complete ERP login again with a fresh captcha.",
@@ -4825,6 +5042,53 @@ class BotService:
             ]
         )
 
+    def _render_lecture_finished_status_message(
+        self,
+        event: LectureEvent,
+        *,
+        record,
+        detected_at: datetime,
+    ) -> str:
+        status_text, marked, _ = self._attendance_state_for_event(event)
+        subject_code = getattr(record, "subject_code", "") if record is not None else ""
+        subject_text = self._format_subject_label(event.subject_name, subject_code)
+        faculty_text = self._attendance_display_teacher_name(event, record)
+        finish_reference = datetime.combine(
+            event.event_date,
+            event.end_time or event.start_time or time(0, 0),
+            tzinfo=detected_at.tzinfo or self.timezone,
+        )
+        lines = [
+            "Lecture Finished Attendance Status",
+            "",
+            f"Subject: {subject_text}",
+            f"Faculty: {faculty_text}",
+            f"Lecture date: {event.event_date.strftime('%A, %d %B %Y')}",
+            f"Lecture time: {self._format_event_time(event)}",
+            f"Lecture finished at: {self._format_datetime(finish_reference)}",
+            f"Status checked at: {self._format_datetime(detected_at)}",
+            f"{'Final status' if marked else 'Current status'}: {status_text}",
+        ]
+        if record is not None:
+            percentage_text = f" ({record.percentage})" if record.percentage else ""
+            lines.append(f"Cumulative attendance: {record.total_present}/{record.total_lecture}{percentage_text}")
+        if marked:
+            lines.extend(
+                [
+                    "",
+                    "The lecture has finished and this is the latest attendance status currently visible in the ERP.",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    "The lecture has finished, but the ERP has not marked this lecture yet.",
+                    "Next action: The bot will keep checking silently in the background and notify you if it changes.",
+                ]
+            )
+        return "\n".join(lines)
+
     def _attendance_state_for_event(self, event: LectureEvent) -> tuple[str, bool, bool | None]:
         if event.status == "notified_present":
             return "Present", True, True
@@ -4896,6 +5160,101 @@ class BotService:
             return f"{event.start_time.strftime('%H:%M')} - {event.end_time.strftime('%H:%M')}"
         return event.slot_label
 
+    def _event_has_started_by(self, event: LectureEvent, now_naive: datetime) -> bool:
+        if event.start_time:
+            return datetime.combine(event.event_date, event.start_time) <= now_naive
+        return event.event_date <= now_naive.date()
+
+    def _event_has_finished_by(self, event: LectureEvent, now_naive: datetime) -> bool:
+        if event.end_time:
+            return datetime.combine(event.event_date, event.end_time) <= now_naive
+        if event.start_time:
+            return datetime.combine(event.event_date, event.start_time) <= now_naive
+        return event.event_date < now_naive.date()
+
+    def _automation_timetable_context(
+        self,
+        student_now: datetime,
+        lecture_events: list[LectureEvent],
+    ) -> dict[str, str] | None:
+        now_naive = student_now.replace(tzinfo=None)
+        relevant_events = [
+            event
+            for event in lecture_events
+            if not event.is_break and not self._is_no_class_event(event)
+        ]
+        if not relevant_events:
+            return None
+
+        current_events = [
+            event
+            for event in relevant_events
+            if self._event_has_started_by(event, now_naive) and not self._event_has_finished_by(event, now_naive)
+        ]
+        if current_events:
+            current_event = min(
+                current_events,
+                key=lambda event: event.start_time.isoformat() if event.start_time else "99:99",
+            )
+            return {
+                "label": "Current timetable lecture",
+                "subject_name": current_event.subject_name,
+                "time_label": self._format_event_time(current_event),
+            }
+
+        upcoming_events = []
+        for event in relevant_events:
+            if event.start_time is None:
+                continue
+            if datetime.combine(event.event_date, event.start_time) > now_naive:
+                upcoming_events.append(event)
+        if upcoming_events:
+            upcoming_event = min(
+                upcoming_events,
+                key=lambda event: event.start_time.isoformat() if event.start_time else "99:99",
+            )
+            return {
+                "label": "Next timetable lecture",
+                "subject_name": upcoming_event.subject_name,
+                "time_label": self._format_event_time(upcoming_event),
+            }
+
+        latest_event = max(
+            relevant_events,
+            key=lambda event: (
+                event.end_time.isoformat() if event.end_time else event.start_time.isoformat() if event.start_time else "",
+                event.id,
+            ),
+        )
+        return {
+            "label": "Latest timetable lecture",
+            "subject_name": latest_event.subject_name,
+            "time_label": self._format_event_time(latest_event),
+        }
+
+    def _estimate_next_attendance_scan(
+        self,
+        student: Student,
+        student_now: datetime,
+    ) -> datetime | None:
+        lookback_start = student_now.date() - timedelta(days=self.settings.attendance_correction_lookback_days)
+        if not self.db.has_lecture_events_since(student.id, lookback_start):
+            return None
+        interval = timedelta(minutes=self.settings.attendance_poll_interval_minutes)
+        last_sync = None
+        if student.last_erp_sync_at:
+            try:
+                parsed = self._parse_datetime(student.last_erp_sync_at)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                last_sync = parsed.astimezone(student_now.tzinfo or self.timezone)
+        base_time = last_sync if last_sync and last_sync <= student_now else student_now
+        next_scan = base_time + interval
+        if next_scan <= student_now:
+            next_scan = student_now + interval
+        return next_scan
+
     def _normalize_event_datetime(
         self,
         value: datetime,
@@ -4929,7 +5288,6 @@ class BotService:
         student_label: str,
         user_name: str,
         reg_id: str | None,
-        whatsapp_number: str,
         telegram_chat_id: str,
         timezone: str,
         note: str | None,
@@ -4942,7 +5300,6 @@ class BotService:
             f"Preferred label: {student_label}",
             f"ERP user id: {user_name}",
             f"RegID: {reg_id or 'Not provided'}",
-            f"WhatsApp: {whatsapp_number}",
             f"Telegram: {telegram_chat_id or 'Not provided'}",
             f"Timezone: {timezone}",
             "ERP password: Submitted securely in the website application.",
@@ -4976,6 +5333,8 @@ class BotService:
 
     def _canonical_whatsapp_number(self, value: str) -> str:
         raw = self._normalize_whatsapp_number(value)
+        if not raw.strip():
+            return ""
         normalized = re.sub(r"[^\d+]", "", raw)
         if normalized.startswith("00"):
             normalized = f"+{normalized[2:]}"
@@ -4989,21 +5348,11 @@ class BotService:
         cleaned = str(value or "").strip()
         if not cleaned:
             return ""
-        cleaned = cleaned.rstrip("/")
-        if cleaned.startswith("https://t.me/") or cleaned.startswith("http://t.me/"):
-            cleaned = cleaned.split("/t.me/", 1)[1].strip("/")
-        if cleaned.startswith("t.me/"):
-            cleaned = cleaned.split("t.me/", 1)[1].strip("/")
-        if cleaned.startswith("@"):
-            username = cleaned[1:]
-        else:
-            username = cleaned
         if re.fullmatch(r"-?\d{5,20}", cleaned):
             return cleaned
-        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", username):
-            return f"@{username}"
         raise StudentValidationError(
-            "Telegram destination must be a numeric chat id, @username, or https://t.me/username."
+            "Telegram chat id must be numeric, for example 123456789 or -1001234567890. "
+            "Open the bot, send /start, then save that numeric chat id instead of an @username."
         )
 
     def _normalize_email_address(self, value: str) -> str:
@@ -5077,12 +5426,13 @@ class BotService:
                 raise StudentValidationError("ERP user id already exists in another student profile.")
             if site_login_key and student.site_login_username.casefold() == site_login_key:
                 raise StudentValidationError("Site login username already exists in another student profile.")
-            try:
-                student_whatsapp = self._canonical_whatsapp_number(student.whatsapp_number)
-            except ValueError:
-                student_whatsapp = student.whatsapp_number.strip()
-            if student_whatsapp == whatsapp_key:
-                raise StudentValidationError("WhatsApp number already exists in another student profile.")
+            if whatsapp_key:
+                try:
+                    student_whatsapp = self._canonical_whatsapp_number(student.whatsapp_number)
+                except ValueError:
+                    student_whatsapp = student.whatsapp_number.strip()
+                if student_whatsapp == whatsapp_key:
+                    raise StudentValidationError("WhatsApp number already exists in another student profile.")
             if telegram_key and (student.telegram_chat_id or "").strip() == telegram_key:
                 raise StudentValidationError("Telegram chat id already exists in another student profile.")
             if email_key and (student.email_address or "").strip().casefold() == email_key:
@@ -5222,8 +5572,7 @@ class BotService:
         targets = self._delivery_targets(student)
         if not targets:
             raise NotificationDeliveryError(
-                "No delivery channel is configured for this student. "
-                "Add at least one reachable WhatsApp number or Telegram chat id."
+                "No delivery channel is configured for this student. Add a reachable Telegram chat id."
             )
 
         delivered_channels: list[str] = []
@@ -5368,16 +5717,16 @@ class BotService:
         mode = self.get_student_notification_channel_mode(student)
         if mode == "paused":
             return targets
-        if mode in {"all", "whatsapp_only"} and bool(getattr(self.whatsapp, "configured", True)) and student.whatsapp_number:
-            targets.append(("whatsapp", student.whatsapp_number))
-        if mode in {"all", "telegram_only"} and bool(getattr(self.telegram, "configured", False)) and student.telegram_chat_id:
+        if mode == "telegram_only" and bool(getattr(self.telegram, "configured", False)) and student.telegram_chat_id:
             targets.append(("telegram", student.telegram_chat_id))
         return targets
 
     def _normalize_notification_channel_mode(self, value: str | None) -> str:
-        normalized = str(value or "all").strip().lower()
+        normalized = str(value or "telegram_only").strip().lower()
+        if normalized in {"all", "whatsapp_only"}:
+            return "telegram_only"
         if normalized not in NOTIFICATION_CHANNEL_MODE_LABELS:
-            return "all"
+            return "telegram_only"
         return normalized
 
     def _normalize_disabled_student_actions(self, values: Iterable[str]) -> set[str]:
@@ -5397,8 +5746,6 @@ class BotService:
         title: str,
         message_kind: str,
     ) -> str:
-        if channel == "whatsapp":
-            return self.whatsapp.send_text(recipient, body, message_kind=message_kind)
         if channel == "telegram":
             return self.telegram.send_text(recipient, body, message_kind=message_kind)
         raise RuntimeError(f"Unsupported delivery channel: {channel}")

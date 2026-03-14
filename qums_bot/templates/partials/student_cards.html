@@ -1,7 +1,6 @@
 <section class="grid">
     {% for student in students %}
         <article class="student">
-            {% set wa = whatsapp_statuses.get(student.id) %}
             {% set automation = student_automation_statuses.get(student.id) %}
             {% set student_view = student_dashboard_views.get(student.id) %}
             {% set action_states = student_view.action_states if student_view else {} %}
@@ -9,7 +8,6 @@
             <p class="meta">
                 {% if can_view_student_details %}
                     ERP user id: {{ student.user_name }}<br>
-                    WhatsApp: {{ student.whatsapp_number }}<br>
                     Telegram: {{ student.telegram_chat_id or "Not set" }}<br>
                     RegID: {{ student.reg_id or "Not synced yet" }}<br>
                     Session updated: {{ student.session_updated_at or "Not logged in yet" }}<br>
@@ -62,10 +60,19 @@
                         </div>
                         <div class="live-sub">
                             {% if automation.next_attendance_scan_label %}
-                                Next check: {{ automation.next_attendance_scan_label }}<br>
-                                Lecture: {{ automation.next_attendance_subject }}
+                                Next background scan: {{ automation.next_attendance_scan_label }}<br>
+                                Poll interval: every {{ automation.attendance_poll_interval_minutes }} minute(s)<br>
+                                {% if automation.next_due_attendance_check_label %}
+                                    Next lecture milestone: {{ automation.next_due_attendance_check_label }}<br>
+                                {% endif %}
+                                {% if automation.timetable_lecture_subject %}
+                                    {{ automation.timetable_lecture_label }}: {{ automation.timetable_lecture_subject }}<br>
+                                    Time: {{ automation.timetable_lecture_time_label }}
+                                {% else %}
+                                    Live attendance checks are running silently in the background.
+                                {% endif %}
                             {% else %}
-                                No scheduled lecture is waiting for a present, absent, or pending scan right now.
+                                No recent lecture activity is queued for live attendance scanning right now.
                             {% endif %}
                         </div>
                     </div>
@@ -88,28 +95,6 @@
                         </div>
                     </div>
                 </div>
-            {% endif %}
-            {% if wa and can_view_student_details %}
-                <div class="status {{ 'ready' if wa.ready else 'not-ready' }}">
-                    {{ wa.state.replace('_', ' ') | title }}
-                </div>
-                <p class="meta">
-                    WhatsApp readiness: {{ wa.detail }}<br>
-                    {% if wa.last_outbound_status %}
-                        Last outbound status: {{ wa.last_outbound_status }}
-                        {% if wa.last_error_code %}| Error: {{ wa.last_error_code }}{% endif %}
-                        <br>
-                    {% endif %}
-                    {% if wa.last_inbound_at %}
-                        Last inbound sandbox message: {{ wa.last_inbound_at }}<br>
-                    {% endif %}
-                    {% if wa.sandbox_expires_at %}
-                        Sandbox expires at: {{ wa.sandbox_expires_at }}<br>
-                    {% endif %}
-                    {% if wa.join_command %}
-                        Join command: <code>{{ wa.join_command }}</code> to <code>+14155238886</code>
-                    {% endif %}
-                </p>
             {% endif %}
             {% if is_admin_authenticated %}
                 <details class="student-action-menu">
@@ -171,8 +156,6 @@
                             <div>
                                 <label for="notification_channel_mode_{{ student.id }}">Notification routing</label>
                                 <select id="notification_channel_mode_{{ student.id }}" name="notification_channel_mode">
-                                    <option value="all" {% if student_view.notification_channel_mode == 'all' %}selected{% endif %}>All channels</option>
-                                    <option value="whatsapp_only" {% if student_view.notification_channel_mode == 'whatsapp_only' %}selected{% endif %}>WhatsApp only</option>
                                     <option value="telegram_only" {% if student_view.notification_channel_mode == 'telegram_only' %}selected{% endif %}>Telegram only</option>
                                     <option value="paused" {% if student_view.notification_channel_mode == 'paused' %}selected{% endif %}>Pause all notifications</option>
                                 </select>

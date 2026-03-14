@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import requests
@@ -31,9 +32,7 @@ class TelegramSender:
         if not self.configured:
             raise TelegramError("Telegram bot token is missing in .env.")
 
-        cleaned_chat_id = str(chat_id or "").strip()
-        if not cleaned_chat_id:
-            raise TelegramError("Telegram chat id is required for Telegram delivery.")
+        cleaned_chat_id = self._delivery_chat_id(chat_id)
 
         payload: dict[str, Any] = {
             "chat_id": cleaned_chat_id,
@@ -59,7 +58,7 @@ class TelegramSender:
         reply_markup: dict[str, Any] | None = None,
     ) -> str:
         payload_json: dict[str, Any] = {
-            "chat_id": str(chat_id).strip(),
+            "chat_id": self._delivery_chat_id(chat_id),
             "message_id": int(message_id),
             "text": body,
             "disable_web_page_preview": True,
@@ -87,7 +86,7 @@ class TelegramSender:
         payload = self._request_json(
             "sendDocument",
             data={
-                "chat_id": str(chat_id).strip(),
+                "chat_id": self._delivery_chat_id(chat_id),
                 "caption": caption or "",
             },
             files={"document": (filename, content_bytes, "text/csv")},
@@ -168,3 +167,14 @@ class TelegramSender:
             detail = str(payload.get("description") or f"Telegram HTTP {response.status_code}")
             raise TelegramError(f"Telegram {method} failed: {detail}")
         return payload
+
+    def _delivery_chat_id(self, chat_id: str) -> str:
+        cleaned_chat_id = str(chat_id or "").strip()
+        if not cleaned_chat_id:
+            raise TelegramError("Telegram chat id is required for Telegram delivery.")
+        if not re.fullmatch(r"-?\d{5,20}", cleaned_chat_id):
+            raise TelegramError(
+                "Telegram delivery requires a numeric chat id. Open the bot, send /start, "
+                "then save that numeric chat id instead of an @username."
+            )
+        return cleaned_chat_id

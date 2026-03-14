@@ -7,6 +7,8 @@ from .config import Settings
 from .service import BotService
 from .task_queue import TaskDispatcher
 
+MIN_TELEGRAM_JOB_INTERVAL_SECONDS = 5
+
 
 def build_scheduler(
     settings: Settings,
@@ -14,6 +16,14 @@ def build_scheduler(
     dispatcher: TaskDispatcher | None = None,
 ) -> BackgroundScheduler:
     timezone = ZoneInfo(settings.local_timezone)
+    telegram_job_interval_seconds = max(
+        settings.telegram_poll_interval_seconds,
+        MIN_TELEGRAM_JOB_INTERVAL_SECONDS,
+    )
+    telegram_refresh_interval_seconds = max(
+        settings.dashboard_auto_refresh_seconds,
+        MIN_TELEGRAM_JOB_INTERVAL_SECONDS,
+    )
     scheduler = BackgroundScheduler(
         timezone=timezone,
         job_defaults={
@@ -94,10 +104,10 @@ def build_scheduler(
             dispatcher=dispatcher,
             job_name="telegram-inbound-checks",
             callback_name="run_telegram_inbound_sweep",
-            interval_seconds=settings.telegram_poll_interval_seconds,
+            interval_seconds=telegram_job_interval_seconds,
         ),
         "interval",
-        seconds=settings.telegram_poll_interval_seconds,
+        seconds=telegram_job_interval_seconds,
         id="telegram-inbound-checks",
         replace_existing=True,
     )
@@ -107,10 +117,10 @@ def build_scheduler(
             dispatcher=dispatcher,
             job_name="telegram-admin-refresh-checks",
             callback_name="run_telegram_admin_refresh_sweep",
-            interval_seconds=max(settings.dashboard_auto_refresh_seconds, 5),
+            interval_seconds=telegram_refresh_interval_seconds,
         ),
         "interval",
-        seconds=max(settings.dashboard_auto_refresh_seconds, 5),
+        seconds=telegram_refresh_interval_seconds,
         id="telegram-admin-refresh-checks",
         replace_existing=True,
     )

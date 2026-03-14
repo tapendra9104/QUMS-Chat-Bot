@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from qums_bot.config import Settings
 from qums_bot.db import Database
+from qums_bot.errors import StudentValidationError
 from qums_bot.erp_client import AuthenticationRequired
 from qums_bot.models import LectureSlot
 from qums_bot.parsers import parse_attendance_summary
@@ -212,7 +213,11 @@ class DummyService:
 
 class SchedulerServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="qums-tests-"))
+        tmp_root = Path("tmp-test2")
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        self.tmp = tmp_root / self.id().replace(".", "_")
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        self.tmp.mkdir(parents=True, exist_ok=True)
         self.db_path = self.tmp / "bot.sqlite3"
         self.db = Database(self.db_path)
         self.db.init()
@@ -234,6 +239,30 @@ class SchedulerServiceTests(unittest.TestCase):
             timezone=timezone,
         )
 
+    def _set_student_activity_times(
+        self,
+        student_id: int,
+        *,
+        session_updated_at: str | None = None,
+        last_erp_sync_at: str | None = None,
+    ) -> None:
+        with self.db._connect() as conn:
+            conn.execute(
+                """
+                UPDATE students
+                SET session_updated_at = COALESCE(?, session_updated_at),
+                    last_erp_sync_at = COALESCE(?, last_erp_sync_at),
+                    updated_at = COALESCE(?, updated_at)
+                WHERE id = ?
+                """,
+                (
+                    session_updated_at,
+                    last_erp_sync_at,
+                    session_updated_at or last_erp_sync_at,
+                    student_id,
+                ),
+            )
+
     def _make_service(
         self,
         *,
@@ -254,6 +283,7 @@ class SchedulerServiceTests(unittest.TestCase):
         scheduler = build_scheduler(self.settings, DummyService())
         jobs = scheduler.get_jobs()
         job_ids = {job.id for job in jobs}
+        jobs_by_id = {job.id: job for job in jobs}
         self.assertEqual(
             job_ids,
             {
@@ -269,6 +299,8 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertTrue(scheduler._job_defaults["coalesce"])
         self.assertEqual(scheduler._job_defaults["max_instances"], 1)
         self.assertEqual(scheduler._job_defaults["misfire_grace_time"], 60)
+        self.assertEqual(jobs_by_id["telegram-inbound-checks"].trigger.interval.total_seconds(), 5)
+        self.assertEqual(jobs_by_id["telegram-admin-refresh-checks"].trigger.interval.total_seconds(), 30)
 
     def test_scheduled_dispatch_honors_student_timezones(self) -> None:
         student_india = self._add_student(label="India Student", timezone="Asia/Kolkata")
@@ -312,26 +344,32 @@ class SchedulerServiceTests(unittest.TestCase):
         assert student is not None
         self.assertEqual(student.whatsapp_number, "+919876543210")
 
-    def test_save_student_normalizes_telegram_username_url(self) -> None:
+    def test_database_creates_parent_directory_for_custom_path(self) -> None:
+        nested_db_path = self.tmp / "nested" / "data" / "bot.sqlite3"
+
+        db = Database(nested_db_path)
+        db.init()
+
+        self.assertTrue(nested_db_path.parent.exists())
+        self.assertTrue(nested_db_path.exists())
+
+    def test_save_student_rejects_telegram_username_input(self) -> None:
         service = self._make_service()
 
-        student_id = service.save_student(
-            student_id=None,
-            student_label="Telegram Student",
-            user_name="telegram_user",
-            password="secret",
-            whatsapp_number="+919876543210",
-            telegram_chat_id="https://t.me/gunda872",
-            email_address="",
-            enabled=True,
-            timezone="Asia/Kolkata",
-        )
+        with self.assertRaises(StudentValidationError):
+            service.save_student(
+                student_id=None,
+                student_label="Telegram Student",
+                user_name="telegram_user",
+                password="secret",
+                whatsapp_number="+919876543210",
+                telegram_chat_id="https://t.me/gunda872",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
 
-        student = self.db.get_student(student_id)
-        assert student is not None
-        self.assertEqual(student.telegram_chat_id, "@gunda872")
-
-    def test_send_test_message_dispatches_to_whatsapp_and_telegram(self) -> None:
+    def test_send_test_message_dispatches_to_telegram_only(self) -> None:
         student_id = self._add_student(label="Multi Channel Student", timezone="Asia/Kolkata")
         student = self.db.get_student(student_id)
         assert student is not None
@@ -353,11 +391,11 @@ class SchedulerServiceTests(unittest.TestCase):
 
         service.send_test_message(student_id)
 
-        self.assertEqual(len(whatsapp.messages), 1)
+        self.assertEqual(len(whatsapp.messages), 0)
         self.assertEqual(len(telegram.messages), 1)
         history = service.list_message_history()
-        self.assertEqual(len(history), 2)
-        self.assertEqual({item.channel for item in history}, {"whatsapp", "telegram"})
+        self.assertEqual(len(history), 1)
+        self.assertEqual({item.channel for item in history}, {"telegram"})
 
     def test_delivery_targets_respect_notification_channel_mode(self) -> None:
         student_id = self.db.upsert_student(
@@ -470,7 +508,7 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertNotIn("Wrong Monthly Faculty", body)
         self.assertNotIn("Wrong AI Faculty", body)
 
-    def test_send_attendance_summary_report_dispatches_to_whatsapp_and_telegram(self) -> None:
+    def test_send_attendance_summary_report_dispatches_to_telegram_only(self) -> None:
         student_id = self._add_student(label="Attendance Student", timezone="Asia/Kolkata")
         student = self.db.get_student(student_id)
         assert student is not None
@@ -534,6 +572,12 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("Totals present: 15", body)
         self.assertIn("Total lectures: 18", body)
         self.assertIn("Total absent: 3", body)
+        self.assertIn("Attendance Shortage Report", body)
+        self.assertIn("Threshold: 75% per subject", body)
+        self.assertIn("Scope: totals below include only subjects currently at risk.", body)
+        self.assertIn("Subjects At Risk", body)
+        self.assertIn("Attendance: 6/8 (75.00%)", body)
+        self.assertIn("Risk: No more safe absences remain.", body)
         self.assertIn("Subject-wise Attendance", body)
         self.assertIn("Mathematics (MATH101)", body)
         self.assertIn("Faculty: Prof Timetable", body)
@@ -543,11 +587,46 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("Absent: 2", body)
         self.assertIn("Physics Lab (PHYL102)", body)
         self.assertIn("Faculty: Prof Timetable Physics", body)
-        self.assertEqual(len(whatsapp.messages), 1)
+        self.assertEqual(len(whatsapp.messages), 0)
         self.assertEqual(len(telegram.messages), 1)
         history = service.list_message_history()
-        self.assertEqual(len(history), 2)
+        self.assertEqual(len(history), 1)
         self.assertEqual({item.category for item in history}, {"attendance_summary_report"})
+
+    def test_attendance_summary_report_marks_shortage_status_clear_when_all_subjects_are_safe(self) -> None:
+        student_id = self._add_student(label="Safe Attendance Student", timezone="Asia/Kolkata")
+        erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Period": "09:00 - 10:00",
+                        "Subject": "Biology",
+                        "Employee": "Prof Biology",
+                        "Time": "09:00 - 10:00",
+                    }
+                ]
+            },
+            attendance_payload={
+                "state": [
+                    {
+                        "Subject": "Biology",
+                        "SubjectCode": "BIO101",
+                        "EMPNAME": "Prof ERP Biology",
+                        "TotalLecture": "10",
+                        "TotalPresent": "8",
+                        "Percentage": "80.00%",
+                    }
+                ]
+            },
+        )
+        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp())
+
+        body = service.send_attendance_summary_report(student_id, target_date=date(2026, 3, 16), force=True)
+
+        self.assertIn("Attendance Shortage Report", body)
+        self.assertIn("Threshold: 75% per subject", body)
+        self.assertIn("Status: Clear", body)
+        self.assertIn("No subject is currently at or below the attendance shortage threshold.", body)
 
     def test_telegram_admin_add_student_flow_saves_profile(self) -> None:
         telegram = FakeTelegram()
@@ -759,7 +838,7 @@ class SchedulerServiceTests(unittest.TestCase):
             user_name="23030682",
             password="erp-pass",
             whatsapp_number="+919634549096",
-            telegram_chat_id="@gunda872",
+            telegram_chat_id="5570554766",
             timezone="Asia/Kolkata",
             reg_id="8027",
             note="Please add my profile.",
@@ -773,7 +852,8 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(len(telegram.messages), 2)
         self.assertIn("Application Requests", telegram.messages[0][2])
         self.assertIn("Tapendra", telegram.messages[0][2])
-        self.assertIn("ERP password: erp-pass", telegram.messages[1][2])
+        self.assertIn("ERP password: Submitted securely and hidden from admin views.", telegram.messages[1][2])
+        self.assertNotIn("erp-pass", telegram.messages[1][2])
 
     def test_removed_telegram_export_callback_returns_removed_alert(self) -> None:
         student_id = self._add_student(label="Export Student", timezone="Asia/Kolkata")
@@ -1367,30 +1447,33 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(events[0].subject_name, "Off Day")
         self.assertEqual(self.db.get_pending_lecture_events(), [])
 
-    def test_monitor_sweep_dedupes_sandbox_and_erp_alerts(self) -> None:
-        student_id = self._add_student(label="Monitor Student", timezone="Asia/Kolkata")
+    def test_monitor_sweep_dedupes_repeated_erp_expiry_alerts(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Monitor Student",
+            user_name="monitor_student",
+            password_encrypted="secret",
+            whatsapp_number="+911234567890",
+            telegram_chat_id="5570554765",
+            email_address="",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            timezone="Asia/Kolkata",
+        )
         self.db.update_student_session(
             student_id=student_id,
             cookies_json="[]",
             last_login_status="ERP session active.",
         )
-        expires_at = (datetime.now(tz=ZoneInfo("UTC")) + timedelta(minutes=5)).isoformat()
-        whatsapp = FakeWhatsApp(
-            status=WhatsAppChannelStatus(
-                configured=True,
-                mode="sandbox",
-                sender="whatsapp:+14155238886",
-                ready=True,
-                state="sandbox_ready",
-                detail="ok",
-                join_command="join demo-code",
-                last_inbound_at=None,
-                sandbox_expires_at=expires_at,
-                last_outbound_status=None,
-                last_error_code=None,
-            )
+        stale_at = (datetime.now(tz=ZoneInfo("UTC")) - timedelta(minutes=20)).replace(microsecond=0).isoformat()
+        self._set_student_activity_times(student_id, session_updated_at=stale_at, last_erp_sync_at=stale_at)
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(
+            erp=FakeERP(auth_required=True),
+            whatsapp=FakeWhatsApp(),
+            telegram=telegram,
         )
-        service = self._make_service(erp=FakeERP(auth_required=True), whatsapp=whatsapp)
         now = datetime.now(ZoneInfo("Asia/Kolkata"))
 
         service.run_monitor_sweep(now=now)
@@ -1398,8 +1481,7 @@ class SchedulerServiceTests(unittest.TestCase):
 
         history = service.list_message_history()
         categories = {item.category for item in history}
-        self.assertEqual(len(history), 2)
-        self.assertIn("sandbox_expiry_warning", categories)
+        self.assertEqual(len(history), 1)
         self.assertIn("erp_session_expired", categories)
 
     def test_get_whatsapp_status_returns_fallback_for_dashboard_failures(self) -> None:
@@ -1422,6 +1504,8 @@ class SchedulerServiceTests(unittest.TestCase):
             cookies_json="[]",
             last_login_status="ERP session active.",
         )
+        stale_at = (datetime.now(tz=ZoneInfo("UTC")) - timedelta(minutes=20)).replace(microsecond=0).isoformat()
+        self._set_student_activity_times(student_id, session_updated_at=stale_at, last_erp_sync_at=stale_at)
         service = self._make_service(erp=FakeERP(auth_required=True), whatsapp=BrokenWhatsApp())
         now = datetime.now(ZoneInfo("Asia/Kolkata"))
 
@@ -1433,7 +1517,138 @@ class SchedulerServiceTests(unittest.TestCase):
         assert refreshed is not None
         assert refreshed.session_updated_at is not None
         self.assertFalse(self.db.has_notification_event(student_id, "erp_session_expired", refreshed.session_updated_at))
-        self.assertIn("WhatsApp status lookup failed", refreshed.last_login_status or "")
+        self.assertIn("ERP session expired", refreshed.last_login_status or "")
+
+    def test_monitor_sweep_sends_erp_expiry_alert_via_telegram_when_whatsapp_lookup_fails(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Telegram Expired Student",
+            user_name="telegram_expired_student",
+            password_encrypted="secret",
+            whatsapp_number="+911234567890",
+            telegram_chat_id="5570554765",
+            email_address="",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            timezone="Asia/Kolkata",
+        )
+        self.db.update_student_session(
+            student_id=student_id,
+            cookies_json="[]",
+            last_login_status="ERP session active.",
+        )
+        stale_at = (datetime.now(tz=ZoneInfo("UTC")) - timedelta(minutes=20)).replace(microsecond=0).isoformat()
+        self._set_student_activity_times(student_id, session_updated_at=stale_at, last_erp_sync_at=stale_at)
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(
+            erp=FakeERP(auth_required=True),
+            whatsapp=BrokenWhatsApp(),
+            telegram=telegram,
+        )
+        now = datetime.now(ZoneInfo("Asia/Kolkata"))
+
+        service.run_monitor_sweep(now=now)
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("ERP Session Alert", telegram.messages[0][2])
+        self.assertIn("Lecture-end attendance scans and summary checks are paused", telegram.messages[0][2])
+        history = service.list_message_history()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].channel, "telegram")
+        self.assertEqual(history[0].category, "erp_session_expired")
+
+    def test_monitor_sweep_skips_fresh_session_probe_right_after_login(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Fresh Login Student",
+            user_name="fresh_login_student",
+            password_encrypted="secret",
+            whatsapp_number="+911234567890",
+            telegram_chat_id="5570554765",
+            email_address="",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            timezone="Asia/Kolkata",
+        )
+        self.db.update_student_session(
+            student_id=student_id,
+            cookies_json="[]",
+            last_login_status="ERP session active.",
+        )
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(
+            erp=FakeERP(auth_required=True),
+            whatsapp=BrokenWhatsApp(),
+            telegram=telegram,
+        )
+        now = datetime.now(ZoneInfo("Asia/Kolkata"))
+
+        service.run_monitor_sweep(now=now)
+
+        self.assertEqual(telegram.messages, [])
+        refreshed = self.db.get_student(student_id)
+        assert refreshed is not None
+        self.assertEqual(refreshed.erp_status_text, "ERP session active.")
+
+    def test_run_due_checks_sends_erp_expiry_alert_when_attendance_scan_hits_authentication_required(self) -> None:
+        class AttendanceAuthERP(FakeERP):
+            def get_attendance_summary(self, student):
+                raise AuthenticationRequired("expired")
+
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Due Check Expired Student",
+            user_name="due_check_expired_student",
+            password_encrypted="secret",
+            whatsapp_number="+911234567890",
+            telegram_chat_id="5570554765",
+            email_address="",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            timezone="Asia/Kolkata",
+        )
+        self.db.update_student_session(
+            student_id=student_id,
+            cookies_json="[]",
+            last_login_status="ERP session active.",
+        )
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=date(2026, 3, 14),
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="tsdv",
+                    subject_name="Technical Skills Development-V",
+                    teacher_name="Prof Live",
+                    raw_cell="Technical Skills Development-V\nProf Live\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(
+            erp=AttendanceAuthERP(),
+            whatsapp=BrokenWhatsApp(),
+            telegram=telegram,
+        )
+        service._local_now = lambda: datetime(2026, 3, 14, 10, 5, tzinfo=ZoneInfo("Asia/Kolkata"))  # type: ignore[method-assign]
+
+        service.run_due_checks()
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("ERP Session Alert", telegram.messages[0][2])
+        self.assertIn("Lecture-end attendance scans and summary checks are paused", telegram.messages[0][2])
+        history = service.list_message_history()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].channel, "telegram")
+        self.assertEqual(history[0].category, "erp_session_expired")
 
     def test_attendance_timestamp_is_persisted_and_reported_after_resync(self) -> None:
         student_id = self._add_student(label="Attendance Student", timezone="Asia/Kolkata")
@@ -1498,7 +1713,19 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(history[0].idempotency_key, "attendance_update:test-key:whatsapp")
 
     def test_task_dispatcher_claims_each_periodic_slot_once(self) -> None:
-        self._add_student(label="Dispatch Student", timezone="Asia/Kolkata")
+        self.db.upsert_student(
+            student_id=None,
+            student_label="Dispatch Student",
+            user_name="dispatch_student",
+            password_encrypted="secret",
+            whatsapp_number="",
+            telegram_chat_id="5570554765",
+            email_address="",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json="[]",
+            timezone="Asia/Kolkata",
+        )
         erp = FakeERP(
             timetable_payload={
                 "state": [
@@ -1506,8 +1733,9 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp(), telegram=telegram)
         dispatcher = TaskDispatcher(settings=self.settings, db=self.db, service=service)
         now = datetime(2026, 3, 13, 6, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
 
@@ -1526,7 +1754,7 @@ class SchedulerServiceTests(unittest.TestCase):
 
         self.assertTrue(first.dispatched)
         self.assertFalse(second.dispatched)
-        self.assertEqual(len(whatsapp.messages), 1)
+        self.assertEqual(len(telegram.messages), 1)
 
     def test_low_attendance_and_shortage_alerts_are_sent(self) -> None:
         student_id = self._add_student(label="Risk Student", timezone="Asia/Kolkata")
@@ -1560,16 +1788,16 @@ class SchedulerServiceTests(unittest.TestCase):
         service.send_morning_update(student_id, target_date=date(2026, 3, 15))
 
         categories = {item.category for item in service.list_message_history()}
-        self.assertIn("attendance_shortage_warning", categories)
-        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Warning" in body]
+        self.assertIn("attendance_shortage_report", categories)
+        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
         self.assertEqual(len(shortage_messages), 1)
-        subject_shortage = next(body for body in shortage_messages if "Subject: Mathematics (MATH101)" in body)
+        subject_shortage = next(body for body in shortage_messages if "Mathematics (MATH101)" in body)
+        self.assertIn("Threshold: 75% per subject", subject_shortage)
         self.assertIn("Faculty: Prof Timetable", subject_shortage)
         self.assertIn("Total absent: 1", subject_shortage)
-        self.assertIn("Threshold monitored: 75%", subject_shortage)
         self.assertNotIn("Prof ERP", subject_shortage)
 
-    def test_subject_shortage_warning_is_sent_when_attendance_drops_below_75_percent(self) -> None:
+    def test_subject_shortage_report_is_sent_when_attendance_drops_below_75_percent(self) -> None:
         student_id = self._add_student(label="Below Threshold Student", timezone="Asia/Kolkata")
         erp = FakeERP(
             timetable_payload={
@@ -1600,15 +1828,15 @@ class SchedulerServiceTests(unittest.TestCase):
 
         service.send_morning_update(student_id, target_date=date(2026, 3, 16))
 
-        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Warning" in body]
+        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
         self.assertEqual(len(shortage_messages), 1)
-        subject_shortage = next(body for body in shortage_messages if "Subject: Physics (PHY101)" in body)
+        subject_shortage = next(body for body in shortage_messages if "Physics (PHY101)" in body)
         self.assertIn("Faculty: Prof Timetable Physics", subject_shortage)
-        self.assertIn("Current attendance: 7/10 (70.00%)", subject_shortage)
+        self.assertIn("Attendance: 7/10 (70.00%)", subject_shortage)
         self.assertIn("Total absent: 3", subject_shortage)
-        self.assertIn("Threshold monitored: 75%", subject_shortage)
+        self.assertIn("Threshold: 75% per subject", subject_shortage)
 
-    def test_subject_shortage_warning_is_not_sent_above_75_percent(self) -> None:
+    def test_subject_shortage_report_is_not_sent_above_75_percent(self) -> None:
         student_id = self._add_student(label="Above Threshold Student", timezone="Asia/Kolkata")
         erp = FakeERP(
             timetable_payload={
@@ -1639,10 +1867,437 @@ class SchedulerServiceTests(unittest.TestCase):
 
         service.send_morning_update(student_id, target_date=date(2026, 3, 16))
 
-        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Warning" in body]
+        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
         self.assertEqual(shortage_messages, [])
         categories = {item.category for item in service.list_message_history()}
-        self.assertNotIn("attendance_shortage_warning", categories)
+        self.assertNotIn("attendance_shortage_report", categories)
+
+    def test_shortage_report_notification_does_not_repeat_on_unchanged_followup_scan(self) -> None:
+        student_id = self._add_student(label="Shortage Dedup Student", timezone="Asia/Kolkata")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Period": "09:00 - 10:00",
+                        "Subject": "Mathematics",
+                        "Employee": "Prof Timetable",
+                        "Time": "09:00 - 10:00",
+                    }
+                ]
+            },
+            attendance_payload={
+                "state": [
+                    {
+                        "Subject": "Mathematics",
+                        "SubjectCode": "MATH101",
+                        "EMPNAME": "Prof ERP",
+                        "TotalLecture": "4",
+                        "TotalPresent": "3",
+                        "Percentage": "75.00%",
+                    }
+                ]
+            },
+        )
+        whatsapp = FakeWhatsApp()
+        service = self._make_service(erp=erp, whatsapp=whatsapp)
+
+        service.send_morning_update(student_id, target_date=date(2026, 3, 15))
+        service._process_attendance_scan(
+            student,
+            [],
+            datetime(2026, 3, 15, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+
+        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
+        self.assertEqual(len(shortage_messages), 1)
+
+    def test_shortage_report_scan_uses_weekly_reference_faculty_when_today_has_no_matching_event(self) -> None:
+        student_id = self._add_student(label="Weekly Faculty Student", timezone="Asia/Kolkata")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Day/Period": "Friday",
+                        "P1": "Employability Skills III(Personality Development Program)(SE36366) (A-010),MANVI TYAGI",
+                    }
+                ],
+                "col": "Day/Period,P1",
+            },
+            attendance_payload={
+                "state": [
+                    {
+                        "Subject": "Employability Skills III(Personality Development Program)",
+                        "SubjectCode": "SE36366",
+                        "EMPNAME": "",
+                        "TotalLecture": "15",
+                        "TotalPresent": "11",
+                        "Percentage": "73.33%",
+                    }
+                ]
+            },
+        )
+        whatsapp = FakeWhatsApp()
+        service = self._make_service(erp=erp, whatsapp=whatsapp)
+
+        service._process_attendance_scan(
+            student,
+            [],
+            datetime(2026, 3, 14, 17, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+
+        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
+        self.assertEqual(len(shortage_messages), 1)
+        self.assertIn("Faculty: MANVI TYAGI", shortage_messages[0])
+        self.assertNotIn("Faculty: Not available", shortage_messages[0])
+
+    def test_live_attendance_scan_sends_present_alert_during_lecture_before_due_window(self) -> None:
+        student_id = self._add_student(label="Live Present Student", timezone="Asia/Kolkata")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        target_date = date(2026, 3, 14)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="tsdv",
+                    subject_name="Technical Skills Development-V",
+                    teacher_name="Prof Live",
+                    raw_cell="Technical Skills Development-V\nProf Live\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        self.db.upsert_attendance_snapshot(
+            student_id=student_id,
+            subject_key="tsdv101",
+            subject_name="Technical Skills Development-V",
+            subject_code="TSDV101",
+            teacher_name="Prof Live",
+            total_lecture=4,
+            total_present=4,
+            percentage="100.00%",
+        )
+        erp = FakeERP(
+            attendance_payload={
+                "state": [
+                    {
+                        "Subject": "Technical Skills Development-V",
+                        "SubjectCode": "TSDV101",
+                        "EMPNAME": "Prof Live",
+                        "TotalLecture": "5",
+                        "TotalPresent": "5",
+                        "Percentage": "100.00%",
+                    }
+                ]
+            }
+        )
+        whatsapp = FakeWhatsApp()
+        service = self._make_service(erp=erp, whatsapp=whatsapp)
+
+        service._process_attendance_scan(
+            student,
+            [],
+            datetime(2026, 3, 14, 9, 42, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+
+        self.assertEqual(len(whatsapp.messages), 1)
+        body = whatsapp.messages[0][2]
+        self.assertIn("Attendance Update", body)
+        self.assertIn("Final status: Present", body)
+        self.assertIn("Technical Skills Development-V", body)
+        event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
+        self.assertEqual(event.status, "notified_present")
+
+    def test_live_attendance_scan_sends_pending_alert_at_lecture_end_before_grace_window(self) -> None:
+        student_id = self._add_student(label="Live Pending Student", timezone="Asia/Kolkata")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        target_date = date(2026, 3, 14)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="tsdv",
+                    subject_name="Technical Skills Development-V",
+                    teacher_name="Prof Live",
+                    raw_cell="Technical Skills Development-V\nProf Live\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        self.db.upsert_attendance_snapshot(
+            student_id=student_id,
+            subject_key="tsdv101",
+            subject_name="Technical Skills Development-V",
+            subject_code="TSDV101",
+            teacher_name="Prof Live",
+            total_lecture=4,
+            total_present=4,
+            percentage="100.00%",
+        )
+        erp = FakeERP(
+            attendance_payload={
+                "state": [
+                    {
+                        "Subject": "Technical Skills Development-V",
+                        "SubjectCode": "TSDV101",
+                        "EMPNAME": "Prof Live",
+                        "TotalLecture": "4",
+                        "TotalPresent": "4",
+                        "Percentage": "100.00%",
+                    }
+                ]
+            }
+        )
+        whatsapp = FakeWhatsApp()
+        service = self._make_service(erp=erp, whatsapp=whatsapp)
+
+        service._process_attendance_scan(
+            student,
+            [],
+            datetime(2026, 3, 14, 9, 56, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+
+        self.assertEqual(len(whatsapp.messages), 1)
+        body = whatsapp.messages[0][2]
+        self.assertIn("Attendance Pending Update", body)
+        self.assertIn("Current status: Not marked yet", body)
+        event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
+        self.assertEqual(event.status, "notified_unmarked")
+        self.assertIsNotNone(event.check_after)
+
+        service._process_attendance_scan(
+            student,
+            [],
+            datetime(2026, 3, 14, 10, 1, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+        self.assertEqual(len(whatsapp.messages), 1)
+
+    def test_live_attendance_scan_sends_lecture_finished_status_once_after_present_marking(self) -> None:
+        student_id = self._add_student(label="Lecture Finish Student", timezone="Asia/Kolkata")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        target_date = date(2026, 3, 14)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="tsdv",
+                    subject_name="Technical Skills Development-V",
+                    teacher_name="Prof Live",
+                    raw_cell="Technical Skills Development-V\nProf Live\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        self.db.upsert_attendance_snapshot(
+            student_id=student_id,
+            subject_key="tsdv101",
+            subject_name="Technical Skills Development-V",
+            subject_code="TSDV101",
+            teacher_name="Prof Live",
+            total_lecture=4,
+            total_present=4,
+            percentage="100.00%",
+        )
+        erp = FakeERP(
+            attendance_payload={
+                "state": [
+                    {
+                        "Subject": "Technical Skills Development-V",
+                        "SubjectCode": "TSDV101",
+                        "EMPNAME": "Prof Live",
+                        "TotalLecture": "5",
+                        "TotalPresent": "5",
+                        "Percentage": "100.00%",
+                    }
+                ]
+            }
+        )
+        whatsapp = FakeWhatsApp()
+        service = self._make_service(erp=erp, whatsapp=whatsapp)
+
+        service._process_attendance_scan(
+            student,
+            [],
+            datetime(2026, 3, 14, 9, 42, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+        self.assertEqual(len(whatsapp.messages), 1)
+        self.assertIn("Attendance Update", whatsapp.messages[0][2])
+
+        service._process_attendance_scan(
+            student,
+            [],
+            datetime(2026, 3, 14, 9, 56, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+        self.assertEqual(len(whatsapp.messages), 2)
+        lecture_finish_body = whatsapp.messages[1][2]
+        self.assertIn("Lecture Finished Attendance Status", lecture_finish_body)
+        self.assertIn("Final status: Present", lecture_finish_body)
+        self.assertIn("Technical Skills Development-V", lecture_finish_body)
+
+        service._process_attendance_scan(
+            student,
+            [],
+            datetime(2026, 3, 14, 10, 2, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+        self.assertEqual(len(whatsapp.messages), 2)
+
+    def test_automation_status_reports_poll_based_next_scan_and_next_lecture_milestone(self) -> None:
+        student_id = self._add_student(label="Automation Student", timezone="Asia/Kolkata")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        target_date = date(2026, 3, 14)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="tsdv",
+                    subject_name="Technical Skills Development-V",
+                    teacher_name="Prof Live",
+                    raw_cell="Technical Skills Development-V\nProf Live\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        self.db.mark_student_erp_sync(student_id, synced_at="2026-03-14T04:12:38+00:00")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        service = self._make_service()
+
+        status = service.get_student_automation_status(
+            student,
+            now=datetime(2026, 3, 14, 9, 42, 38, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+
+        self.assertEqual(status["next_attendance_subject"], "Technical Skills Development-V")
+        self.assertEqual(status["attendance_poll_interval_minutes"], str(self.settings.attendance_poll_interval_minutes))
+        self.assertIsNotNone(status["next_attendance_scan_iso"])
+        self.assertIn("09:52", status["next_attendance_scan_label"] or "")
+        self.assertIn("10:15", status["next_due_attendance_check_label"] or "")
+        self.assertEqual(status["timetable_lecture_label"], "Current timetable lecture")
+        self.assertEqual(status["timetable_lecture_subject"], "Technical Skills Development-V")
+        self.assertEqual(status["timetable_lecture_time_label"], "09:00 - 09:55")
+
+    def test_automation_status_uses_current_timetable_lecture_when_pending_subject_is_stale(self) -> None:
+        student_id = self._add_student(label="Automation Context Student", timezone="Asia/Kolkata")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        target_date = date(2026, 3, 14)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="tsdv",
+                    subject_name="Technical Skills Development-V",
+                    teacher_name="Prof A",
+                    raw_cell="Technical Skills Development-V\nProf A\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                ),
+                LectureSlot(
+                    slot_label="10:30 - 11:25",
+                    subject_key="maths",
+                    subject_name="Engineering Mathematics",
+                    teacher_name="Prof B",
+                    raw_cell="Engineering Mathematics\nProf B\n10:30 - 11:25",
+                    start_time=time(10, 30),
+                    end_time=time(11, 25),
+                    is_break=False,
+                ),
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        events = self.db.get_lecture_events_for_day(student_id, target_date)
+        self.db.mark_event_status(
+            events[0].id,
+            "notified_unmarked",
+            next_check_after=datetime(2026, 3, 14, 11, 22),
+        )
+        student = self.db.get_student(student_id)
+        assert student is not None
+        service = self._make_service()
+
+        status = service.get_student_automation_status(
+            student,
+            now=datetime(2026, 3, 14, 11, 5, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+
+        self.assertEqual(status["next_attendance_subject"], "Technical Skills Development-V")
+        self.assertEqual(status["timetable_lecture_label"], "Current timetable lecture")
+        self.assertEqual(status["timetable_lecture_subject"], "Engineering Mathematics")
+        self.assertEqual(status["timetable_lecture_time_label"], "10:30 - 11:25")
+
+    def test_run_due_checks_bootstraps_missing_todays_routine_and_sends_one_alert_per_finished_lecture(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Bootstrap Student",
+            user_name="bootstrap_student",
+            password_encrypted="secret",
+            whatsapp_number="",
+            telegram_chat_id="123456789",
+            email_address="",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json="[]",
+            timezone="Asia/Kolkata",
+        )
+        telegram = FakeTelegram()
+        telegram.configured = True
+        erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {"Period": "09:00 - 09:55", "Subject": "Mathematics", "Employee": "Prof A", "Time": "09:00 - 09:55"},
+                    {"Period": "10:00 - 10:55", "Subject": "Physics", "Employee": "Prof B", "Time": "10:00 - 10:55"},
+                    {"Period": "11:00 - 11:55", "Subject": "Chemistry", "Employee": "Prof C", "Time": "11:00 - 11:55"},
+                ]
+            },
+            attendance_payload={
+                "state": [
+                    {"Subject": "Mathematics", "SubjectCode": "MATH101", "EMPNAME": "Prof A", "TotalLecture": "1", "TotalPresent": "1", "Percentage": "100.00%"},
+                    {"Subject": "Physics", "SubjectCode": "PHY101", "EMPNAME": "Prof B", "TotalLecture": "1", "TotalPresent": "1", "Percentage": "100.00%"},
+                    {"Subject": "Chemistry", "SubjectCode": "CHEM101", "EMPNAME": "Prof C", "TotalLecture": "1", "TotalPresent": "1", "Percentage": "100.00%"},
+                ]
+            },
+        )
+        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp(), telegram=telegram)
+        service._local_now = lambda: datetime(2026, 3, 14, 12, 30, tzinfo=ZoneInfo("Asia/Kolkata"))  # type: ignore[method-assign]
+
+        service.run_due_checks()
+
+        self.assertEqual(len(telegram.messages), 3)
+        self.assertTrue(all("Attendance Update" in body for _, _, body in telegram.messages))
+        self.assertEqual(len(service.list_message_history()), 3)
+        tracked_events = self.db.get_lecture_events_for_day(student_id, date(2026, 3, 14))
+        self.assertEqual(len([event for event in tracked_events if not event.is_break]), 3)
+        self.assertTrue(all(event.status == "notified_present" for event in tracked_events if not event.is_break))
 
     def test_manual_shortage_report_lists_subjects_at_or_below_75_percent(self) -> None:
         student_id = self._add_student(label="Shortage Report Student", timezone="Asia/Kolkata")
