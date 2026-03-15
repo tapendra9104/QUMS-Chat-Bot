@@ -688,6 +688,51 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("Status: Clear", body)
         self.assertIn("No subject is currently at or below the attendance shortage threshold.", body)
 
+    def test_manual_attendance_summary_auth_expiry_notifies_student_and_admin_on_telegram(self) -> None:
+        class AttendanceAuthERP(FakeERP):
+            def get_attendance_summary(self, student):
+                raise AuthenticationRequired("expired")
+
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Manual Expired Student",
+            user_name="manual_expired_student",
+            password_encrypted="secret",
+            whatsapp_number="+911234567890",
+            telegram_chat_id="5570554766",
+            email_address="",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            timezone="Asia/Kolkata",
+        )
+        self.db.update_student_session(
+            student_id=student_id,
+            cookies_json="[]",
+            last_login_status="ERP session active.",
+        )
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(
+            erp=AttendanceAuthERP(),
+            whatsapp=BrokenWhatsApp(),
+            telegram=telegram,
+        )
+
+        with self.assertRaises(AuthenticationRequired):
+            service.send_attendance_summary_report(student_id, target_date=date(2026, 3, 16), force=True)
+
+        self.assertEqual(len(telegram.messages), 2)
+        chats = [item[0] for item in telegram.messages]
+        bodies = [item[2] for item in telegram.messages]
+        self.assertIn("5570554766", chats)
+        self.assertIn("5570554765", chats)
+        self.assertTrue(any("Status: Your ERP session has expired" in body for body in bodies))
+        self.assertTrue(any("Status: The student's ERP session has expired" in body for body in bodies))
+        self.assertTrue(any("Manual Expired Student" in body for body in bodies))
+        history = service.list_message_history()
+        self.assertEqual(len(history), 2)
+        self.assertEqual({item.category for item in history}, {"erp_session_expired", "erp_session_expired_admin"})
+
     def test_telegram_admin_add_student_flow_saves_profile(self) -> None:
         telegram = FakeTelegram()
         telegram.configured = True
@@ -1944,7 +1989,7 @@ class SchedulerServiceTests(unittest.TestCase):
             user_name="telegram_expired_student",
             password_encrypted="secret",
             whatsapp_number="+911234567890",
-            telegram_chat_id="5570554765",
+            telegram_chat_id="5570554766",
             email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
@@ -1968,13 +2013,18 @@ class SchedulerServiceTests(unittest.TestCase):
 
         service.run_monitor_sweep(now=now)
 
-        self.assertEqual(len(telegram.messages), 1)
-        self.assertIn("ERP Session Alert", telegram.messages[0][2])
-        self.assertIn("Lecture-end attendance scans and summary checks are paused", telegram.messages[0][2])
+        self.assertEqual(len(telegram.messages), 2)
+        chats = [item[0] for item in telegram.messages]
+        bodies = [item[2] for item in telegram.messages]
+        self.assertIn("5570554766", chats)
+        self.assertIn("5570554765", chats)
+        self.assertTrue(any("ERP Session Alert" in body for body in bodies))
+        self.assertTrue(any("Lecture-end attendance scans and summary checks are paused" in body for body in bodies))
+        self.assertTrue(any("Telegram Expired Student" in body for body in bodies))
         history = service.list_message_history()
-        self.assertEqual(len(history), 1)
-        self.assertEqual(history[0].channel, "telegram")
-        self.assertEqual(history[0].category, "erp_session_expired")
+        self.assertEqual(len(history), 2)
+        self.assertEqual({item.channel for item in history}, {"telegram"})
+        self.assertEqual({item.category for item in history}, {"erp_session_expired", "erp_session_expired_admin"})
 
     def test_monitor_sweep_skips_fresh_session_probe_right_after_login(self) -> None:
         student_id = self.db.upsert_student(
@@ -2021,7 +2071,7 @@ class SchedulerServiceTests(unittest.TestCase):
             user_name="due_check_expired_student",
             password_encrypted="secret",
             whatsapp_number="+911234567890",
-            telegram_chat_id="5570554765",
+            telegram_chat_id="5570554766",
             email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
@@ -2060,13 +2110,18 @@ class SchedulerServiceTests(unittest.TestCase):
 
         service.run_due_checks()
 
-        self.assertEqual(len(telegram.messages), 1)
-        self.assertIn("ERP Session Alert", telegram.messages[0][2])
-        self.assertIn("Lecture-end attendance scans and summary checks are paused", telegram.messages[0][2])
+        self.assertEqual(len(telegram.messages), 2)
+        chats = [item[0] for item in telegram.messages]
+        bodies = [item[2] for item in telegram.messages]
+        self.assertIn("5570554766", chats)
+        self.assertIn("5570554765", chats)
+        self.assertTrue(any("ERP Session Alert" in body for body in bodies))
+        self.assertTrue(any("Lecture-end attendance scans and summary checks are paused" in body for body in bodies))
+        self.assertTrue(any("Due Check Expired Student" in body for body in bodies))
         history = service.list_message_history()
-        self.assertEqual(len(history), 1)
-        self.assertEqual(history[0].channel, "telegram")
-        self.assertEqual(history[0].category, "erp_session_expired")
+        self.assertEqual(len(history), 2)
+        self.assertEqual({item.channel for item in history}, {"telegram"})
+        self.assertEqual({item.category for item in history}, {"erp_session_expired", "erp_session_expired_admin"})
 
     def test_attendance_timestamp_is_persisted_and_reported_after_resync(self) -> None:
         student_id = self._add_student(label="Attendance Student", timezone="Asia/Kolkata")

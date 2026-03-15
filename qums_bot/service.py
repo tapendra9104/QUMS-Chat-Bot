@@ -61,6 +61,7 @@ NOTIFICATION_CHANNEL_MODE_LABELS: dict[str, str] = {
 }
 
 ERP_SESSION_MONITOR_COOLDOWN_MINUTES = 15
+ERP_SESSION_EXPIRED_STATUS_TEXT = "ERP session expired. Open the dashboard and complete login again with a fresh captcha."
 
 
 class BotService:
@@ -719,8 +720,13 @@ class BotService:
     def preview_today(self, student_id: int, target_date: date | None = None) -> str:
         student = self._require_student(student_id)
         self.assert_student_action_allowed(student, "preview_today")
-        target = target_date or self._now_for_student(student).date()
-        summary = self._collect_daily_summary(student, target, send_risk_alerts=False)
+        current = self._now_for_student(student)
+        target = target_date or current.date()
+        summary = self._run_student_erp_action(
+            student,
+            lambda: self._collect_daily_summary(student, target, send_risk_alerts=False),
+            detected_at=current,
+        )
         return summary["message"]
 
     def send_morning_update(
@@ -734,7 +740,11 @@ class BotService:
         self.assert_student_action_allowed(student, "send_morning")
         current = self._now_for_student(student)
         target = target_date or current.date()
-        summary = self._collect_daily_summary(student, target, send_risk_alerts=True)
+        summary = self._run_student_erp_action(
+            student,
+            lambda: self._collect_daily_summary(student, target, send_risk_alerts=True),
+            detected_at=current,
+        )
         self._send_whatsapp(
             student,
             summary["message"],
@@ -767,7 +777,11 @@ class BotService:
         self.assert_student_action_allowed(student, "send_day_report")
         now = self._now_for_student(student)
         target = target_date or now.date()
-        message = self._send_evening_report_if_due(student, target, now=now, force=force)
+        message = self._run_student_erp_action(
+            student,
+            lambda: self._send_evening_report_if_due(student, target, now=now, force=force),
+            detected_at=now,
+        )
         if not message:
             raise ERPClientError(
                 "The end-of-day attendance report is not ready yet. "
@@ -786,10 +800,22 @@ class BotService:
         self.assert_student_action_allowed(student, "send_shortage_report")
         current = self._now_for_student(student)
         report_date = target_date or current.date()
-        self._collect_daily_summary(student, report_date, send_risk_alerts=False)
-        attendance = parse_attendance_summary(self.erp.get_attendance_summary(student))
+        self._run_student_erp_action(
+            student,
+            lambda: self._collect_daily_summary(student, report_date, send_risk_alerts=False),
+            detected_at=current,
+        )
+        attendance = self._run_student_erp_action(
+            student,
+            lambda: parse_attendance_summary(self.erp.get_attendance_summary(student)),
+            detected_at=current,
+        )
         teacher_events = self._risk_teacher_reference_events(student, target_date=report_date)
-        subject_references = self._build_weekly_subject_reference_map(student, report_date)
+        subject_references = self._run_student_erp_action(
+            student,
+            lambda: self._build_weekly_subject_reference_map(student, report_date),
+            detected_at=current,
+        )
         message = self._build_shortage_report(
             student_name=student.student_name or student.student_label,
             attendance=attendance,
@@ -823,9 +849,17 @@ class BotService:
         self.assert_student_action_allowed(student, "send_attendance_summary")
         current = self._now_for_student(student)
         report_date = target_date or current.date()
-        attendance = parse_attendance_summary(self.erp.get_attendance_summary(student))
+        attendance = self._run_student_erp_action(
+            student,
+            lambda: parse_attendance_summary(self.erp.get_attendance_summary(student)),
+            detected_at=current,
+        )
         teacher_events = self._risk_teacher_reference_events(student, target_date=report_date)
-        subject_references = self._build_weekly_subject_reference_map(student, report_date)
+        subject_references = self._run_student_erp_action(
+            student,
+            lambda: self._build_weekly_subject_reference_map(student, report_date),
+            detected_at=current,
+        )
         message = self._build_attendance_summary_report(
             student_name=student.student_name or student.student_label,
             attendance=attendance,
@@ -859,9 +893,21 @@ class BotService:
         self.assert_student_action_allowed(student, "send_substitution_report")
         current = self._now_for_student(student)
         report_date = target_date or current.date()
-        timetable_payload = self.erp.get_timetable(student)
-        substitutions_payload = self.erp.get_substitutions(student)
-        detail_payload = self.erp.get_student_detail(student)
+        timetable_payload = self._run_student_erp_action(
+            student,
+            lambda: self.erp.get_timetable(student),
+            detected_at=current,
+        )
+        substitutions_payload = self._run_student_erp_action(
+            student,
+            lambda: self.erp.get_substitutions(student),
+            detected_at=current,
+        )
+        detail_payload = self._run_student_erp_action(
+            student,
+            lambda: self.erp.get_student_detail(student),
+            detected_at=current,
+        )
 
         detail = parse_student_detail_response(detail_payload) or {}
         substitutions = parse_substitutions(substitutions_payload, report_date)
@@ -3399,32 +3445,76 @@ class BotService:
         detected_at: datetime,
         channel_status: WhatsAppChannelStatus | None = None,
     ) -> None:
-        status_text = "ERP session expired. Open the dashboard and complete login again with a fresh captcha."
+        status_text = ERP_SESSION_EXPIRED_STATUS_TEXT
         self.db.update_student_erp_status(student.id, status_text)
+        self.db.update_student_bot_activity(
+            student.id,
+            f"ERP session expired at {self._format_datetime(detected_at)}. Fresh login is required.",
+        )
 
         if not student.session_updated_at:
             return
         if self.db.has_notification_event(student.id, "erp_session_expired", student.session_updated_at):
             return
 
-        targets = self._delivery_targets(student)
-        if not targets:
-            return
+        student_body = self._render_erp_session_expired_alert(student, detected_at=detected_at)
+        admin_body = self._render_erp_session_expired_admin_alert(student, detected_at=detected_at)
+        delivered = False
+        delivery_errors: list[str] = []
 
-        body = self._render_erp_session_expired_alert(student, detected_at=detected_at)
-        self._send_whatsapp(
-            student,
-            body,
-            message_kind="attendance",
-            history_category="erp_session_expired",
-            idempotency_key=f"erp_session_expired:{student.id}:{student.session_updated_at}",
-        )
-        self.db.upsert_notification_event(
-            student_id=student.id,
-            category="erp_session_expired",
-            notification_key=student.session_updated_at,
-            message_text=body,
-        )
+        if student.telegram_chat_id:
+            delivered = self._send_direct_telegram_notification(
+                student,
+                student.telegram_chat_id,
+                student_body,
+                message_kind="erp_session_expired",
+                history_category="erp_session_expired",
+                error_prefix="student",
+            ) or delivered
+            if not delivered and self.telegram.configured:
+                delivery_errors.append("student: Telegram delivery failed")
+
+        for admin_chat_id in self.settings.telegram_admin_chat_ids:
+            admin_delivered = self._send_direct_telegram_notification(
+                student,
+                admin_chat_id,
+                admin_body,
+                message_kind="erp_session_expired_admin",
+                history_category="erp_session_expired_admin",
+                error_prefix=f"admin:{admin_chat_id}",
+            )
+            delivered = admin_delivered or delivered
+            if not admin_delivered and self.telegram.configured:
+                delivery_errors.append(f"admin:{admin_chat_id}: Telegram delivery failed")
+
+        if delivered:
+            self.db.upsert_notification_event(
+                student_id=student.id,
+                category="erp_session_expired",
+                notification_key=student.session_updated_at,
+                message_text=student_body,
+            )
+        elif delivery_errors:
+            self.db.update_student_status(
+                student.id,
+                f"{status_text} Telegram alerts could not be delivered.",
+            )
+
+    def _run_student_erp_action(
+        self,
+        student: Student,
+        action,
+        *,
+        detected_at: datetime | None = None,
+    ):
+        try:
+            return action()
+        except AuthenticationRequired as exc:
+            self._handle_authentication_required(
+                student,
+                detected_at=detected_at or self._now_for_student(student),
+            )
+            raise AuthenticationRequired(ERP_SESSION_EXPIRED_STATUS_TEXT) from exc
 
     def _sync_substitutions(
         self,
@@ -4574,6 +4664,8 @@ class BotService:
     ) -> dict[str, dict[str, str]]:
         try:
             timetable_payload = self.erp.get_timetable(student)
+        except AuthenticationRequired:
+            raise
         except ERPClientError:
             return {}
 
@@ -5278,13 +5370,38 @@ class BotService:
                 f"Student: {student.student_name or student.student_label}",
                 f"ERP user id: {student.user_name}",
                 f"Detected at: {self._format_datetime(detected_at)}",
-                "Status: ERP session expired",
+                "Status: Your ERP session has expired",
                 "",
                 "Impact:",
                 "Lecture-end attendance scans and summary checks are paused until ERP login is restored.",
                 "",
                 "Action required:",
                 "Open the dashboard and complete ERP login again with a fresh captcha.",
+            ]
+        )
+
+    def _render_erp_session_expired_admin_alert(
+        self,
+        student: Student,
+        *,
+        detected_at: datetime,
+    ) -> str:
+        return "\n".join(
+            [
+                "ERP Session Alert",
+                "",
+                f"Student: {student.student_name or student.student_label}",
+                f"ERP user id: {student.user_name}",
+                f"Website login username: {student.site_login_username or 'Not set'}",
+                f"Telegram chat id: {student.telegram_chat_id or 'Not set'}",
+                f"Detected at: {self._format_datetime(detected_at)}",
+                "Status: The student's ERP session has expired",
+                "",
+                "Impact:",
+                "Lecture-end attendance scans and summary checks are paused until ERP login is restored.",
+                "",
+                "Action required:",
+                f"{student.student_name or student.student_label} must open the dashboard and complete ERP login again with a fresh captcha.",
             ]
         )
 
@@ -6118,6 +6235,55 @@ class BotService:
             history_category=history_category,
             idempotency_key=idempotency_key,
         )
+
+    def _send_direct_telegram_notification(
+        self,
+        student: Student,
+        chat_id: str,
+        body: str,
+        *,
+        message_kind: str,
+        history_category: str,
+        error_prefix: str,
+    ) -> bool:
+        if not self.telegram.configured:
+            return False
+        recipient = str(chat_id or "").strip()
+        if not recipient:
+            return False
+        title = body.splitlines()[0].strip() if body.strip() else message_kind
+        try:
+            provider_sid = self.telegram.send_text(recipient, body, message_kind=message_kind)
+        except Exception as exc:
+            try:
+                self.db.update_student_status(
+                    student.id,
+                    f"Telegram delivery issue for {error_prefix}: {exc}",
+                )
+            except Exception:
+                pass
+            return False
+        try:
+            self.db.insert_message_history(
+                student_id=student.id,
+                channel="telegram",
+                recipient=recipient,
+                category=history_category,
+                message_kind=message_kind,
+                provider_sid=provider_sid,
+                title=title,
+                body=body,
+                delivery_status="accepted",
+            )
+        except Exception as exc:
+            try:
+                self.db.update_student_status(
+                    student.id,
+                    f"Telegram delivered but history logging failed for {history_category}: {exc}",
+                )
+            except Exception:
+                pass
+        return True
 
     def _send_message(
         self,

@@ -207,12 +207,52 @@
                     </div>
                 </details>
             {% elif is_student_authenticated %}
-                <div class="student-action-menu">
-                    <p class="meta">Student quick actions for {{ student.student_label }}</p>
+                <div class="student-action-menu" data-refresh-key="student-actions-{{ student.id }}">
+                    <p class="meta">Manual actions for {{ student.student_label }}. These controls only apply to your own profile.</p>
                     <div class="actions">
+                        {% if action_states.get('edit', {}).get('disabled') %}
+                            <span class="button-link ghost disabled" title="Edit is disabled for your student profile.">Edit Profile</span>
+                        {% else %}
+                            <a class="button-link ghost" href="#student-profile-panel">Edit Profile</a>
+                        {% endif %}
+                        <form method="post" action="{{ url_for('start_login', student_id=student.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" {% if action_states.get('start_login', {}).get('disabled') %}disabled title="Start ERP Login is disabled for your student profile."{% endif %}>Start ERP Login</button>
+                        </form>
+                        {% if student_view and student_view.captcha_ready and not action_states.get('open_captcha', {}).get('disabled') %}
+                            <a class="button-link secondary" href="{{ url_for('login_page', student_id=student.id) }}">Open Captcha</a>
+                        {% elif action_states.get('open_captcha', {}).get('disabled') %}
+                            <span class="button-link secondary disabled" title="Open Captcha is disabled for your student profile.">Open Captcha</span>
+                        {% else %}
+                            <span class="button-link secondary disabled" title="Start ERP Login first to create a captcha session.">Open Captcha</span>
+                        {% endif %}
+                        <form method="post" action="{{ url_for('preview_today', student_id=student.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="ghost" {% if action_states.get('preview_today', {}).get('disabled') %}disabled title="Preview Today is disabled for your student profile."{% endif %}>Preview Today</button>
+                        </form>
+                        <form method="post" action="{{ url_for('send_attendance_summary', student_id=student.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="ghost" {% if action_states.get('send_attendance_summary', {}).get('disabled') %}disabled title="Send Attendance Summary is disabled for your student profile."{% endif %}>Send Attendance Summary</button>
+                        </form>
+                        <form method="post" action="{{ url_for('send_morning', student_id=student.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" {% if action_states.get('send_morning', {}).get('disabled') %}disabled title="Send Morning Summary is disabled for your student profile."{% endif %}>Send Morning Summary</button>
+                        </form>
                         <form method="post" action="{{ url_for('send_substitution_report', student_id=student.id) }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="ghost" {% if action_states.get('send_substitution_report', {}).get('disabled') %}disabled title="Send Manual Substitution Report is disabled for your student profile."{% endif %}>Send Manual Substitution Report</button>
+                        </form>
+                        <form method="post" action="{{ url_for('send_evening', student_id=student.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="ghost" {% if action_states.get('send_day_report', {}).get('disabled') %}disabled title="Send Day Report is disabled for your student profile."{% endif %}>Send Day Report</button>
+                        </form>
+                        <form method="post" action="{{ url_for('send_shortage_report', student_id=student.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="ghost" {% if action_states.get('send_shortage_report', {}).get('disabled') %}disabled title="Send Shortage Report is disabled for your student profile."{% endif %}>Send Shortage Report</button>
+                        </form>
+                        <form method="post" action="{{ url_for('send_test', student_id=student.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="secondary" {% if action_states.get('send_channel_test', {}).get('disabled') %}disabled title="Send Channel Test is disabled for your student profile."{% endif %}>Send Channel Test</button>
                         </form>
                     </div>
                 </div>

@@ -235,7 +235,7 @@
                 </form>
             </section>
 
-            <section class="panel">
+            <section class="panel" id="student-profile-panel">
                 <div class="section-head">
                     <div class="section-title-block">
                         <span class="eyebrow">Profiles</span>
@@ -608,7 +608,6 @@
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit">Logout</button>
                     </form>
-                    <a class="button-link ghost" href="{{ url_for('login_alias', next=request.path) }}">Open Login</a>
                 </div>
             </section>
         {% else %}

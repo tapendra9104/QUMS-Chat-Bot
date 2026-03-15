@@ -109,6 +109,12 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "reject_application",
             "clear_application",
             "delete_student",
+            "retry_dead_letter",
+            "run_checks",
+            "export_message_history",
+            "export_audit_log",
+        }
+        shared_dashboard_endpoints = {
             "start_login",
             "login_page",
             "refresh_login",
@@ -119,12 +125,6 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "send_evening",
             "send_shortage_report",
             "send_test",
-            "retry_dead_letter",
-            "run_checks",
-            "export_message_history",
-            "export_audit_log",
-        }
-        shared_dashboard_endpoints = {
             "send_substitution_report",
         }
         student_only_endpoints = {
@@ -638,6 +638,11 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         student = _current_student()
         if not student:
             return redirect(url_for("login_alias", next=url_for("dashboard")))
+        try:
+            _service().assert_student_action_allowed(student, "edit")
+        except ERPClientError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
 
         previous_student = student
         supplied_erp_password = request.form.get("password", "")
@@ -991,7 +996,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/login/start")
     def start_login(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "start_login")
+        guard_response = _guard_dashboard_student_action(student_id, "start_login")
         if guard_response is not None:
             return guard_response
         try:
@@ -999,7 +1004,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except ERPClientError as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
-        _log_admin_action(
+        _log_dashboard_student_action(
             action="start_login",
             target_type="student",
             target_id=str(student_id),
@@ -1010,7 +1015,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.get("/students/<int:student_id>/login")
     def login_page(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "open_captcha")
+        guard_response = _guard_dashboard_student_action(student_id, "open_captcha")
         if guard_response is not None:
             return guard_response
         student = _service().get_student(student_id)
@@ -1022,7 +1027,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/login/refresh")
     def refresh_login(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "open_captcha")
+        guard_response = _guard_dashboard_student_action(student_id, "open_captcha")
         if guard_response is not None:
             return guard_response
         try:
@@ -1030,7 +1035,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except ERPClientError as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
-        _log_admin_action(
+        _log_dashboard_student_action(
             action="refresh_login",
             target_type="student",
             target_id=str(student_id),
@@ -1041,7 +1046,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/login/complete")
     def complete_login(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "open_captcha")
+        guard_response = _guard_dashboard_student_action(student_id, "open_captcha")
         if guard_response is not None:
             return guard_response
         captcha = request.form.get("captcha", "")
@@ -1050,7 +1055,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except ERPClientError as exc:
             flash(str(exc), "error")
             return redirect(url_for("login_page", student_id=student_id))
-        _log_admin_action(
+        _log_dashboard_student_action(
             action="complete_login",
             target_type="student",
             target_id=str(student_id),
@@ -1061,7 +1066,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/preview")
     def preview_today(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "preview_today")
+        guard_response = _guard_dashboard_student_action(student_id, "preview_today")
         if guard_response is not None:
             return guard_response
         try:
@@ -1069,7 +1074,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
-        _log_admin_action(
+        _log_dashboard_student_action(
             action="preview_today",
             target_type="student",
             target_id=str(student_id),
@@ -1080,7 +1085,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-morning")
     def send_morning(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "send_morning", require_delivery=True)
+        guard_response = _guard_dashboard_student_action(student_id, "send_morning", require_delivery=True)
         if guard_response is not None:
             return guard_response
         try:
@@ -1088,7 +1093,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
-        _log_admin_action(
+        _log_dashboard_student_action(
             action="send_morning_update",
             target_type="student",
             target_id=str(student_id),
@@ -1118,7 +1123,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-attendance-summary")
     def send_attendance_summary(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "send_attendance_summary", require_delivery=True)
+        guard_response = _guard_dashboard_student_action(student_id, "send_attendance_summary", require_delivery=True)
         if guard_response is not None:
             return guard_response
         try:
@@ -1126,7 +1131,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
-        _log_admin_action(
+        _log_dashboard_student_action(
             action="send_attendance_summary_report",
             target_type="student",
             target_id=str(student_id),
@@ -1137,7 +1142,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-evening")
     def send_evening(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "send_day_report", require_delivery=True)
+        guard_response = _guard_dashboard_student_action(student_id, "send_day_report", require_delivery=True)
         if guard_response is not None:
             return guard_response
         try:
@@ -1145,7 +1150,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
-        _log_admin_action(
+        _log_dashboard_student_action(
             action="send_evening_report",
             target_type="student",
             target_id=str(student_id),
@@ -1156,7 +1161,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-shortage-report")
     def send_shortage_report(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "send_shortage_report", require_delivery=True)
+        guard_response = _guard_dashboard_student_action(student_id, "send_shortage_report", require_delivery=True)
         if guard_response is not None:
             return guard_response
         try:
@@ -1164,7 +1169,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
-        _log_admin_action(
+        _log_dashboard_student_action(
             action="send_shortage_report",
             target_type="student",
             target_id=str(student_id),
@@ -1175,7 +1180,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.post("/students/<int:student_id>/send-test")
     def send_test(student_id: int):
-        guard_response = _guard_admin_student_action(student_id, "send_channel_test", require_delivery=True)
+        guard_response = _guard_dashboard_student_action(student_id, "send_channel_test", require_delivery=True)
         if guard_response is not None:
             return guard_response
         try:
@@ -1183,7 +1188,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except (WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
-        _log_admin_action(
+        _log_dashboard_student_action(
             action="send_test_message",
             target_type="student",
             target_id=str(student_id),

@@ -836,6 +836,7 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIn("student features remain unavailable until an administrator approves the request", html)
             self.assertNotIn("Student Control Dashboard", html)
             self.assertNotIn("Edit Profile", html)
+            self.assertNotIn("Open Login", html)
 
     def test_pending_application_session_upgrades_to_student_dashboard_after_admin_acceptance(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -1684,6 +1685,195 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(called, [student_id])
             self.assertIn("Manual substitution report sent to configured channels.", html)
 
+    def test_student_dashboard_shows_full_manual_action_menu(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+
+            self.assertIn('href="#student-profile-panel">Edit Profile</a>', dashboard_html)
+            self.assertIn("Start ERP Login", dashboard_html)
+            self.assertIn("Open Captcha", dashboard_html)
+            self.assertIn("Preview Today", dashboard_html)
+            self.assertIn("Send Attendance Summary", dashboard_html)
+            self.assertIn("Send Morning Summary", dashboard_html)
+            self.assertIn("Send Manual Substitution Report", dashboard_html)
+            self.assertIn("Send Day Report", dashboard_html)
+            self.assertIn("Send Shortage Report", dashboard_html)
+            self.assertIn("Send Channel Test", dashboard_html)
+
+    def test_student_dashboard_can_send_attendance_summary_for_own_profile(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            student_id = service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(dashboard_html)
+            called: list[int] = []
+
+            def fake_send_attendance_summary(student_id_arg, force=False):
+                called.append(student_id_arg)
+
+            service.send_attendance_summary_report = fake_send_attendance_summary
+
+            response = client.post(
+                f"/students/{student_id}/send-attendance-summary",
+                data={"csrf_token": csrf_token},
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(called, [student_id])
+            self.assertIn("Attendance summary report sent to configured channels.", html)
+
+    def test_student_dashboard_attendance_summary_auth_expiry_notifies_student_and_admin_on_telegram(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            fake_session = FakeTelegramSession()
+            service.telegram._session = fake_session
+            student_id = service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554766",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            service.db.update_student_session(
+                student_id=student_id,
+                cookies_json="[]",
+                last_login_status="ERP session active.",
+            )
+
+            def fail_attendance_summary(student):
+                raise AuthenticationRequired("expired")
+
+            service.erp.get_attendance_summary = fail_attendance_summary
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(dashboard_html)
+            response = client.post(
+                f"/students/{student_id}/send-attendance-summary",
+                data={"csrf_token": csrf_token},
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("ERP session expired. Open the dashboard and complete login again with a fresh captcha.", html)
+            self.assertEqual(len(fake_session.calls), 2)
+            chats = [str(call.get("json", {}).get("chat_id") or "") for call in fake_session.calls]
+            texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
+            self.assertIn("5570554765", chats)
+            self.assertIn("5570554766", chats)
+            self.assertTrue(any("Status: Your ERP session has expired" in text for text in texts))
+            self.assertTrue(any("Status: The student's ERP session has expired" in text for text in texts))
+            self.assertTrue(any("Own Student" in text for text in texts))
+
     def test_student_dashboard_cannot_send_manual_substitution_report_for_other_profile(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
         env_values = {
@@ -1749,6 +1939,132 @@ class IntegrationFlowTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn("You can only use actions for your own student profile.", html)
+
+    def test_student_dashboard_cannot_send_attendance_summary_for_other_profile(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            other_id = service.save_student(
+                student_id=None,
+                student_label="Other Student",
+                user_name="other_erp",
+                password="erp-pass-456",
+                site_login_username="other-user",
+                site_login_password="site-pass-456",
+                whatsapp_number="+919876543210",
+                telegram_chat_id="5570554766",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(dashboard_html)
+            response = client.post(
+                f"/students/{other_id}/send-attendance-summary",
+                data={"csrf_token": csrf_token},
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("You can only use actions for your own student profile.", html)
+
+    def test_student_dashboard_can_open_captcha_for_own_profile(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            student_id = service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            service.db.save_pending_login(
+                PendingLogin(
+                    student_id=student_id,
+                    request_verification_token="token",
+                    hdn_msg="QGC",
+                    check_online="0",
+                    client_ip="127.0.0.1",
+                    captcha_data_url="data:image/png;base64,abc",
+                    cookies_json="[]",
+                    created_at="2026-03-13T12:00:00+00:00",
+                )
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            response = client.get(f"/students/{student_id}/login")
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Manual ERP Login", html)
+            self.assertIn("Own Student", html)
 
     def test_student_dashboard_live_data_shows_only_the_logged_in_students_profile(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
