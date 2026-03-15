@@ -1968,6 +1968,14 @@ class Database:
                 ),
             )
 
+    def delete_application_request(self, application_id: int) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM application_requests WHERE id = ?",
+                (application_id,),
+            )
+        return bool(cursor.rowcount)
+
     def update_student_registration(
         self,
         *,

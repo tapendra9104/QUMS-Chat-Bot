@@ -1041,6 +1041,49 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertTrue(any(msg_chat == "5570554765" and "Application rejected." in body for msg_chat, _, body in telegram.messages))
         self.assertTrue(any(msg_chat == "5570554766" and "reviewed and was not approved" in body.lower() for msg_chat, _, body in telegram.messages))
 
+    def test_clear_application_request_requires_reviewed_status(self) -> None:
+        service = self._make_service(telegram=FakeTelegram())
+        result = service.submit_application_request(
+            applicant_name="Tapendra Chaudhary",
+            student_label="Tapendra",
+            user_name="23030682",
+            password="erp-pass-123",
+            site_login_username="tapendra-site",
+            site_login_password="site-pass-123",
+            whatsapp_number="+919634549096",
+            telegram_chat_id="5570554766",
+            timezone="Asia/Kolkata",
+            reg_id="8027",
+            note="Please add my profile.",
+            created_from_ip="website",
+        )
+
+        with self.assertRaisesRegex(StudentValidationError, "Review the application before clearing it from the dashboard."):
+            service.clear_application_request(int(result["id"]))
+
+    def test_clear_application_request_removes_reviewed_record(self) -> None:
+        service = self._make_service(telegram=FakeTelegram())
+        result = service.submit_application_request(
+            applicant_name="Tapendra Chaudhary",
+            student_label="Tapendra",
+            user_name="23030682",
+            password="erp-pass-123",
+            site_login_username="tapendra-site",
+            site_login_password="site-pass-123",
+            whatsapp_number="+919634549096",
+            telegram_chat_id="5570554766",
+            timezone="Asia/Kolkata",
+            reg_id="8027",
+            note="Please add my profile.",
+            created_from_ip="website",
+        )
+        service.reject_application_request(int(result["id"]))
+
+        cleared = service.clear_application_request(int(result["id"]))
+
+        self.assertEqual(cleared.student_label, "Tapendra")
+        self.assertIsNone(service.get_application_request(int(result["id"])))
+
     def test_removed_telegram_export_callback_returns_removed_alert(self) -> None:
         student_id = self._add_student(label="Export Student", timezone="Asia/Kolkata")
         service = self._make_service(telegram=FakeTelegram())

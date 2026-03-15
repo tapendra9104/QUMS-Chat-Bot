@@ -669,6 +669,18 @@ class BotService:
             "notification_error": notification_error,
         }
 
+    def clear_application_request(self, application_id: int) -> ApplicationRequest:
+        application = self.get_application_request(application_id)
+        if not application:
+            raise StudentValidationError("Application request not found.")
+        normalized_status = str(application.status or "").strip().lower()
+        if normalized_status not in {"accepted", "rejected"}:
+            raise StudentValidationError("Review the application before clearing it from the dashboard.")
+        deleted = self.db.delete_application_request(application_id)
+        if not deleted:
+            raise StudentValidationError("Application request not found.")
+        return application
+
     def start_login(self, student_id: int) -> PendingLogin:
         student = self._require_student(student_id)
         self.assert_student_action_allowed(student, "start_login")

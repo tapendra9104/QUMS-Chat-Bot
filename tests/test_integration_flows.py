@@ -1154,6 +1154,72 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIn("reviewed and closed", rejected_html)
             self.assertNotIn("Application Under Review", rejected_html)
 
+    def test_admin_can_clear_reviewed_application_request_from_dashboard(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+
+            service.submit_application_request(
+                applicant_name="Tapendra Chaudhary",
+                student_label="Tapendra",
+                user_name="23030682",
+                password="erp-password",
+                site_login_username="tapendra-site",
+                site_login_password="site-pass-123",
+                whatsapp_number="+919634549096",
+                telegram_chat_id="5570554766",
+                timezone="Asia/Kolkata",
+                reg_id="8027",
+                note="Please add my profile for attendance alerts.",
+                created_from_ip="website",
+            )
+
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            reject_csrf = self._extract_csrf_token(dashboard_html)
+            client.post(
+                "/applications/1/reject",
+                data={"csrf_token": reject_csrf},
+                follow_redirects=True,
+            )
+
+            reviewed_html = client.get("/").get_data(as_text=True)
+            self.assertIn("Clear Request", reviewed_html)
+            clear_csrf = self._extract_csrf_token(reviewed_html)
+
+            response = client.post(
+                "/applications/1/clear",
+                data={"csrf_token": clear_csrf},
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIsNone(service.get_application_request(1))
+            self.assertIn("Application record for Tapendra was cleared from the dashboard.", html)
+            self.assertIn("No public applications have been submitted yet.", html)
+            self.assertNotIn("Tapendra Chaudhary", html)
+
     def test_database_init_creates_missing_parent_directories(self) -> None:
         db_path = self.tmp / "nested" / "data" / "bot.sqlite3"
 

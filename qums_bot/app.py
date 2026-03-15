@@ -107,6 +107,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "update_student_controls",
             "accept_application",
             "reject_application",
+            "clear_application",
             "delete_student",
             "start_login",
             "login_page",
@@ -946,6 +947,28 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             flash("Rejection notification sent to the applicant's Telegram account.", "success")
         elif result["notification_error"]:
             flash("The application was rejected, but the Telegram rejection notification could not be delivered.", "warning")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/applications/<int:application_id>/clear")
+    def clear_application(application_id: int):
+        service = _service()
+        try:
+            application = service.clear_application_request(application_id)
+        except StudentValidationError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+        except Exception as exc:
+            _report_internal_exception("Application clear failed unexpectedly.", exc)
+            flash("The application record could not be cleared right now. Please try again.", "error")
+            return redirect(url_for("dashboard"))
+
+        _log_admin_action(
+            action="clear_application_request",
+            target_type="application_request",
+            target_id=str(application_id),
+            details=f"Application record for {application.student_label} was cleared from the dashboard.",
+        )
+        flash(f"Application record for {application.student_label} was cleared from the dashboard.", "success")
         return redirect(url_for("dashboard"))
 
     @app.post("/students/<int:student_id>/delete")

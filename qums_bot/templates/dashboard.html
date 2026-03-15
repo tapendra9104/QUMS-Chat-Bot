@@ -436,9 +436,17 @@
                                 {% elif application_status == "accepted" %}
                                     <span class="chip">Approved</span>
                                     <span class="chip">Reviewed</span>
+                                    <form method="post" action="{{ url_for('clear_application', application_id=item.id) }}" onsubmit="return confirm('Clear this reviewed application record from the dashboard?');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="ghost">Clear Request</button>
+                                    </form>
                                 {% else %}
                                     <span class="chip">Rejected</span>
                                     <span class="chip">Reviewed</span>
+                                    <form method="post" action="{{ url_for('clear_application', application_id=item.id) }}" onsubmit="return confirm('Clear this reviewed application record from the dashboard?');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="ghost">Clear Request</button>
+                                    </form>
                                 {% endif %}
                             </div>
                             {% if item.note %}
