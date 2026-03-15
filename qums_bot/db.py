@@ -262,6 +262,8 @@ class Database:
                     student_label TEXT NOT NULL,
                     user_name TEXT NOT NULL,
                     password_encrypted TEXT NOT NULL,
+                    site_login_username TEXT NOT NULL DEFAULT '',
+                    site_password_hash TEXT NOT NULL DEFAULT '',
                     reg_id TEXT,
                     whatsapp_number TEXT NOT NULL,
                     telegram_chat_id TEXT NOT NULL DEFAULT '',
@@ -340,6 +342,8 @@ class Database:
             self._ensure_column(conn, "students", "last_bot_activity_text", "TEXT")
             self._ensure_column(conn, "students", "last_erp_sync_at", "TEXT")
             self._ensure_column(conn, "students", "last_bot_action_at", "TEXT")
+            self._ensure_column(conn, "application_requests", "site_login_username", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "application_requests", "site_password_hash", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 UPDATE students
@@ -1834,6 +1838,8 @@ class Database:
         student_label: str,
         user_name: str,
         password_encrypted: str,
+        site_login_username: str,
+        site_password_hash: str,
         reg_id: str | None,
         whatsapp_number: str,
         telegram_chat_id: str,
@@ -1847,17 +1853,19 @@ class Database:
             cursor = conn.execute(
                 """
                 INSERT INTO application_requests (
-                    applicant_name, student_label, user_name, password_encrypted, reg_id,
+                    applicant_name, student_label, user_name, password_encrypted, site_login_username, site_password_hash, reg_id,
                     whatsapp_number, telegram_chat_id, timezone, note, created_from_ip,
                     status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     applicant_name,
                     student_label,
                     user_name,
                     password_encrypted,
+                    site_login_username,
+                    site_password_hash,
                     reg_id,
                     whatsapp_number,
                     telegram_chat_id,
@@ -1896,6 +1904,92 @@ class Database:
                 (application_id,),
             ).fetchone()
         return self._application_request_from_row(row) if row else None
+
+    def get_application_request_by_site_login_username(self, normalized_username: str) -> ApplicationRequest | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM application_requests
+                WHERE LOWER(site_login_username) = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (normalized_username.strip().lower(),),
+            ).fetchone()
+        return self._application_request_from_row(row) if row else None
+
+    def update_application_request_status(self, application_id: int, status: str) -> None:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            current = conn.execute(
+                "SELECT id FROM application_requests WHERE id = ?",
+                (application_id,),
+            ).fetchone()
+            if not current:
+                raise StudentValidationError("Application request not found.")
+            conn.execute(
+                """
+                UPDATE application_requests
+                SET status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, now, application_id),
+            )
+
+    def update_application_request_access(
+        self,
+        *,
+        application_id: int,
+        site_login_username: str,
+        site_password_hash: str | None = None,
+    ) -> None:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            current = conn.execute(
+                "SELECT site_password_hash FROM application_requests WHERE id = ?",
+                (application_id,),
+            ).fetchone()
+            if not current:
+                raise StudentValidationError("Application request not found.")
+            conn.execute(
+                """
+                UPDATE application_requests
+                SET site_login_username = ?,
+                    site_password_hash = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    site_login_username,
+                    site_password_hash if site_password_hash is not None else current["site_password_hash"],
+                    now,
+                    application_id,
+                ),
+            )
+
+    def update_student_registration(
+        self,
+        *,
+        student_id: int,
+        reg_id: str | None = None,
+        student_name: str | None = None,
+    ) -> None:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            current = conn.execute("SELECT id FROM students WHERE id = ?", (student_id,)).fetchone()
+            if not current:
+                raise StudentValidationError("Student not found.")
+            conn.execute(
+                """
+                UPDATE students
+                SET reg_id = COALESCE(?, reg_id),
+                    student_name = COALESCE(?, student_name),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (reg_id, student_name, now, student_id),
+            )
 
     def get_recent_admin_audit_log(self, limit: int | None = 50) -> list[AdminAuditRecord]:
         with self._connect() as conn:
@@ -2160,6 +2254,8 @@ class Database:
             student_label=row["student_label"],
             user_name=row["user_name"],
             password_encrypted=row["password_encrypted"],
+            site_login_username=row["site_login_username"],
+            site_password_hash=row["site_password_hash"],
             reg_id=row["reg_id"],
             whatsapp_number=row["whatsapp_number"],
             telegram_chat_id=row["telegram_chat_id"],

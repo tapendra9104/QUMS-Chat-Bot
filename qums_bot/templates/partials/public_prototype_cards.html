@@ -1,31 +1,105 @@
-<section class="grid">
+<section class="grid student-grid">
     <article class="student">
-        <h3>Prototype Preview</h3>
+        <div class="student-head">
+            <div>
+                <span class="eyebrow">{% if is_pending_authenticated %}Pending Access{% else %}Public Preview{% endif %}</span>
+                <h3>{% if is_pending_authenticated %}Signed-In Applicant Account{% else %}Access Preview{% endif %}</h3>
+            </div>
+            <div class="student-badges">
+                <span class="status {% if is_pending_authenticated and current_application_account.status|lower == 'accepted' %}ready{% elif is_pending_authenticated and current_application_account.status|lower == 'rejected' %}closed{% elif is_pending_authenticated %}pending{% else %}not-ready{% endif %}">
+                    {% if is_pending_authenticated %}
+                        {% if current_application_account.status|lower == "accepted" %}
+                            Approved
+                        {% elif current_application_account.status|lower == "rejected" %}
+                            Closed
+                        {% else %}
+                            Locked
+                        {% endif %}
+                    {% else %}
+                        Preview
+                    {% endif %}
+                </span>
+            </div>
+        </div>
         <p class="meta">
-            This public page shows a demo view only. Real student profiles, message history, and internal automation data are hidden until login.
+            {% if is_pending_authenticated %}
+                {% if current_application_account.status|lower == "accepted" %}
+                    Your website account has been approved. Refresh once and the live student dashboard will open automatically.
+                {% elif current_application_account.status|lower == "rejected" %}
+                    Your website account sign-in still works, but this application has been closed and the student area remains unavailable.
+                {% else %}
+                    Your website account is signed in, but this area remains read-only until the application is approved.
+                {% endif %}
+            {% else %}
+                This public page provides a preview only. Real student profiles, message history, and internal automation data remain hidden until sign-in.
+            {% endif %}
         </p>
         <div class="live-grid">
             <div class="live-card light">
-                <div class="live-label">What This Bot Does</div>
-                <div class="live-value">Automation Demo</div>
+                <div class="live-label">{% if is_pending_authenticated %}Website Login{% else %}What This Bot Does{% endif %}</div>
+                <div class="live-value">{% if is_pending_authenticated %}{{ current_application_account.site_login_username }}{% else %}Automation Demo{% endif %}</div>
                 <div class="live-sub">
-                    Morning schedule updates, attendance alerts, substitute lecture alerts, shortage warnings, and day-end reporting.
+                    {% if is_pending_authenticated %}
+                        {% if current_application_account.status|lower == "accepted" %}
+                            Your request has been approved. Refresh once and the live student dashboard will replace this view.
+                        {% elif current_application_account.status|lower == "rejected" %}
+                            This request was reviewed but not approved, so live student features remain unavailable.
+                        {% else %}
+                            Your application is still under review, so live student features remain unavailable for now.
+                        {% endif %}
+                    {% else %}
+                        Morning schedule updates, attendance alerts, substitute lecture alerts, shortage warnings, and day-end reporting.
+                    {% endif %}
                 </div>
             </div>
             <div class="live-card light">
-                <div class="live-label">Want To Try It?</div>
-                <div class="live-value">Apply First</div>
+                <div class="live-label">{% if is_pending_authenticated %}Application Status{% else %}Want To Try It?{% endif %}</div>
+                <div class="live-value">{% if is_pending_authenticated %}{{ current_application_account.status | title }}{% else %}Apply First{% endif %}</div>
                 <div class="live-sub">
-                    Fill the application form below so the owner can review and create your profile.
+                    {% if is_pending_authenticated %}
+                        {% if current_application_account.status|lower == "rejected" %}
+                            This request is closed. Submit a new application if you would like the admin to review updated details.
+                        {% else %}
+                            Administrative approval unlocks attendance scans, substitution alerts, profile actions, and message history.
+                        {% endif %}
+                    {% else %}
+                        Complete the application form below so the owner can review and create your profile.
+                    {% endif %}
                 </div>
             </div>
         </div>
-        <div class="status not-ready">Demo / Prototype View</div>
+        <div class="status {% if is_pending_authenticated and current_application_account.status|lower == 'accepted' %}ready{% elif is_pending_authenticated and current_application_account.status|lower == 'rejected' %}closed{% elif is_pending_authenticated %}pending{% else %}not-ready{% endif %}">
+            {% if is_pending_authenticated %}
+                {% if current_application_account.status|lower == "accepted" %}
+                    Approved / Ready
+                {% elif current_application_account.status|lower == "rejected" %}
+                    Rejected / Closed
+                {% else %}
+                    Pending / Locked View
+                {% endif %}
+            {% else %}
+                Preview / Prototype View
+            {% endif %}
+        </div>
         <p class="meta">
-            To try the live system, submit the application form and contact the owner directly.
+            {% if is_pending_authenticated %}
+                {% if current_application_account.status|lower == "accepted" %}
+                    Your account has been approved. Refresh the page to continue to the full student dashboard.
+                {% elif current_application_account.status|lower == "rejected" %}
+                    Your application was reviewed and closed. Submit a new request later if you need access.
+                {% else %}
+                    You are signed in successfully. Wait for administrative approval before live student automation features become available.
+                {% endif %}
+            {% else %}
+                To try the live system, submit the application form and contact the owner directly.
+            {% endif %}
             {% if settings.owner_telegram_contact %}
                 <br>Owner Telegram: <code>{{ settings.owner_telegram_contact }}</code>
             {% endif %}
+            {% if settings.telegram_bot_link %}
+                <br>QUMS bot: <a href="{{ settings.telegram_bot_link }}" target="_blank" rel="noopener noreferrer">{{ settings.telegram_bot_link }}</a>
+            {% endif %}
+            <br>Need your numeric Telegram id? Check it with <a href="https://t.me/userinfo3bot" target="_blank" rel="noopener noreferrer">@userinfo3bot</a>.
         </p>
     </article>
 </section>

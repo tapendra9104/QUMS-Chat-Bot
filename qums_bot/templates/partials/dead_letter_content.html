@@ -1,6 +1,6 @@
 {% if dead_letter_messages %}
     {% for item in dead_letter_messages %}
-        <details data-dead-letter-row="{{ item.idempotency_key }}" data-refresh-key="dead:{{ item.idempotency_key }}">
+        <details class="record-card" data-dead-letter-row="{{ item.idempotency_key }}" data-refresh-key="dead:{{ item.idempotency_key }}">
             <summary>{{ item.updated_at }} | {{ item.category.replace('_', ' ') | title }} | {{ item.title }}</summary>
             <p class="meta">
                 Student id: {{ item.student_id }}<br>
@@ -21,5 +21,5 @@
         </details>
     {% endfor %}
 {% else %}
-    <p class="meta" id="dead-letter-empty-state">No dead-letter message is waiting for manual review.</p>
+    <p class="meta empty-state" id="dead-letter-empty-state">No dead-letter message is waiting for manual review.</p>
 {% endif %}

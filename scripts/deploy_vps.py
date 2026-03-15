@@ -4,6 +4,7 @@ import argparse
 import secrets
 import shlex
 import socket
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -32,7 +33,7 @@ DEFAULT_ENV = {
     "APP_ENV": "production",
     "USE_WAITRESS": "1",
     "WAITRESS_THREADS": "4",
-    "DASHBOARD_AUTO_REFRESH_SECONDS": "30",
+    "DASHBOARD_AUTO_REFRESH_SECONDS": "1",
     "RUN_SCHEDULER": "1",
     "TASK_QUEUE_MODE": "inline",
     "REDIS_URL": "",
@@ -58,11 +59,23 @@ DEFAULT_ENV = {
     "ADMIN_RATE_LIMIT_WINDOW_SECONDS": "60",
     "SENTRY_DSN": "",
     "SENTRY_TRACES_SAMPLE_RATE": "0.0",
+    "TWILIO_ACCOUNT_SID": "",
+    "TWILIO_AUTH_TOKEN": "",
+    "TWILIO_WHATSAPP_MODE": "sandbox",
+    "TWILIO_WHATSAPP_FROM": "whatsapp:+14155238886",
+    "TWILIO_SANDBOX_JOIN_CODE": "",
+    "TWILIO_STATUS_MESSAGE_LIMIT": "50",
+    "TWILIO_STATUS_CALLBACK_URL": "",
+    "TWILIO_CONTENT_SID_DEFAULT": "",
+    "TWILIO_CONTENT_SID_MORNING": "",
+    "TWILIO_CONTENT_SID_ATTENDANCE": "",
+    "TELEGRAM_BOT_TOKEN": "",
     "TELEGRAM_API_BASE_URL": "https://api.telegram.org",
     "TELEGRAM_ADMIN_CHAT_IDS": "",
     "TELEGRAM_POLL_INTERVAL_SECONDS": "1",
     "TELEGRAM_BOT_LINK": "",
     "OWNER_TELEGRAM_CONTACT": "",
+    "OWNER_WHATSAPP_CONTACT": "",
     "SMTP_HOST": "",
     "SMTP_PORT": "587",
     "SMTP_USERNAME": "",
@@ -110,12 +123,23 @@ ENV_ORDER = [
     "ADMIN_RATE_LIMIT_WINDOW_SECONDS",
     "SENTRY_DSN",
     "SENTRY_TRACES_SAMPLE_RATE",
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_WHATSAPP_MODE",
+    "TWILIO_WHATSAPP_FROM",
+    "TWILIO_SANDBOX_JOIN_CODE",
+    "TWILIO_STATUS_MESSAGE_LIMIT",
+    "TWILIO_STATUS_CALLBACK_URL",
+    "TWILIO_CONTENT_SID_DEFAULT",
+    "TWILIO_CONTENT_SID_MORNING",
+    "TWILIO_CONTENT_SID_ATTENDANCE",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_API_BASE_URL",
     "TELEGRAM_ADMIN_CHAT_IDS",
     "TELEGRAM_POLL_INTERVAL_SECONDS",
     "TELEGRAM_BOT_LINK",
     "OWNER_TELEGRAM_CONTACT",
+    "OWNER_WHATSAPP_CONTACT",
     "SMTP_HOST",
     "SMTP_PORT",
     "SMTP_USERNAME",
@@ -214,6 +238,14 @@ def upload_file(sftp: paramiko.SFTPClient, local_path: Path, remote_path: str) -
     sftp.put(str(local_path), remote_path)
 
 
+def write_console(text: str) -> None:
+    data = text if text.endswith("\n") else f"{text}\n"
+    try:
+        sys.stdout.write(data)
+    except UnicodeEncodeError:
+        sys.stdout.buffer.write(data.encode("utf-8", "replace"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Deploy this workspace to a VPS over SSH/SFTP.")
     parser.add_argument("--host", required=True)
@@ -262,9 +294,9 @@ def main() -> int:
             port=args.port,
             username=args.user,
             password=args.password,
-            timeout=15,
-            auth_timeout=15,
-            banner_timeout=15,
+            timeout=30,
+            auth_timeout=60,
+            banner_timeout=60,
         )
 
         sftp = client.open_sftp()
@@ -294,16 +326,17 @@ def main() -> int:
             remote_command = f"sudo env {remote_command}"
 
         exit_status, stdout, stderr = run_remote(client, remote_command, timeout=3600)
-        print(stdout)
+        if stdout.strip():
+            write_console(stdout)
         if stderr.strip():
-            print(stderr)
+            write_console(stderr)
         if exit_status != 0:
             raise SystemExit(exit_status)
 
         cleanup_command = f"rm -rf {quote(args.remote_tmp_dir)}"
         run_remote(client, cleanup_command)
-        print(f"Admin username: {generated_env['ADMIN_USERNAME']}")
-        print(f"Admin password: {generated_env['ADMIN_PASSWORD']}")
+        write_console(f"Admin username: {generated_env['ADMIN_USERNAME']}")
+        write_console(f"Admin password: {generated_env['ADMIN_PASSWORD']}")
         return 0
     except (socket.timeout, TimeoutError) as exc:
         raise SystemExit(f"SSH connection timed out: {exc}") from exc

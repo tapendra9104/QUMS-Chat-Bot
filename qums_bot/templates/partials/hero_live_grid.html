@@ -1,0 +1,79 @@
+<div class="live-grid hero-grid" id="hero-live-grid-results">
+    <div class="live-card">
+        <div class="live-label">Dashboard Time</div>
+        <div class="live-value js-live-now" data-base-iso="{{ scheduler_overview.server_now_iso }}" data-timezone="{{ settings.local_timezone }}">
+            {{ scheduler_overview.server_now_label }}
+        </div>
+        <div class="live-sub">
+            {% if is_admin_authenticated %}
+                Automatic messages are sent by the running scheduler. The dashboard does not need to stay open.
+            {% elif is_student_authenticated %}
+                Your own dashboard updates silently in the background without exposing admin-only controls.
+            {% elif is_pending_authenticated %}
+                Your website account is active, but student features remain unavailable until the application is approved.
+            {% else %}
+                This public page updates silently in the background so you can review the current status before signing in.
+            {% endif %}
+        </div>
+    </div>
+    {% if is_admin_authenticated %}
+        {% for job in scheduler_overview.jobs %}
+            <div class="live-card">
+                <div class="live-label">{{ job.label }}</div>
+                <div class="live-value">
+                    {% if job.next_run_iso %}
+                        <span class="js-countdown" data-target-iso="{{ job.next_run_iso }}">Calculating...</span>
+                    {% else %}
+                        Not scheduled
+                    {% endif %}
+                </div>
+                <div class="live-sub">
+                    Next run: {{ job.next_run_label }}<br>
+                    {{ job.detail }}
+                </div>
+            </div>
+        {% endfor %}
+    {% elif is_student_authenticated %}
+        <div class="live-card">
+            <div class="live-label">Account Security</div>
+            <div class="live-value">Telegram Verified</div>
+            <div class="live-sub">Verification codes for password changes are sent directly to your configured Telegram account.</div>
+        </div>
+    {% elif is_pending_authenticated %}
+        <div class="live-card">
+            <div class="live-label">
+                {% if current_application_account.status|lower == "accepted" %}
+                    Access Ready
+                {% elif current_application_account.status|lower == "rejected" %}
+                    Application Closed
+                {% else %}
+                    Access Lock
+                {% endif %}
+            </div>
+            <div class="live-value">
+                {% if current_application_account.status|lower == "accepted" %}
+                    Approved
+                {% elif current_application_account.status|lower == "rejected" %}
+                    Rejected
+                {% else %}
+                    Pending
+                {% endif %}
+            </div>
+            <div class="live-sub">
+                {% if current_application_account.status|lower == "accepted" %}
+                    Your request has been approved. Refresh the page and the full student dashboard will replace this pending-access view.
+                {% elif current_application_account.status|lower == "rejected" %}
+                    This request has been reviewed and closed. It no longer appears in the active review queue.
+                {% else %}
+                    Administrative approval is still required before attendance, substitution, and delivery features can be used.
+                {% endif %}
+            </div>
+        </div>
+    {% else %}
+        <div class="live-card">
+            <div class="live-label">Prototype Access</div>
+            <div class="live-value">Apply To Try</div>
+            <div class="live-sub">Use the form below to request a new student profile for the live service.</div>
+        </div>
+    {% endif %}
+</div>

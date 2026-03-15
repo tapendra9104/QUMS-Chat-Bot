@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .config import Settings
+from .config import Settings, load_settings
 from .db import Database
+from .monitoring import capture_monitoring_exception, init_monitoring
 from .runtime import build_runtime
 from .service import BotService
 
@@ -116,13 +117,19 @@ class TaskDispatcher:
 
 
 def execute_dispatched_task(callback_name: str) -> None:
-    runtime = build_runtime()
-    getattr(runtime.service, callback_name)()
+    settings = load_settings()
+    init_monitoring(settings, component="worker-job")
+    try:
+        runtime = build_runtime(settings)
+        getattr(runtime.service, callback_name)()
+    except Exception as exc:
+        capture_monitoring_exception(exc, flush=True)
+        raise
 
 
 def run_worker() -> None:
-    runtime = build_runtime()
-    settings = runtime.settings
+    settings = load_settings()
+    init_monitoring(settings, component="worker")
     if settings.task_queue_mode != "rq":
         raise RuntimeError("The worker can only run when TASK_QUEUE_MODE=rq.")
     if Queue is None or Redis is None or Worker is None:

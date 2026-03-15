@@ -11,12 +11,14 @@ from flask import Flask, Response, current_app, flash, jsonify, redirect, render
 from apscheduler.schedulers.base import STATE_RUNNING
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from .monitoring import init_monitoring
+from .config import load_settings
+from .monitoring import capture_monitoring_exception, init_monitoring
 from .rate_limit import InMemoryRateLimiter
 from .runtime import build_runtime
 from .erp_client import ERPClientError
 from .errors import StudentValidationError
 from .scheduler import build_scheduler
+from .security import decrypt_text
 from .service import (
     NOTIFICATION_CHANNEL_MODE_LABELS,
     STUDENT_ACTION_LABELS,
@@ -38,6 +40,7 @@ STUDENT_RESET_CODE_TTL_MINUTES = 10
 DELIVERY_BASED_STUDENT_ACTIONS = {
     "send_attendance_summary",
     "send_morning",
+    "send_substitution_report",
     "send_day_report",
     "send_shortage_report",
     "send_channel_test",
@@ -45,11 +48,15 @@ DELIVERY_BASED_STUDENT_ACTIONS = {
 
 
 def create_app(*, start_scheduler: bool = True) -> Flask:
-    runtime = build_runtime()
-    settings = runtime.settings
+    settings = load_settings()
+    sentry_enabled = init_monitoring(
+        settings,
+        component="web",
+        include_flask_integration=True,
+    )
+    runtime = build_runtime(settings)
     db = runtime.db
     service = runtime.service
-    sentry_enabled = init_monitoring(settings)
 
     app = Flask(__name__, template_folder="templates")
     app.secret_key = settings.app_secret
@@ -98,6 +105,8 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "admin_account_update",
             "save_student",
             "update_student_controls",
+            "accept_application",
+            "reject_application",
             "delete_student",
             "start_login",
             "login_page",
@@ -114,6 +123,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "export_message_history",
             "export_audit_log",
         }
+        shared_dashboard_endpoints = {
+            "send_substitution_report",
+        }
         student_only_endpoints = {
             "student_password_change_request",
             "student_password_change_submit",
@@ -129,6 +141,15 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return _auth_required_response(
                 url_for("admin_login", next=request.path),
                 "Admin sign-in required. Please sign in again.",
+            )
+        if endpoint in shared_dashboard_endpoints:
+            if _is_admin_authenticated() or _is_student_authenticated():
+                return None
+            if not _admin_auth_enabled():
+                return None
+            return _auth_required_response(
+                url_for("login_alias", next=request.path),
+                "Please sign in to continue.",
             )
         if endpoint in student_only_endpoints:
             if _is_student_authenticated():
@@ -191,7 +212,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.get("/login")
     def login_alias():
-        if _is_admin_authenticated() or _is_student_authenticated():
+        if _is_admin_authenticated() or _is_student_authenticated() or _is_pending_application_authenticated():
             return redirect(url_for("dashboard"))
         return render_template(
             "site_login.html",
@@ -217,12 +238,30 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except StudentValidationError:
             student = None
         if (
-            not student
-            or not student.enabled
-            or not student.site_login_username
-            or not student.site_password_hash
+            student
+            and student.enabled
+            and student.site_login_username
+            and student.site_password_hash
+            and password
+            and check_password_hash(student.site_password_hash, password)
+        ):
+            session.clear()
+            session["student_authenticated"] = True
+            session["student_id"] = student.id
+            session["student_username"] = student.site_login_username
+            flash(f"Signed in as {student.site_login_username}.", "success")
+            return redirect(next_path)
+
+        try:
+            application = _service().get_application_request_by_site_login_username(login_username)
+        except StudentValidationError:
+            application = None
+        if (
+            not application
+            or not application.site_login_username
+            or not application.site_password_hash
             or not password
-            or not check_password_hash(student.site_password_hash, password)
+            or not check_password_hash(application.site_password_hash, password)
         ):
             flash("Invalid login username or password.", "error")
             return render_template(
@@ -232,10 +271,25 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             ), 401
 
         session.clear()
-        session["student_authenticated"] = True
-        session["student_id"] = student.id
-        session["student_username"] = student.site_login_username
-        flash(f"Signed in as {student.site_login_username}.", "success")
+        session["pending_application_authenticated"] = True
+        session["pending_application_id"] = application.id
+        session["pending_application_username"] = application.site_login_username
+        application_status = _normalize_application_request_status(application.status)
+        if application_status == "accepted":
+            flash(
+                "Signed in successfully. Your application has been approved, and the full student dashboard will open automatically.",
+                "success",
+            )
+        elif application_status == "rejected":
+            flash(
+                "Signed in successfully. This application has been reviewed and closed. Student features remain unavailable for this request.",
+                "warning",
+            )
+        else:
+            flash(
+                f"Signed in successfully as {application.site_login_username}. Your website account is active, but student features remain unavailable until an administrator approves the request.",
+                "warning",
+            )
         return redirect(next_path)
 
     @app.post("/admin/login")
@@ -381,7 +435,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
 
     @app.get("/forgot-password")
     def student_forgot_password():
-        if _is_student_authenticated():
+        if _is_student_authenticated() or _is_pending_application_authenticated():
             return redirect(url_for("dashboard"))
         return render_template(
             "student_forgot_password.html",
@@ -609,9 +663,10 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 erp_password_changed=bool((supplied_erp_password or "").strip()),
             )
             if changes:
+                admin_activity = _format_student_profile_update_activity(changes)
                 _service().db.update_student_bot_activity(
                     updated_student.id,
-                    f"Student profile updated by {updated_student.site_login_username}.",
+                    admin_activity,
                 )
                 try:
                     _service().log_admin_action(
@@ -623,8 +678,11 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                     )
                 except Exception as exc:
                     _report_internal_exception("Student profile update audit logging failed.", exc)
-                _notify_admin_student_profile_update(updated_student, changes)
-                flash("Profile updated successfully.", "success")
+                admin_telegram_notified = _notify_admin_student_profile_update(updated_student, changes)
+                if admin_telegram_notified:
+                    flash("Profile updated successfully. The admin dashboard and admin Telegram notification have been updated.", "success")
+                else:
+                    flash("Profile updated successfully. The admin dashboard has been updated.", "success")
             else:
                 flash("No profile changes were detected.", "warning")
         except StudentValidationError as exc:
@@ -768,6 +826,8 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 student_label=request.form.get("student_label", ""),
                 user_name=request.form.get("user_name", ""),
                 password=request.form.get("password", ""),
+                site_login_username=request.form.get("site_login_username", ""),
+                site_login_password=request.form.get("site_login_password", ""),
                 whatsapp_number="",
                 telegram_chat_id=request.form.get("telegram_chat_id", ""),
                 timezone=request.form.get("timezone", ""),
@@ -794,9 +854,98 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         except Exception as exc:
             _report_internal_exception("Public application audit logging failed.", exc)
         if result["notification_sent"]:
-            flash("Application submitted. The admin has been notified on Telegram.", "success")
+            flash(
+                "Application submitted successfully. Your website account is active, but student features will remain unavailable until an administrator approves the request. The admin team has been notified on Telegram.",
+                "success",
+            )
         else:
-            flash("Application submitted. It was saved, but the Telegram admin notification could not be delivered.", "warning")
+            flash(
+                "Application submitted successfully. Your website account is active, but student features will remain unavailable until an administrator approves the request. The request was saved, but the Telegram admin notification could not be delivered right now.",
+                "warning",
+            )
+        return redirect(url_for("dashboard"))
+
+    @app.post("/applications/<int:application_id>/accept")
+    def accept_application(application_id: int):
+        service = _service()
+        try:
+            result = service.approve_application_request(
+                application_id,
+                site_login_username=request.form.get("site_login_username", ""),
+                site_login_password=request.form.get("site_login_password", ""),
+            )
+        except StudentValidationError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+        except Exception as exc:
+            _report_internal_exception("Application approval failed unexpectedly.", exc)
+            flash("The application could not be accepted right now. Please try again.", "error")
+            return redirect(url_for("dashboard"))
+
+        student = result["student"]
+        site_login_username = str(result["site_login_username"])
+        website_password_source = str(result["website_password_source"])
+        site_login_password_display = str(result["site_login_password_display"] or "")
+        _log_admin_action(
+            action="accept_application_request",
+            target_type="application_request",
+            target_id=str(application_id),
+            details=f"Application approved and student profile {student.id} was created.",
+        )
+        if website_password_source == "application_signup":
+            flash(
+                f"Application approved. {student.student_label} can sign in with username {site_login_username} using the website password created during sign-up.",
+                "success",
+            )
+        elif website_password_source == "erp_submitted":
+            flash(
+                f"Application approved. {student.student_label} can sign in with username {site_login_username} using the ERP password submitted with the application.",
+                "success",
+            )
+        elif website_password_source == "generated":
+            flash(
+                f"Application approved. {student.student_label} can sign in with username {site_login_username} using the temporary website password {site_login_password_display}.",
+                "success",
+            )
+        else:
+            flash(
+                f"Application approved. {student.student_label} can sign in with username {site_login_username} using the website password {site_login_password_display}.",
+                "success",
+            )
+        if result["notification_sent"]:
+            flash("Approval notification sent to the student's Telegram account.", "success")
+        elif result["notification_error"]:
+            flash("The student profile was created, but the Telegram approval notification could not be delivered.", "warning")
+        return redirect(url_for("dashboard", edit=student.id))
+
+    @app.post("/applications/<int:application_id>/reject")
+    def reject_application(application_id: int):
+        service = _service()
+        try:
+            result = service.reject_application_request(application_id)
+        except StudentValidationError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+        except Exception as exc:
+            _report_internal_exception("Application rejection failed unexpectedly.", exc)
+            flash("The application could not be rejected right now. Please try again.", "error")
+            return redirect(url_for("dashboard"))
+
+        application = result["application"]
+        _log_admin_action(
+            action="reject_application_request",
+            target_type="application_request",
+            target_id=str(application_id),
+            details="Application rejected and removed from the active review queue.",
+        )
+        flash(
+            f"Application rejected. {application.student_label}'s request has been removed from the active review queue.",
+            "success",
+        )
+        if result["notification_sent"]:
+            flash("Rejection notification sent to the applicant's Telegram account.", "success")
+        elif result["notification_error"]:
+            flash("The application was rejected, but the Telegram rejection notification could not be delivered.", "warning")
         return redirect(url_for("dashboard"))
 
     @app.post("/students/<int:student_id>/delete")
@@ -923,6 +1072,25 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             details="Manual morning summary sent.",
         )
         flash("Morning summary sent to configured channels.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/students/<int:student_id>/send-substitution-report")
+    def send_substitution_report(student_id: int):
+        guard_response = _guard_dashboard_student_action(student_id, "send_substitution_report", require_delivery=True)
+        if guard_response is not None:
+            return guard_response
+        try:
+            _service().send_substitution_report(student_id, force=True)
+        except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+        _log_dashboard_student_action(
+            action="send_substitution_report",
+            target_type="student",
+            target_id=str(student_id),
+            details="Manual substitution report sent. Automatic substitution alerts remain enabled.",
+        )
+        flash("Manual substitution report sent to configured channels. Automatic substitution alerts still run in the background.", "success")
         return redirect(url_for("dashboard"))
 
     @app.post("/students/<int:student_id>/send-attendance-summary")
@@ -1119,12 +1287,14 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         service = _service()
         is_admin_authenticated = _is_admin_authenticated()
         is_student_authenticated = _is_student_authenticated()
-        if _expects_authenticated_dashboard_request() and not (is_admin_authenticated or is_student_authenticated):
+        is_pending_authenticated = _is_pending_application_authenticated()
+        if _expects_authenticated_dashboard_request() and not (is_admin_authenticated or is_student_authenticated or is_pending_authenticated):
             return _auth_required_response(
                 _dashboard_reauth_url(request.path),
                 "Your dashboard session expired. Please sign in again.",
             )
         current_student = _current_student()
+        current_application_account = _current_pending_application()
         students = [current_student] if is_student_authenticated and current_student else (service.list_students() if is_admin_authenticated else [])
         student_dashboard_views = _build_student_dashboard_views(students)
         dashboard_now = service._local_now()
@@ -1164,8 +1334,18 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             if is_admin_authenticated
             else []
         )
-        return jsonify(
+        scheduler_overview = _build_scheduler_overview(dashboard_now)
+        response = jsonify(
             {
+                "hero_live_grid_html": render_template(
+                    "partials/hero_live_grid.html",
+                    scheduler_overview=scheduler_overview,
+                    is_admin_authenticated=is_admin_authenticated,
+                    is_student_authenticated=is_student_authenticated,
+                    is_pending_authenticated=is_pending_authenticated,
+                    current_application_account=current_application_account,
+                    settings=service.settings,
+                ),
                 "student_cards_html": render_template(
                     "partials/student_cards.html" if (is_admin_authenticated or is_student_authenticated) else "partials/public_prototype_cards.html",
                     students=students,
@@ -1173,6 +1353,8 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                     student_automation_statuses=student_automation_statuses,
                     is_admin_authenticated=is_admin_authenticated,
                     is_student_authenticated=is_student_authenticated,
+                    is_pending_authenticated=is_pending_authenticated,
+                    current_application_account=current_application_account,
                     can_view_student_details=bool(is_admin_authenticated or is_student_authenticated),
                     settings=service.settings,
                 ),
@@ -1225,6 +1407,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 "outbound_summary": outbound_summary,
             }
         )
+        response.headers["Cache-Control"] = "no-store, no-cache, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
 
     return app
 
@@ -1249,13 +1434,13 @@ def _auth_required_response(login_url: str, message: str):
 
 def _dashboard_auth_role() -> str:
     role = request.headers.get("X-Dashboard-Auth-Role", "").strip().lower()
-    if role in {"admin", "student", "public"}:
+    if role in {"admin", "student", "pending", "public"}:
         return role
     return "public"
 
 
 def _expects_authenticated_dashboard_request() -> bool:
-    return _dashboard_auth_role() in {"admin", "student"}
+    return _dashboard_auth_role() in {"admin", "student", "pending"}
 
 
 def _dashboard_reauth_url(next_path: str) -> str:
@@ -1566,10 +1751,10 @@ def _notify_student_password_change(student, *, change_type: str) -> None:
 def _describe_student_profile_changes(previous_student, updated_student, *, erp_password_changed: bool) -> list[str]:
     changes: list[str] = []
     field_pairs = [
-        ("student label", previous_student.student_label, updated_student.student_label),
-        ("ERP user id", previous_student.user_name, updated_student.user_name),
-        ("Telegram", previous_student.telegram_chat_id or "Not set", updated_student.telegram_chat_id or "Not set"),
-        ("timezone", previous_student.timezone, updated_student.timezone),
+        ("Student label", previous_student.student_label, updated_student.student_label),
+        ("ERP user ID", previous_student.user_name, updated_student.user_name),
+        ("Telegram chat id", previous_student.telegram_chat_id or "Not set", updated_student.telegram_chat_id or "Not set"),
+        ("Timezone", previous_student.timezone, updated_student.timezone),
     ]
     for label, old_value, new_value in field_pairs:
         if (old_value or "") != (new_value or ""):
@@ -1579,25 +1764,33 @@ def _describe_student_profile_changes(previous_student, updated_student, *, erp_
     return changes
 
 
-def _notify_admin_student_profile_update(student, changes: list[str]) -> None:
+def _format_student_profile_update_activity(changes: list[str]) -> str:
+    return "Student profile self-service update: " + "; ".join(changes)
+
+
+def _notify_admin_student_profile_update(student, changes: list[str]) -> bool:
     service = _service()
     if not service.telegram.configured or not service.settings.telegram_admin_chat_ids:
-        return
+        return False
     message = "\n".join(
         [
-            "Student profile updated",
+            "Student profile updated from the self-service dashboard",
             f"Student: {student.student_label}",
             f"Login username: {student.site_login_username}",
+            "Admin dashboard status: synchronized automatically",
             f"Updated at: {service._format_datetime(service._local_now())}",
-            "Changes:",
+            "Updated fields:",
             *[f"- {item}" for item in changes],
         ]
     )
+    delivered = False
     for chat_id in service.settings.telegram_admin_chat_ids:
         try:
             service.telegram.send_text(chat_id, message, message_kind="student_profile_updated")
+            delivered = True
         except TelegramError as exc:
             _report_internal_exception("Student profile update Telegram notification failed.", exc)
+    return delivered
 
 
 def _notify_admin_student_profile_deleted(student) -> None:
@@ -1624,7 +1817,9 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
     service = _service()
     is_admin_authenticated = _is_admin_authenticated()
     is_student_authenticated = _is_student_authenticated()
+    is_pending_authenticated = _is_pending_application_authenticated()
     current_student = _current_student()
+    current_application_account = _current_pending_application()
     viewer_role = _viewer_role()
     students = [current_student] if is_student_authenticated and current_student else (service.list_students() if is_admin_authenticated else [])
     student_dashboard_views = _build_student_dashboard_views(students)
@@ -1673,15 +1868,26 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
         else []
     )
     application_requests = service.list_application_requests(12) if is_admin_authenticated else []
+    application_request_summary = _build_application_request_summary(application_requests) if is_admin_authenticated else {
+        "total_count": 0,
+        "pending_count": 0,
+        "accepted_count": 0,
+        "rejected_count": 0,
+        "reviewed_count": 0,
+    }
     viewer_session = {
         "username": (
             session.get("admin_username")
             if is_admin_authenticated
-            else (current_student.site_login_username if current_student else "Guest")
+            else (
+                current_student.site_login_username
+                if current_student
+                else (current_application_account.site_login_username if current_application_account else "Guest")
+            )
         ),
         "login_path": url_for("login_alias"),
         "admin_login_path": url_for("admin_login"),
-        "authenticated": bool(is_admin_authenticated or is_student_authenticated),
+        "authenticated": bool(is_admin_authenticated or is_student_authenticated or is_pending_authenticated),
         "role": viewer_role,
     }
     return render_template(
@@ -1707,9 +1913,12 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
         current_student=current_student,
         is_admin_authenticated=is_admin_authenticated,
         is_student_authenticated=is_student_authenticated,
+        is_pending_authenticated=is_pending_authenticated,
+        current_application_account=current_application_account,
         can_view_student_details=bool(is_admin_authenticated or is_student_authenticated),
         can_retry_dead_letters=is_admin_authenticated,
         application_requests=application_requests,
+        application_request_summary=application_request_summary,
         application_request_views=_build_application_request_views(application_requests),
         telegram_configured=service.telegram.configured,
         settings=settings,
@@ -1948,13 +2157,44 @@ def _build_student_dashboard_views(students):
 
 def _build_application_request_views(application_requests):
     views: dict[int, dict[str, str | None]] = {}
+    service = _service()
     for item in application_requests:
+        password_value = ""
+        try:
+            password_value = decrypt_text(service.settings.app_secret, item.password_encrypted)
+        except Exception:
+            password_value = ""
         views[item.id] = {
             "created_at": _format_dashboard_timestamp(item.created_at) or item.created_at,
             "updated_at": _format_dashboard_timestamp(item.updated_at) or item.updated_at,
-            "password_value": None,
+            "password_value": password_value,
+            "site_login_username_default": item.site_login_username or item.user_name,
+            "site_password_configured": "yes" if item.site_password_hash else "",
+            "site_login_password_default": "",
         }
     return views
+
+
+def _build_application_request_summary(application_requests):
+    total_count = len(application_requests)
+    accepted_count = 0
+    rejected_count = 0
+    pending_count = 0
+    for item in application_requests:
+        status = _normalize_application_request_status(item.status)
+        if status == "accepted":
+            accepted_count += 1
+        elif status == "rejected":
+            rejected_count += 1
+        else:
+            pending_count += 1
+    return {
+        "total_count": total_count,
+        "pending_count": pending_count,
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "reviewed_count": accepted_count + rejected_count,
+    }
 
 
 def _derive_dashboard_erp_status(student, *, pending_login):
@@ -2059,14 +2299,26 @@ def _log_admin_action(*, action: str, target_type: str, target_id: str, details:
         return
 
 
+def _log_dashboard_student_action(*, action: str, target_type: str, target_id: str, details: str) -> None:
+    current_student = _current_student()
+    if current_student and not session.get("admin_authenticated"):
+        try:
+            _service().log_admin_action(
+                actor=f"student:{current_student.site_login_username}",
+                action=action,
+                target_type=target_type,
+                target_id=target_id,
+                details=details,
+            )
+        except Exception as exc:
+            _report_internal_exception("Student dashboard audit logging failed.", exc)
+        return
+    _log_admin_action(action=action, target_type=target_type, target_id=target_id, details=details)
+
+
 def _report_internal_exception(message: str, exc: Exception) -> None:
     current_app.logger.exception(message)
-    try:
-        import sentry_sdk
-
-        sentry_sdk.capture_exception(exc)
-    except Exception:
-        return
+    capture_monitoring_exception(exc)
 
 
 def _safe_next_path(value: str | None) -> str:
@@ -2079,6 +2331,11 @@ def _safe_next_path(value: str | None) -> str:
     return candidate
 
 
+def _normalize_application_request_status(status: str | None) -> str:
+    normalized = str(status or "").strip().lower()
+    return normalized or "new"
+
+
 def _is_admin_authenticated() -> bool:
     if not _admin_auth_enabled():
         return True
@@ -2086,6 +2343,8 @@ def _is_admin_authenticated() -> bool:
 
 
 def _current_student():
+    if not session.get("student_authenticated"):
+        _promote_pending_application_session()
     if not session.get("student_authenticated"):
         return None
     student_id = session.get("student_id")
@@ -2104,11 +2363,53 @@ def _is_student_authenticated() -> bool:
     return _current_student() is not None
 
 
+def _current_pending_application():
+    if not session.get("pending_application_authenticated"):
+        return None
+    application_id = session.get("pending_application_id")
+    if not application_id:
+        return None
+    try:
+        application = _service().get_application_request(int(application_id))
+    except (TypeError, ValueError):
+        return None
+    if not application or not application.site_login_username or not application.site_password_hash:
+        return None
+    return application
+
+
+def _promote_pending_application_session() -> bool:
+    if not session.get("pending_application_authenticated"):
+        return False
+    application = _current_pending_application()
+    if not application or str(application.status or "").strip().lower() != "accepted":
+        return False
+    try:
+        student = _service().get_student_by_site_login_username(application.site_login_username)
+    except StudentValidationError:
+        student = None
+    if not student or not student.enabled or not student.site_login_username or not student.site_password_hash:
+        return False
+    session.pop("pending_application_authenticated", None)
+    session.pop("pending_application_id", None)
+    session.pop("pending_application_username", None)
+    session["student_authenticated"] = True
+    session["student_id"] = student.id
+    session["student_username"] = student.site_login_username
+    return True
+
+
+def _is_pending_application_authenticated() -> bool:
+    return _current_pending_application() is not None
+
+
 def _viewer_role() -> str:
     if _is_admin_authenticated():
         return "admin"
     if _is_student_authenticated():
         return "student"
+    if _is_pending_application_authenticated():
+        return "pending"
     return "public"
 
 
@@ -2117,6 +2418,26 @@ def _guard_admin_student_action(student_id: int, action_key: str, *, require_del
     student = service.get_student(student_id)
     if not student:
         flash("Student profile not found.", "error")
+        return redirect(url_for("dashboard"))
+    try:
+        service.assert_student_action_allowed(student, action_key)
+        if require_delivery:
+            service.assert_student_notifications_available(student)
+    except ERPClientError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("dashboard"))
+    return None
+
+
+def _guard_dashboard_student_action(student_id: int, action_key: str, *, require_delivery: bool = False):
+    service = _service()
+    student = service.get_student(student_id)
+    if not student:
+        flash("Student profile not found.", "error")
+        return redirect(url_for("dashboard"))
+    current_student = _current_student()
+    if current_student and not session.get("admin_authenticated") and current_student.id != student.id:
+        flash("You can only use actions for your own student profile.", "error")
         return redirect(url_for("dashboard"))
     try:
         service.assert_student_action_allowed(student, action_key)

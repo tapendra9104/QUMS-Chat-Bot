@@ -1,45 +1,69 @@
-<section class="grid">
+<section class="grid student-grid">
     {% for student in students %}
         <article class="student">
             {% set automation = student_automation_statuses.get(student.id) %}
             {% set student_view = student_dashboard_views.get(student.id) %}
             {% set action_states = student_view.action_states if student_view else {} %}
-            <h3>{{ student.student_label }}</h3>
-            <p class="meta">
-                {% if can_view_student_details %}
-                    ERP user id: {{ student.user_name }}<br>
-                    Telegram: {{ student.telegram_chat_id or "Not set" }}<br>
-                    RegID: {{ student.reg_id or "Not synced yet" }}<br>
-                    Session updated: {{ student.session_updated_at or "Not logged in yet" }}<br>
-                {% endif %}
-                ERP session: {{ student_view.erp_status if student_view else "Not started" }}
-                {% if student_view and student_view.last_erp_sync_at %}
-                    <br>
-                    Last ERP sync at: {{ student_view.last_erp_sync_at }}
-                {% endif %}
-                {% if student_view and student_view.last_bot_action_at %}
-                    <br>
-                    Last bot action at: {{ student_view.last_bot_action_at }}
-                {% endif %}
-                {% if student_view and student_view.recent_activity %}
-                    <br>
-                    Recent bot activity: {{ student_view.recent_activity }}
-                {% endif %}
-            </p>
-            {% if student_view %}
-                <p class="meta">
-                    Profile access:
-                    <span class="status {{ 'ready' if not student_view.blocked else 'not-ready' }}">
-                        {{ 'Active' if not student_view.blocked else 'Blocked' }}
+            <div class="student-head">
+                <div>
+                    <span class="eyebrow">
+                        {% if is_admin_authenticated %}
+                            Student Profile
+                        {% else %}
+                            Your Profile
+                        {% endif %}
                     </span>
-                    <br>
-                    Delivery routing:
-                    <code>{{ student_view.notification_channel_label }}</code>
-                    <br>
-                    Disabled features:
-                    {{ student_view.disabled_action_labels | join(', ') if student_view.disabled_action_labels else 'None' }}
-                </p>
-            {% endif %}
+                    <h3>{{ student.student_label }}</h3>
+                </div>
+                {% if student_view %}
+                    <div class="student-badges">
+                        <span class="status {{ 'ready' if not student_view.blocked else 'not-ready' }}">
+                            {{ 'Active' if not student_view.blocked else 'Blocked' }}
+                        </span>
+                        <span class="pill">{{ student_view.notification_channel_label }}</span>
+                    </div>
+                {% endif %}
+            </div>
+            <div class="student-facts">
+                {% if can_view_student_details %}
+                    <div class="fact-card">
+                        <div class="fact-label">ERP User ID</div>
+                        <div class="fact-value">{{ student.user_name }}</div>
+                    </div>
+                    <div class="fact-card">
+                        <div class="fact-label">Telegram</div>
+                        <div class="fact-value">{{ student.telegram_chat_id or "Not set" }}</div>
+                    </div>
+                    <div class="fact-card">
+                        <div class="fact-label">RegID</div>
+                        <div class="fact-value">{{ student.reg_id or "Not synced yet" }}</div>
+                    </div>
+                    <div class="fact-card">
+                        <div class="fact-label">Session Updated</div>
+                        <div class="fact-value">{{ student.session_updated_at or "Not logged in yet" }}</div>
+                    </div>
+                {% endif %}
+                <div class="fact-card fact-card--wide">
+                    <div class="fact-label">Automation Status</div>
+                    <div class="student-line">ERP session: {{ student_view.erp_status if student_view else "Not started" }}</div>
+                    {% if student_view and student_view.last_erp_sync_at %}
+                        <div class="student-line">Last ERP sync at: {{ student_view.last_erp_sync_at }}</div>
+                    {% endif %}
+                    {% if student_view and student_view.last_bot_action_at %}
+                        <div class="student-line">Last bot action at: {{ student_view.last_bot_action_at }}</div>
+                    {% endif %}
+                    {% if student_view and student_view.recent_activity %}
+                        <div class="student-line student-line--accent">Recent bot activity: {{ student_view.recent_activity }}</div>
+                    {% endif %}
+                </div>
+                {% if student_view %}
+                    <div class="fact-card">
+                        <div class="fact-label">Profile Access</div>
+                        <div class="fact-value">{{ 'Active' if not student_view.blocked else 'Blocked' }}</div>
+                        <p class="meta">Disabled features: {{ student_view.disabled_action_labels | join(', ') if student_view.disabled_action_labels else 'None' }}</p>
+                    </div>
+                {% endif %}
+            </div>
             {% if automation %}
                 <div class="live-grid">
                     <div class="live-card light">
@@ -97,8 +121,8 @@
                 </div>
             {% endif %}
             {% if is_admin_authenticated %}
-                <details class="student-action-menu">
-                    <summary class="student-action-trigger" title="Open student controls">...</summary>
+                <details class="student-action-menu" data-refresh-key="student-controls-{{ student.id }}">
+                    <summary class="student-action-trigger" title="Open student controls">Student Controls</summary>
                     <div class="student-action-content">
                         <p class="meta">Student controls for {{ student.student_label }}</p>
                         <div class="actions">
@@ -129,6 +153,10 @@
                             <form method="post" action="{{ url_for('send_morning', student_id=student.id) }}">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit" {% if action_states.get('send_morning', {}).get('disabled') %}disabled title="Send Morning Summary is disabled for this student profile."{% endif %}>Send Morning Summary</button>
+                            </form>
+                            <form method="post" action="{{ url_for('send_substitution_report', student_id=student.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="ghost" {% if action_states.get('send_substitution_report', {}).get('disabled') %}disabled title="Send Manual Substitution Report is disabled for this student profile."{% endif %}>Send Manual Substitution Report</button>
                             </form>
                             <form method="post" action="{{ url_for('send_evening', student_id=student.id) }}">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -178,11 +206,26 @@
                         </form>
                     </div>
                 </details>
+            {% elif is_student_authenticated %}
+                <div class="student-action-menu">
+                    <p class="meta">Student quick actions for {{ student.student_label }}</p>
+                    <div class="actions">
+                        <form method="post" action="{{ url_for('send_substitution_report', student_id=student.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="ghost" {% if action_states.get('send_substitution_report', {}).get('disabled') %}disabled title="Send Manual Substitution Report is disabled for your student profile."{% endif %}>Send Manual Substitution Report</button>
+                        </form>
+                    </div>
+                </div>
             {% endif %}
         </article>
     {% else %}
         <article class="student">
-            <h3>No student configured</h3>
+            <div class="student-head">
+                <div>
+                    <span class="eyebrow">Student Profile</span>
+                    <h3>No student configured</h3>
+                </div>
+            </div>
             <p class="meta">Save at least one student profile to start the bot.</p>
         </article>
     {% endfor %}

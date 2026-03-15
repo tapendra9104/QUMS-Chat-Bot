@@ -183,6 +183,8 @@ class ApplicationRequest:
     student_label: str
     user_name: str
     password_encrypted: str
+    site_login_username: str
+    site_password_hash: str
     reg_id: str | None
     whatsapp_number: str
     telegram_chat_id: str

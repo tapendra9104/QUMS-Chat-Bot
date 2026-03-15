@@ -1,6 +1,6 @@
 {% if message_history %}
     {% for item in message_history %}
-        <details data-refresh-key="message:{{ item.id }}">
+        <details class="record-card" data-refresh-key="message:{{ item.id }}">
             <summary>{{ item.sent_at }} | {{ item.student_label }} | {{ item.category.replace('_', ' ') | title }} | {{ item.title }}</summary>
             <p class="meta">
                 Channel: {{ item.channel | title }}<br>
@@ -26,5 +26,5 @@
         </div>
     </div>
 {% else %}
-    <p class="meta">{% if message_history_filters.query or message_history_filters.channel or message_history_filters.category %}No message history matched the current filters.{% else %}No sent message history is available yet.{% endif %}</p>
+    <p class="meta empty-state">{% if message_history_filters.query or message_history_filters.channel or message_history_filters.category %}No message history matched the current filters.{% else %}No sent message history is available yet.{% endif %}</p>
 {% endif %}

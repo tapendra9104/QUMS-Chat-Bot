@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,6 +34,8 @@ class LoginResult:
 
 
 class ERPClient:
+    _retryable_request_errors = (requests.Timeout, requests.ConnectionError)
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
@@ -197,10 +200,30 @@ class ERPClient:
         context: str,
         **kwargs,
     ) -> requests.Response:
-        try:
-            return session.request(method, url, **kwargs)
-        except requests.RequestException as exc:
-            raise ERPClientError(f"{context} request failed: {exc}") from exc
+        request_kwargs = dict(kwargs)
+        request_kwargs["timeout"] = self._normalize_timeout(request_kwargs.get("timeout", 30))
+        last_error: requests.RequestException | None = None
+        for attempt in range(1, 4):
+            try:
+                return session.request(method, url, **request_kwargs)
+            except self._retryable_request_errors as exc:
+                last_error = exc
+                if attempt >= 3:
+                    break
+                time.sleep(float(attempt))
+            except requests.RequestException as exc:
+                raise ERPClientError(f"{context} request failed: {exc}") from exc
+        assert last_error is not None
+        raise ERPClientError(f"{context} request failed after 3 attempts: {last_error}") from last_error
+
+    def _normalize_timeout(
+        self,
+        timeout: float | tuple[float, float] | tuple[int, int] | int,
+    ) -> tuple[float, float] | tuple[int, int] | int:
+        if isinstance(timeout, tuple):
+            return timeout
+        timeout_value = float(timeout)
+        return (min(timeout_value, 10.0), timeout_value)
 
     def _raise_response_error(
         self,

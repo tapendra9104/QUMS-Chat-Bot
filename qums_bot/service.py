@@ -8,6 +8,7 @@ from io import StringIO
 import json
 import logging
 import re
+import secrets
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
@@ -26,7 +27,7 @@ from .parsers import (
     parse_substitutions,
     parse_timetable_slots,
 )
-from .security import encrypt_text
+from .security import decrypt_text, encrypt_text
 from .telegram import TelegramError, TelegramSender
 from .whatsapp import WhatsAppChannelStatus, WhatsAppError, WhatsAppSender
 from .errors import StudentValidationError
@@ -46,6 +47,7 @@ STUDENT_ACTION_LABELS: dict[str, str] = {
     "preview_today": "Preview Today",
     "send_attendance_summary": "Send Attendance Summary",
     "send_morning": "Send Morning Summary",
+    "send_substitution_report": "Send Manual Substitution Report",
     "send_day_report": "Send Day Report",
     "send_shortage_report": "Send Shortage Report",
     "send_channel_test": "Send Channel Test",
@@ -94,6 +96,10 @@ class BotService:
 
     def get_application_request(self, application_id: int) -> ApplicationRequest | None:
         return self.db.get_application_request(application_id)
+
+    def get_application_request_by_site_login_username(self, login_username: str) -> ApplicationRequest | None:
+        normalized = self._normalize_site_login_username(login_username)
+        return self.db.get_application_request_by_site_login_username(normalized)
 
     def get_message_history_page(
         self,
@@ -327,6 +333,7 @@ class BotService:
         password: str,
         site_login_username: str = "",
         site_login_password: str = "",
+        site_password_hash_override: str | None = None,
         whatsapp_number: str,
         telegram_chat_id: str,
         email_address: str,
@@ -353,11 +360,16 @@ class BotService:
             if disabled_actions is not None
             else (self.get_student_disabled_actions(current_student) if current_student else [])
         )
-        site_password_hash = self._resolve_site_password_hash(
-            student_id=student_id,
-            site_login_username=normalized_site_login_username,
-            site_login_password=site_login_password,
-        )
+        if site_password_hash_override is not None:
+            if site_password_hash_override and not normalized_site_login_username:
+                raise StudentValidationError("Site login username is required when a website password is configured.")
+            site_password_hash = site_password_hash_override if normalized_site_login_username else ""
+        else:
+            site_password_hash = self._resolve_site_password_hash(
+                student_id=student_id,
+                site_login_username=normalized_site_login_username,
+                site_login_password=site_login_password,
+            )
         self._validate_student_input(
             student_id=student_id,
             student_label=cleaned_label,
@@ -428,6 +440,8 @@ class BotService:
         student_label: str,
         user_name: str,
         password: str,
+        site_login_username: str,
+        site_login_password: str,
         whatsapp_number: str,
         telegram_chat_id: str,
         timezone: str,
@@ -439,6 +453,8 @@ class BotService:
         cleaned_label = " ".join((student_label or "").strip().split())
         cleaned_user_name = (user_name or "").strip()
         cleaned_password = password or ""
+        cleaned_site_login_username = self._normalize_site_login_username(site_login_username)
+        cleaned_site_login_password = site_login_password or ""
         cleaned_timezone = (timezone or "").strip() or self.settings.local_timezone
         cleaned_reg_id = " ".join((reg_id or "").strip().split()) or None
         cleaned_note = (note or "").strip() or None
@@ -453,18 +469,28 @@ class BotService:
             raise StudentValidationError("ERP user id is required.")
         if len(cleaned_password) < 4:
             raise StudentValidationError("ERP password is required.")
+        if not cleaned_site_login_username:
+            raise StudentValidationError("Website login username is required.")
+        if len(cleaned_site_login_password) < 8:
+            raise StudentValidationError("Website login password must be at least 8 characters long.")
         if cleaned_note and len(cleaned_note) > 1500:
             raise StudentValidationError("Application note must be 1500 characters or fewer.")
         try:
             ZoneInfo(cleaned_timezone)
         except Exception as exc:
             raise StudentValidationError(f"Invalid timezone: {cleaned_timezone}") from exc
+        self._validate_application_site_login_username(
+            application_id=None,
+            site_login_username=cleaned_site_login_username,
+        )
 
         request_id = self.db.insert_application_request(
             applicant_name=cleaned_applicant_name,
             student_label=cleaned_label,
             user_name=cleaned_user_name,
             password_encrypted=encrypt_text(self.settings.app_secret, cleaned_password),
+            site_login_username=cleaned_site_login_username,
+            site_password_hash=generate_password_hash(cleaned_site_login_password),
             reg_id=cleaned_reg_id,
             whatsapp_number=canonical_whatsapp,
             telegram_chat_id=canonical_telegram,
@@ -481,6 +507,7 @@ class BotService:
                 applicant_name=cleaned_applicant_name,
                 student_label=cleaned_label,
                 user_name=cleaned_user_name,
+                site_login_username=cleaned_site_login_username,
                 reg_id=cleaned_reg_id,
                 telegram_chat_id=canonical_telegram,
                 timezone=cleaned_timezone,
@@ -488,13 +515,156 @@ class BotService:
             )
             try:
                 for chat_id in self.settings.telegram_admin_chat_ids:
-                    self.telegram.send_text(chat_id, message, message_kind="application_request")
+                    self.telegram.send_text(
+                        chat_id,
+                        message,
+                        message_kind="application_request",
+                        reply_markup=self._telegram_application_actions_markup(request_id, "new"),
+                    )
                 notification_sent = True
             except TelegramError as exc:
                 notification_error = str(exc)
 
         return {
             "id": request_id,
+            "notification_sent": notification_sent,
+            "notification_error": notification_error,
+        }
+
+    def approve_application_request(
+        self,
+        application_id: int,
+        *,
+        site_login_username: str = "",
+        site_login_password: str = "",
+    ) -> dict[str, object]:
+        application = self.get_application_request(application_id)
+        if not application:
+            raise StudentValidationError("Application request not found.")
+        normalized_status = str(application.status or "").strip().lower()
+        if normalized_status == "accepted":
+            raise StudentValidationError("This application has already been accepted.")
+        if normalized_status == "rejected":
+            raise StudentValidationError("This application has already been rejected.")
+
+        erp_password = decrypt_text(self.settings.app_secret, application.password_encrypted)
+        if len(erp_password) < 4:
+            raise StudentValidationError("The submitted ERP password is not valid anymore. Ask the student to apply again.")
+
+        resolved_site_login_username = (site_login_username or "").strip() or application.site_login_username or application.user_name
+        self._validate_application_site_login_username(
+            application_id=application.id,
+            site_login_username=resolved_site_login_username,
+        )
+        provided_site_login_password = site_login_password or ""
+        website_password_source = "custom"
+        site_login_password_display = provided_site_login_password
+        if provided_site_login_password:
+            resolved_site_password_hash = generate_password_hash(provided_site_login_password)
+        elif application.site_password_hash:
+            website_password_source = "application_signup"
+            resolved_site_password_hash = application.site_password_hash
+            site_login_password_display = ""
+        elif len(erp_password) >= 8:
+            website_password_source = "erp_submitted"
+            resolved_site_password_hash = generate_password_hash(erp_password)
+            site_login_password_display = ""
+        else:
+            website_password_source = "generated"
+            site_login_password_display = secrets.token_urlsafe(9)
+            resolved_site_password_hash = generate_password_hash(site_login_password_display)
+
+        student_id = self.save_student(
+            student_id=None,
+            student_label=application.student_label,
+            user_name=application.user_name,
+            password=erp_password,
+            site_login_username=resolved_site_login_username,
+            site_login_password="",
+            site_password_hash_override=resolved_site_password_hash,
+            whatsapp_number=application.whatsapp_number,
+            telegram_chat_id=application.telegram_chat_id,
+            email_address="",
+            enabled=True,
+            timezone=application.timezone,
+        )
+        self.db.update_student_registration(
+            student_id=student_id,
+            reg_id=application.reg_id,
+            student_name=application.applicant_name,
+        )
+        self.db.update_application_request_access(
+            application_id=application_id,
+            site_login_username=resolved_site_login_username,
+            site_password_hash=resolved_site_password_hash,
+        )
+        self.db.update_application_request_status(application_id, "accepted")
+        self.db.update_student_bot_activity(
+            student_id,
+            "Application approved. Student profile created and ready for ERP sign-in.",
+        )
+
+        notification_sent = False
+        notification_error = None
+        if self.telegram.configured and application.telegram_chat_id:
+            try:
+                self.telegram.send_text(
+                    application.telegram_chat_id,
+                    self._build_application_accepted_message(
+                        student_label=application.student_label,
+                        site_login_username=resolved_site_login_username,
+                        website_password_source=website_password_source,
+                        site_login_password_display=site_login_password_display,
+                    ),
+                    message_kind="application_accepted",
+                )
+                notification_sent = True
+            except TelegramError as exc:
+                notification_error = str(exc)
+
+        student = self._require_student(student_id)
+        return {
+            "student_id": student_id,
+            "student": student,
+            "site_login_username": resolved_site_login_username,
+            "site_login_password_display": site_login_password_display,
+            "website_password_source": website_password_source,
+            "notification_sent": notification_sent,
+            "notification_error": notification_error,
+        }
+
+    def reject_application_request(self, application_id: int) -> dict[str, object]:
+        application = self.get_application_request(application_id)
+        if not application:
+            raise StudentValidationError("Application request not found.")
+        normalized_status = str(application.status or "").strip().lower()
+        if normalized_status == "accepted":
+            raise StudentValidationError("This application has already been accepted and cannot be rejected.")
+        if normalized_status == "rejected":
+            raise StudentValidationError("This application has already been rejected.")
+
+        self.db.update_application_request_status(application_id, "rejected")
+
+        notification_sent = False
+        notification_error = None
+        if self.telegram.configured and application.telegram_chat_id:
+            try:
+                self.telegram.send_text(
+                    application.telegram_chat_id,
+                    self._build_application_rejected_message(
+                        student_label=application.student_label,
+                        site_login_username=application.site_login_username or application.user_name,
+                    ),
+                    message_kind="application_rejected",
+                )
+                notification_sent = True
+            except TelegramError as exc:
+                notification_error = str(exc)
+
+        refreshed_application = self.get_application_request(application_id)
+        assert refreshed_application is not None
+        return {
+            "application": refreshed_application,
             "notification_sent": notification_sent,
             "notification_error": notification_error,
         }
@@ -664,6 +834,68 @@ class BotService:
         )
         self.db.mark_student_erp_sync(student.id)
         self.db.update_student_status(student.id, f"Attendance summary report sent for {report_date.isoformat()}.")
+        return message
+
+    def send_substitution_report(
+        self,
+        student_id: int,
+        target_date: date | None = None,
+        *,
+        force: bool = False,
+    ) -> str:
+        student = self._require_student(student_id)
+        self.assert_student_action_allowed(student, "send_substitution_report")
+        current = self._now_for_student(student)
+        report_date = target_date or current.date()
+        timetable_payload = self.erp.get_timetable(student)
+        substitutions_payload = self.erp.get_substitutions(student)
+        detail_payload = self.erp.get_student_detail(student)
+
+        detail = parse_student_detail_response(detail_payload) or {}
+        substitutions = parse_substitutions(substitutions_payload, report_date)
+        slots = parse_timetable_slots(timetable_payload, report_date)
+        if not slots:
+            slots = parse_timetable_slots(substitutions_payload, report_date)
+        if not slots:
+            slots = self._default_non_lecture_slots(report_date, substitutions)
+
+        self.db.replace_lecture_events(
+            student_id=student.id,
+            event_date=report_date,
+            slots=slots,
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        lecture_events = self.db.get_lecture_events_for_day(student.id, report_date)
+        self._sync_substitutions(
+            student=student,
+            target_date=report_date,
+            substitutions=substitutions,
+            lecture_events=lecture_events,
+            source="manual_report",
+            send_alerts=False,
+            detected_at=current,
+        )
+        lecture_events = self.db.get_lecture_events_for_day(student.id, report_date)
+        message = self._build_substitution_report(
+            student_name=str(detail.get("StudentName") or student.student_name or student.student_label).strip(),
+            target_date=report_date,
+            substitutions=substitutions,
+            lecture_events=lecture_events,
+            generated_at=current,
+        )
+        self._send_whatsapp(
+            student,
+            message,
+            message_kind="attendance",
+            history_category="substitution_report",
+            idempotency_key=self._report_idempotency_key(
+                base_key=f"substitution_report:{student.id}:{report_date.isoformat()}",
+                force=force,
+                now=current,
+            ),
+        )
+        self.db.mark_student_erp_sync(student.id)
+        self.db.update_student_status(student.id, f"Substitution report sent for {report_date.isoformat()}.")
         return message
 
     def send_test_message(self, student_id: int) -> str:
@@ -928,6 +1160,13 @@ class BotService:
             body = self.send_shortage_report(student.id, force=True)
             self._send_telegram_result_if_needed(chat_id, student.id, body)
             return True
+        if command in {"/sendsubstitutionreport", "/substitution"}:
+            if not self._claim_telegram_action_window(chat_id, "send_substitution_report", f"student:{student.id}"):
+                self._send_telegram_text(chat_id, "This action was already sent recently. Wait a few seconds before retrying.")
+                return True
+            body = self.send_substitution_report(student.id, force=True)
+            self._send_telegram_result_if_needed(chat_id, student.id, body)
+            return True
         if command in {"/sendtest", "/test"}:
             if not self._claim_telegram_action_window(chat_id, "send_test_message", f"student:{student.id}"):
                 self._send_telegram_text(chat_id, "This action was already sent recently. Wait a few seconds before retrying.")
@@ -1086,7 +1325,11 @@ class BotService:
             application = self.get_application_request(application_id)
             if not application:
                 raise ValueError("Application request not found.")
-            self._send_telegram_text(chat_id, self._build_telegram_application_detail_text(application))
+            self._send_telegram_text(
+                chat_id,
+                self._build_telegram_application_detail_text(application),
+                reply_markup=self._telegram_application_actions_markup(application.id, application.status),
+            )
             return True
         if command in {
             "/runchecks",
@@ -1187,6 +1430,21 @@ class BotService:
                 target_type="student",
                 target_id=str(student_id),
                 details="Shortage report sent from Telegram command.",
+            )
+            return True
+        if command in {"/sendsubstitutionreport", "/substitution"}:
+            student_id = self._parse_telegram_student_id_arg(args, command_name=command)
+            if not self._claim_telegram_action_window(chat_id, "send_substitution_report", str(student_id)):
+                self._send_telegram_text(chat_id, "This action was already sent recently. Wait a few seconds before retrying.")
+                return True
+            body = self.send_substitution_report(student_id, force=True)
+            self._send_telegram_result_if_needed(chat_id, student_id, body)
+            self._log_admin_action_safe(
+                actor=f"telegram:{chat_id}",
+                action="send_substitution_report",
+                target_type="student",
+                target_id=str(student_id),
+                details="Manual substitution report sent from Telegram command. Automatic substitution alerts remain enabled.",
             )
             return True
         if command in {"/sendtest", "/test"}:
@@ -1296,6 +1554,64 @@ class BotService:
                     reply_markup=self._telegram_students_markup(),
                 )
                 self._answer_telegram_callback(callback_id)
+                return
+            if data.startswith("tg:application:") and data.endswith(":accept"):
+                application_id = self._extract_telegram_application_id(data, suffix=":accept")
+                result = self.approve_application_request(application_id)
+                student = result["student"]
+                assert isinstance(student, Student)
+                website_password_source = str(result["website_password_source"])
+                site_login_password_display = str(result["site_login_password_display"] or "")
+                if website_password_source == "application_signup":
+                    website_password_line = "Website password: same as the password chosen during website signup."
+                elif website_password_source == "erp_submitted":
+                    website_password_line = "Website password: same as the password submitted in the application."
+                elif website_password_source == "generated":
+                    website_password_line = f"Temporary website password: {site_login_password_display}"
+                else:
+                    website_password_line = f"Website password: {site_login_password_display}"
+                self._send_telegram_text(
+                    chat_id,
+                    (
+                        f"Application approved.\n\n"
+                        f"Student profile created: {student.student_label}\n"
+                        f"Website login username: {result['site_login_username']}\n"
+                        f"{website_password_line}"
+                    ),
+                    reply_markup=self._telegram_student_actions_markup(student.id),
+                )
+                self._log_admin_action_safe(
+                    actor=f"telegram:{chat_id}",
+                    action="accept_application_request",
+                    target_type="application_request",
+                    target_id=str(application_id),
+                    details=f"Application approved from Telegram. Student profile {student.id} was created.",
+                )
+                self._answer_telegram_callback(callback_id, "Application approved.")
+                return
+            if data.startswith("tg:application:") and data.endswith(":reject"):
+                application_id = self._extract_telegram_application_id(data, suffix=":reject")
+                result = self.reject_application_request(application_id)
+                application = result["application"]
+                assert isinstance(application, ApplicationRequest)
+                self._send_telegram_text(
+                    chat_id,
+                    (
+                        "Application rejected.\n\n"
+                        f"Request closed: {application.student_label}\n"
+                        f"Website login username: {application.site_login_username or application.user_name}\n"
+                        "Status: Closed and removed from the active review queue."
+                    ),
+                    reply_markup=self._telegram_application_actions_markup(application_id, application.status),
+                )
+                self._log_admin_action_safe(
+                    actor=f"telegram:{chat_id}",
+                    action="reject_application_request",
+                    target_type="application_request",
+                    target_id=str(application_id),
+                    details="Application rejected from Telegram and removed from the active review queue.",
+                )
+                self._answer_telegram_callback(callback_id, "Application rejected.")
                 return
             if data == "tg:student:add":
                 self._start_telegram_student_session(chat_id, mode="student_add")
@@ -1415,6 +1731,7 @@ class BotService:
                 "tgs:attendance": ("send_attendance_summary_report", "Attendance summary sent.", lambda: self.send_attendance_summary_report(student.id, force=True), False),
                 "tgs:morning": ("send_morning_update", "Morning summary sent.", lambda: self.send_morning_update(student.id, force=True), False),
                 "tgs:evening": ("send_evening_report", "Day report sent.", lambda: self.send_evening_report(student.id, force=True), False),
+                "tgs:substitution": ("send_substitution_report", "Manual substitution report sent.", lambda: self.send_substitution_report(student.id, force=True), False),
                 "tgs:shortage": ("send_shortage_report", "Shortage report sent.", lambda: self.send_shortage_report(student.id, force=True), False),
                 "tgs:test": ("send_test_message", "Channel test sent.", lambda: self.send_test_message(student.id), False),
             }
@@ -1491,6 +1808,12 @@ class BotService:
                 "Day report sent.",
                 lambda student_id: self.send_evening_report(student_id, force=True),
                 "End-of-day report sent from Telegram.",
+            ),
+            ":substitution": (
+                "send_substitution_report",
+                "Manual substitution report sent.",
+                lambda student_id: self.send_substitution_report(student_id, force=True),
+                "Manual substitution report sent from Telegram. Automatic substitution alerts remain enabled.",
             ),
             ":shortage": (
                 "send_shortage_report",
@@ -1761,6 +2084,16 @@ class BotService:
                 self._send_telegram_text(chat_id, "ERP password is required.")
                 return
             payload["password"] = normalized
+        elif step == "site_login_username":
+            if not normalized:
+                self._send_telegram_text(chat_id, "Website login username is required.")
+                return
+            payload["site_login_username"] = normalized
+        elif step == "site_login_password":
+            if len(normalized) < 8:
+                self._send_telegram_text(chat_id, "Website login password must be at least 8 characters long.")
+                return
+            payload["site_login_password"] = normalized
         elif step == "reg_id":
             payload["reg_id"] = "" if lower_value == "skip" else normalized
         elif step == "telegram_chat_id":
@@ -1782,6 +2115,8 @@ class BotService:
             "student_label",
             "user_name",
             "password",
+            "site_login_username",
+            "site_login_password",
             "reg_id",
             "telegram_chat_id",
             "timezone",
@@ -1871,6 +2206,8 @@ class BotService:
             "student_label": "",
             "user_name": "",
             "password": "",
+            "site_login_username": "",
+            "site_login_password": "",
             "reg_id": "",
             "telegram_chat_id": chat_id,
             "timezone": self.settings.local_timezone,
@@ -1932,6 +2269,8 @@ class BotService:
             student_label=str(payload.get("student_label") or ""),
             user_name=str(payload.get("user_name") or ""),
             password=str(payload.get("password") or ""),
+            site_login_username=str(payload.get("site_login_username") or ""),
+            site_login_password=str(payload.get("site_login_password") or ""),
             whatsapp_number="",
             telegram_chat_id=str(payload.get("telegram_chat_id") or ""),
             timezone=str(payload.get("timezone") or self.settings.local_timezone),
@@ -1944,10 +2283,11 @@ class BotService:
             "Application submitted successfully.",
             "",
             f"Request id: {result['id']}",
+            "Your website account is active now, but student features will remain unavailable until an administrator approves the request.",
             "The admin team has been notified on Telegram.",
         ]
         if not result["notification_sent"]:
-            confirmation_lines[-1] = "The request was saved, but admin Telegram notification could not be delivered right now."
+            confirmation_lines[-1] = "The request was saved, but the admin Telegram notification could not be delivered right now."
         self._send_telegram_text(
             chat_id,
             "\n".join(confirmation_lines),
@@ -2024,6 +2364,7 @@ class BotService:
         outbound = self.get_outbound_queue_summary()
         return {
             "scheduler": "Running" if self.settings.run_scheduler else "Disabled",
+            "sync_mode": "Live sync on change",
             "queue": {
                 "claimed": int(outbound.get("claimed", 0)),
                 "sent": int(outbound.get("sent", 0)),
@@ -2038,6 +2379,11 @@ class BotService:
                     "telegram": student.telegram_chat_id or "Not set",
                     "reg_id": student.reg_id or "Not synced yet",
                     "session_updated_at": student.session_updated_at or "Not logged in yet",
+                    "last_erp_sync_at": student.last_erp_sync_at or student.session_updated_at or "Not synced yet",
+                    "last_bot_action_at": student.last_bot_action_at or student.updated_at or "Not recorded yet",
+                    "profile_status": "Active" if student.enabled else "Blocked",
+                    "delivery": self.get_student_notification_channel_label(student),
+                    "disabled_features": self._student_disabled_action_labels(student),
                     "erp_status": self._student_erp_status_text(student),
                     "recent_activity": self._student_bot_activity_text(student),
                 }
@@ -2051,10 +2397,11 @@ class BotService:
         students = snapshot.get("students", [])
         student_count = int(snapshot.get("student_count", 0))
         lines = [
-            "QUMS Admin Control",
+            "QUMS Admin Operations",
             "",
             f"Last change: {self._format_datetime(current)}",
             f"Scheduler: {snapshot.get('scheduler', 'Unknown')}",
+            f"Dashboard sync: {snapshot.get('sync_mode', 'Unknown')}",
             "",
             "Queue",
             f"- Claimed: {queue.get('claimed', 0)}",
@@ -2074,6 +2421,11 @@ class BotService:
                     f"  Telegram: {student['telegram']}",
                     f"  RegID: {student['reg_id']}",
                     f"  Session updated: {student['session_updated_at']}",
+                    f"  Last ERP sync: {student['last_erp_sync_at']}",
+                    f"  Last bot action: {student['last_bot_action_at']}",
+                    f"  Profile status: {student['profile_status']}",
+                    f"  Delivery: {student['delivery']}",
+                    f"  Disabled features: {', '.join(student['disabled_features']) if student['disabled_features'] else 'None'}",
                     f"  ERP session: {student['erp_status']}",
                 ]
             )
@@ -2098,9 +2450,14 @@ class BotService:
                 [
                     f"{student.id}. {student.student_label}",
                     f"  ERP user id: {student.user_name}",
+                    f"  Profile status: {'Active' if student.enabled else 'Blocked'}",
+                    f"  Delivery: {self.get_student_notification_channel_label(student)}",
                     f"  Telegram: {student.telegram_chat_id or 'Not set'}",
                     f"  RegID: {student.reg_id or 'Not synced yet'}",
                     f"  Session updated: {student.session_updated_at or 'Not logged in yet'}",
+                    f"  Last ERP sync: {student.last_erp_sync_at or student.session_updated_at or 'Not synced yet'}",
+                    f"  Last bot action: {student.last_bot_action_at or student.updated_at or 'Not recorded yet'}",
+                    f"  Disabled features: {', '.join(self._student_disabled_action_labels(student)) or 'None'}",
                     f"  ERP session: {self._student_erp_status_text(student)}",
                     f"  Recent bot activity: {self._student_bot_activity_text(student)}",
                     "",
@@ -2109,11 +2466,7 @@ class BotService:
         return "\n".join(lines).rstrip()
 
     def _build_telegram_student_menu_text(self, student: Student) -> str:
-        disabled_actions = [
-            STUDENT_ACTION_LABELS[action_key]
-            for action_key in STUDENT_ACTION_ORDER
-            if action_key in self.get_student_disabled_actions(student)
-        ]
+        disabled_actions = self._student_disabled_action_labels(student)
         return "\n".join(
             [
                 f"Student: {student.student_label}",
@@ -2122,6 +2475,8 @@ class BotService:
                 f"Telegram: {student.telegram_chat_id or 'Not set'}",
                 f"RegID: {student.reg_id or 'Not synced yet'}",
                 f"Session updated: {student.session_updated_at or 'Not logged in yet'}",
+                f"Last ERP sync: {student.last_erp_sync_at or student.session_updated_at or 'Not synced yet'}",
+                f"Last bot action: {student.last_bot_action_at or student.updated_at or 'Not recorded yet'}",
                 f"Timezone: {student.timezone}",
                 f"Enabled: {'Yes' if student.enabled else 'No'}",
                 f"Profile status: {'Active' if student.enabled else 'Blocked'}",
@@ -2131,6 +2486,14 @@ class BotService:
                 f"Recent bot activity: {self._student_bot_activity_text(student)}",
             ]
         )
+
+    def _student_disabled_action_labels(self, student: Student) -> list[str]:
+        disabled_actions = self.get_student_disabled_actions(student)
+        return [
+            STUDENT_ACTION_LABELS[action_key]
+            for action_key in STUDENT_ACTION_ORDER
+            if action_key in disabled_actions
+        ]
 
     def _build_telegram_applications_text(self) -> str:
         applications = self.list_application_requests(10)
@@ -2153,13 +2516,19 @@ class BotService:
         return "\n".join(lines).rstrip()
 
     def _build_telegram_application_detail_text(self, application: ApplicationRequest) -> str:
+        erp_password = "Unavailable"
+        try:
+            erp_password = decrypt_text(self.settings.app_secret, application.password_encrypted)
+        except Exception:
+            erp_password = "Unavailable"
         lines = [
             f"Application Request: {application.id}",
             "",
             f"Applicant: {application.applicant_name}",
             f"Preferred label: {application.student_label}",
             f"ERP user id: {application.user_name}",
-            "ERP password: Submitted securely and hidden from admin views.",
+            f"Website login username: {application.site_login_username or 'Not set'}",
+            f"ERP password: {erp_password}",
             f"RegID: {application.reg_id or 'Not provided'}",
             f"Telegram: {application.telegram_chat_id or 'Not provided'}",
             f"Timezone: {application.timezone}",
@@ -2167,6 +2536,8 @@ class BotService:
             f"Created at: {application.created_at}",
             f"Updated at: {application.updated_at}",
             f"Source: {application.created_from_ip or 'Not available'}",
+            "",
+            "Use the website dashboard to review or edit the website login username and password before you accept or reject this application.",
         ]
         if application.note:
             lines.extend(["", "Note:", application.note])
@@ -2248,6 +2619,7 @@ class BotService:
                 "- /attendance <id>",
                 "- /morning <id>",
                 "- /dayreport <id>",
+                "- /substitution <id>",
                 "- /shortage <id>",
                 "- /test <id>",
                 "- /startlogin <id>",
@@ -2291,12 +2663,14 @@ class BotService:
                 "- /attendance",
                 "- /morning",
                 "- /dayreport",
+                "- /substitution",
                 "- /shortage",
                 "- /test",
                 "- /startlogin",
                 "",
                 "This Telegram chat is linked only to your own student profile.",
                 "Other student profiles and admin controls are not available here.",
+                "Manual substitution checks here do not disable the automatic background substitution alerts.",
             ]
         )
 
@@ -2323,7 +2697,10 @@ class BotService:
                     {"text": "Send Day Report", "callback_data": "tgs:evening"},
                 ],
                 [
+                    {"text": "Manual Substitution", "callback_data": "tgs:substitution"},
                     {"text": "Send Shortage", "callback_data": "tgs:shortage"},
+                ],
+                [
                     {"text": "Channel Test", "callback_data": "tgs:test"},
                 ],
                 [
@@ -2344,6 +2721,19 @@ class BotService:
         rows.append([{"text": "Dashboard", "callback_data": "tg:dashboard"}])
         return self._telegram_inline_markup(rows)
 
+    def _telegram_application_actions_markup(self, application_id: int, status: str) -> dict:
+        rows: list[list[dict[str, str]]] = []
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in {"accepted", "rejected"}:
+            rows.append(
+                [
+                    {"text": "Approve Application", "callback_data": f"tg:application:{application_id}:accept"},
+                    {"text": "Reject Application", "callback_data": f"tg:application:{application_id}:reject"},
+                ]
+            )
+        rows.append([{"text": "Dashboard", "callback_data": "tg:dashboard"}])
+        return self._telegram_inline_markup(rows)
+
     def _telegram_student_actions_markup(self, student_id: int) -> dict:
         return self._telegram_inline_markup(
             [
@@ -2356,7 +2746,10 @@ class BotService:
                     {"text": "Send Day Report", "callback_data": f"tg:student:{student_id}:evening"},
                 ],
                 [
+                    {"text": "Manual Substitution", "callback_data": f"tg:student:{student_id}:substitution"},
                     {"text": "Send Shortage", "callback_data": f"tg:student:{student_id}:shortage"},
+                ],
+                [
                     {"text": "Channel Test", "callback_data": f"tg:student:{student_id}:test"},
                 ],
                 [
@@ -2385,6 +2778,10 @@ class BotService:
             return "ERP user id\nSend your ERP user id."
         if step == "password":
             return "ERP password\nSend your ERP password so the admin can add your profile."
+        if step == "site_login_username":
+            return "Website login username\nSend the username you want to use for website sign-in."
+        if step == "site_login_password":
+            return "Website login password\nSend a website password with at least 8 characters."
         if step == "reg_id":
             return "Registration id\nSend your RegID, or send skip."
         if step == "telegram_chat_id":
@@ -2404,6 +2801,8 @@ class BotService:
                 f"Preferred label: {payload.get('student_label') or 'Not set'}",
                 f"ERP user id: {payload.get('user_name') or 'Not set'}",
                 f"ERP password: {'Provided' if payload.get('password') else 'Not set'}",
+                f"Website login username: {payload.get('site_login_username') or 'Not set'}",
+                f"Website login password: {'Provided' if payload.get('site_login_password') else 'Not set'}",
                 f"RegID: {payload.get('reg_id') or 'Not provided'}",
                 f"Telegram: {payload.get('telegram_chat_id') or 'Not provided'}",
                 f"Timezone: {payload.get('timezone') or self.settings.local_timezone}",
@@ -2537,6 +2936,13 @@ class BotService:
         raw_id = callback_data[len(prefix):-len(suffix)]
         return int(raw_id)
 
+    def _extract_telegram_application_id(self, callback_data: str, *, suffix: str) -> int:
+        prefix = "tg:application:"
+        if not callback_data.startswith(prefix) or not callback_data.endswith(suffix):
+            raise ValueError("Invalid Telegram application callback.")
+        raw_id = callback_data[len(prefix):-len(suffix)]
+        return int(raw_id)
+
     def _dashboard_login_url(self, student_id: int) -> str:
         base = self.settings.public_base_url or f"http://127.0.0.1:{self.settings.flask_port}"
         return f"{base}/students/{student_id}/login"
@@ -2625,6 +3031,7 @@ class BotService:
             {"command": "attendance", "description": "Send attendance summary by student id"},
             {"command": "morning", "description": "Send morning summary by student id"},
             {"command": "dayreport", "description": "Send day report by student id"},
+            {"command": "substitution", "description": "Send a manual substitution report"},
             {"command": "shortage", "description": "Send shortage report by student id"},
             {"command": "test", "description": "Send a channel test by student id"},
             {"command": "startlogin", "description": "Open the ERP captcha login handoff"},
@@ -2672,6 +3079,12 @@ class BotService:
                     send_alerts=True,
                     detected_at=student_now,
                 )
+                self.db.mark_student_erp_sync(student.id)
+                if self._has_stale_substitution_failure(student):
+                    self.db.update_student_bot_activity(
+                        student.id,
+                        f"Substitution check recovered for {target_date.isoformat()}.",
+                    )
             except AuthenticationRequired:
                 self._handle_authentication_required(student, detected_at=student_now)
             except ERPClientError as exc:
@@ -4659,6 +5072,67 @@ class BotService:
         )
         return "\n".join(lines)
 
+    def _build_substitution_report(
+        self,
+        *,
+        student_name: str,
+        target_date: date,
+        substitutions,
+        lecture_events: list[LectureEvent],
+        generated_at: datetime,
+    ) -> str:
+        display_events = sorted(
+            lecture_events,
+            key=lambda event: (
+                event.start_time.isoformat() if event.start_time else "99:99",
+                event.slot_label,
+            ),
+        )
+        lines = [
+            "Substitution Check Report",
+            "",
+            f"Student: {student_name or 'student'}",
+            f"Date: {target_date.strftime('%A, %d %B %Y')}",
+            f"Generated at: {self._format_datetime(generated_at)}",
+            "",
+            "Today's Lectures",
+        ]
+
+        if not display_events:
+            lines.append("- No timetable rows were found for today.")
+        else:
+            for event in display_events:
+                time_text = self._format_event_time(event)
+                if event.is_break:
+                    if self._is_no_class_event(event):
+                        note_text = f" | Note: {event.note}" if event.note and event.note != event.subject_name else ""
+                        lines.append(f"- {time_text}: {event.subject_name}{note_text}")
+                    else:
+                        lines.append(f"- {time_text}: Break")
+                    continue
+                teacher_text = f" | Faculty: {event.teacher_name}" if event.teacher_name else ""
+                location_text = self._event_class_location(event)
+                class_text = f" | Class: {location_text}" if location_text else ""
+                note_text = f" | Note: {event.note}" if event.note else ""
+                lines.append(f"- {time_text}: {event.subject_name}{teacher_text}{class_text}{note_text}")
+
+        lines.extend(["", "Substitute Lectures"])
+        if not substitutions:
+            lines.append("- No substitute lecture is assigned right now.")
+        else:
+            for item in substitutions:
+                context = self._build_substitution_context(item, lecture_events)
+                lines.append(self._render_substitution_summary_line(context))
+
+        lines.extend(
+            [
+                "",
+                "This report was generated manually from the current ERP session.",
+                "New substitute-teacher assignments will still be checked automatically in the background.",
+            ]
+        )
+        return "\n".join(lines)
+
     def _render_no_class_day_message(
         self,
         *,
@@ -4705,6 +5179,11 @@ class BotService:
             f"Time: {lecture_time_text} | Ends at: {end_time_text}"
             f"{' | Class: ' + location_text if location_text else ''}"
         )
+
+    def _has_stale_substitution_failure(self, student: Student) -> bool:
+        activity = (student.last_bot_activity_text or "").strip()
+        status = (student.last_login_status or "").strip()
+        return activity.startswith("Substitution check failed:") or status.startswith("Substitution check failed:")
 
     def _render_substitution_alert(
         self,
@@ -5287,6 +5766,7 @@ class BotService:
         applicant_name: str,
         student_label: str,
         user_name: str,
+        site_login_username: str,
         reg_id: str | None,
         telegram_chat_id: str,
         timezone: str,
@@ -5299,14 +5779,69 @@ class BotService:
             f"Applicant: {applicant_name}",
             f"Preferred label: {student_label}",
             f"ERP user id: {user_name}",
+            f"Website login username: {site_login_username}",
             f"RegID: {reg_id or 'Not provided'}",
             f"Telegram: {telegram_chat_id or 'Not provided'}",
             f"Timezone: {timezone}",
             "ERP password: Submitted securely in the website application.",
+            "Website password: Submitted securely by the user during website signup.",
         ]
         if note:
-            lines.extend(["", "Note:", note])
+            lines.extend(["", "Application note:", note])
+        lines.extend(["", "Use /application " + str(request_id) + " to review this request, or use the approval actions below."])
         return "\n".join(lines)
+
+    def _build_application_accepted_message(
+        self,
+        *,
+        student_label: str,
+        site_login_username: str,
+        website_password_source: str,
+        site_login_password_display: str,
+    ) -> str:
+        base_url = self.settings.public_base_url or f"http://127.0.0.1:{self.settings.flask_port}"
+        lines = [
+            "Your QUMS application has been approved.",
+            "",
+            f"Student profile: {student_label}",
+            f"Website login username: {site_login_username}",
+        ]
+        if website_password_source == "application_signup":
+            lines.append("Website password: use the password you created during website sign-up.")
+        elif website_password_source == "erp_submitted":
+            lines.append("Website password: use the ERP password you submitted with the application.")
+        elif website_password_source == "generated":
+            lines.append(f"Temporary website password: {site_login_password_display}")
+        else:
+            lines.append(f"Website password: {site_login_password_display}")
+        lines.extend(
+            [
+                f"Dashboard login: {base_url}/login",
+                "",
+                "Your profile is now active. ERP CAPTCHA sign-in may still need to be completed before live synchronization begins.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _build_application_rejected_message(
+        self,
+        *,
+        student_label: str,
+        site_login_username: str,
+    ) -> str:
+        base_url = self.settings.public_base_url or f"http://127.0.0.1:{self.settings.flask_port}"
+        return "\n".join(
+            [
+                "Your QUMS application has been reviewed and was not approved.",
+                "",
+                f"Requested profile: {student_label}",
+                f"Website login username: {site_login_username}",
+                "Status: Rejected and closed.",
+                f"Dashboard login: {base_url}/login",
+                "",
+                "This request is now closed and has been removed from the active review queue. If you still need access, please contact the admin and submit a new application.",
+            ]
+        )
 
     def _normalize_text(self, value: str) -> str:
         return " ".join((value or "").strip().lower().split())
@@ -5373,6 +5908,22 @@ class BotService:
         if any(ch not in allowed for ch in cleaned):
             raise StudentValidationError("Site login username can use letters, numbers, dots, underscores, and hyphens only.")
         return cleaned
+
+    def _validate_application_site_login_username(
+        self,
+        *,
+        application_id: int | None,
+        site_login_username: str,
+    ) -> None:
+        normalized = self._normalize_site_login_username(site_login_username)
+        if not normalized:
+            raise StudentValidationError("Website login username is required.")
+        existing_student = self.db.get_student_by_site_login_username(normalized)
+        if existing_student:
+            raise StudentValidationError("Website login username already exists in another student profile.")
+        existing_application = self.db.get_application_request_by_site_login_username(normalized)
+        if existing_application and existing_application.id != application_id:
+            raise StudentValidationError("Website login username is already reserved by another application request.")
 
     def _resolve_site_password_hash(
         self,

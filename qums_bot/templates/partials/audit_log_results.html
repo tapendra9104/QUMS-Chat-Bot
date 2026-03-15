@@ -1,6 +1,6 @@
 {% if audit_log %}
     {% for item in audit_log %}
-        <details data-refresh-key="audit:{{ item.id }}">
+        <details class="record-card" data-refresh-key="audit:{{ item.id }}">
             <summary>{{ item.created_at }} | {{ item.action.replace('_', ' ') | title }} | {{ item.target_type }} {{ item.target_id }}</summary>
             <p class="meta">
                 Actor: {{ item.actor }}<br>
@@ -21,5 +21,5 @@
         </div>
     </div>
 {% else %}
-    <p class="meta">{% if audit_log_filters.query or audit_log_filters.action %}No admin audit entries matched the current filters.{% else %}No admin audit entries are available yet.{% endif %}</p>
+    <p class="meta empty-state">{% if audit_log_filters.query or audit_log_filters.action %}No admin audit entries matched the current filters.{% else %}No admin audit entries are available yet.{% endif %}</p>
 {% endif %}

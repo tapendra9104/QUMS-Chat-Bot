@@ -88,6 +88,19 @@ class FakeERPSession:
         return self.response
 
 
+class SequenceERPSession:
+    def __init__(self, outcomes) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict] = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append({"method": method, "url": url, "kwargs": kwargs})
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class IntegrationFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         tmp_root = Path("tmp-test2")
@@ -469,6 +482,77 @@ class IntegrationFlowTests(unittest.TestCase):
             app.config["scheduler"] = FakeScheduler(running=True)
             self.assertTrue(client.get("/healthz").get_json()["scheduler_active"])
 
+    def test_erp_client_retries_transient_timeout_and_normalizes_timeout_tuple(self) -> None:
+        settings = Settings(
+            base_url="https://example.com",
+            database_path=self.tmp / "bot.sqlite3",
+            app_secret="secret",
+            app_env="development",
+            use_waitress=False,
+            waitress_threads=8,
+            dashboard_auto_refresh_seconds=30,
+            run_scheduler=False,
+            task_queue_mode="inline",
+            redis_url="",
+            task_queue_name="qums-bot",
+            admin_username="",
+            admin_password="",
+            admin_telegram_username="",
+            local_timezone="Asia/Kolkata",
+            morning_digest_time="06:30",
+            evening_report_time="19:00",
+            attendance_poll_interval_minutes=1,
+            substitution_poll_interval_minutes=1,
+            monitor_poll_interval_minutes=1,
+            sandbox_expiry_warning_minutes=10,
+            lecture_grace_minutes=20,
+            attendance_correction_lookback_days=14,
+            attendance_shortage_buffer_lectures=1,
+            delivery_retry_limit=3,
+            delivery_retry_backoff_seconds=1,
+            low_attendance_thresholds=(75, 70, 65),
+            flask_host="127.0.0.1",
+            flask_port=5000,
+            public_base_url="https://bot.example.com",
+            webhook_rate_limit_count=60,
+            webhook_rate_limit_window_seconds=60,
+            admin_rate_limit_count=10,
+            admin_rate_limit_window_seconds=60,
+            sentry_dsn="",
+            sentry_traces_sample_rate=0.0,
+            twilio_account_sid="",
+            twilio_auth_token="",
+            twilio_whatsapp_mode="sandbox",
+            twilio_whatsapp_from="whatsapp:+14155238886",
+            twilio_sandbox_join_code="demo-code",
+            twilio_status_message_limit=50,
+            twilio_status_callback_url="",
+            twilio_content_sid_default="",
+            twilio_content_sid_morning="",
+            twilio_content_sid_attendance="",
+        )
+        client = ERPClient(settings)
+        session = SequenceERPSession(
+            [
+                requests.ConnectTimeout("first timeout"),
+                FakeERPResponse(status_code=200, text='{"ok":true}', json_payload={"ok": True}),
+            ]
+        )
+
+        with patch("qums_bot.erp_client.time.sleep", return_value=None) as sleep_mock:
+            response = client._request(
+                session,
+                "post",
+                "https://example.com/test",
+                context="ERP test endpoint",
+                timeout=30,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(session.calls[0]["kwargs"]["timeout"], (10.0, 30.0))
+        sleep_mock.assert_called_once_with(1.0)
+
     def test_admin_login_rejects_external_next_path(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
         env_values = {
@@ -518,6 +602,7 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIn("Create Application", html)
             self.assertIn(">Login<", html)
             self.assertIn("https://t.me/QUMS_ALERT_BOT", html)
+            self.assertIn("@userinfo3bot", html)
             self.assertNotIn("Admin Security", html)
             self.assertNotIn(">Save Student<", html)
 
@@ -621,6 +706,7 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIn("Student sign in", html)
             self.assertIn("/admin/login?next=/", html)
             self.assertIn("Reset it with Telegram", html)
+            self.assertNotIn("Forgot your admin password?", html)
 
     def test_admin_login_page_uses_shared_qums_bot_branding(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -642,6 +728,8 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn("<title>QUMS Bot</title>", html)
             self.assertIn("Admin sign in for the website dashboard.", html)
+            self.assertIn("Forgot your password?", html)
+            self.assertIn("Reset it with Telegram", html)
             self.assertNotIn("QUMS Bot Admin", html)
 
     def test_public_application_submission_saves_request_and_sends_telegram_notification(self) -> None:
@@ -672,6 +760,8 @@ class IntegrationFlowTests(unittest.TestCase):
                     "student_label": "Tapendra",
                     "user_name": "23030682",
                     "password": "erp-password",
+                    "site_login_username": "tapendra-site",
+                    "site_login_password": "site-pass-123",
                     "reg_id": "8027",
                     "whatsapp_number": "+919634549096",
                     "telegram_chat_id": "5570554766",
@@ -687,16 +777,142 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(len(requests), 1)
             self.assertEqual(requests[0].student_label, "Tapendra")
             self.assertEqual(requests[0].user_name, "23030682")
-            self.assertIn("Application submitted. The admin has been notified on Telegram.", html)
+            self.assertEqual(requests[0].site_login_username, "tapendra-site")
+            self.assertIn("Your website account is active", html)
             self.assertEqual(len(fake_session.calls), 1)
             telegram_payload = fake_session.calls[0]["json"]
             self.assertEqual(telegram_payload["chat_id"], "5570554765")
             self.assertIn("New student application request", telegram_payload["text"])
             self.assertIn("Tapendra Chaudhary", telegram_payload["text"])
+            self.assertIn("Website login username: tapendra-site", telegram_payload["text"])
             self.assertIn("ERP password: Submitted securely in the website application.", telegram_payload["text"])
             self.assertNotIn("erp-password", telegram_payload["text"])
 
-    def test_admin_dashboard_hides_application_request_passwords(self) -> None:
+    def test_pending_application_user_can_sign_in_but_dashboard_stays_locked(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.submit_application_request(
+                applicant_name="Pending Student",
+                student_label="Pending",
+                user_name="23030001",
+                password="erp-password",
+                site_login_username="pending-user",
+                site_login_password="pending-pass-123",
+                whatsapp_number="",
+                telegram_chat_id="5570554766",
+                timezone="Asia/Kolkata",
+                reg_id="9001",
+                note="Please approve soon.",
+                created_from_ip="website",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            response = client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "pending-user",
+                    "password": "pending-pass-123",
+                    "next_path": "/",
+                },
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Application Access Dashboard", html)
+            self.assertIn("student features remain unavailable until an administrator approves the request", html)
+            self.assertNotIn("Student Control Dashboard", html)
+            self.assertNotIn("Edit Profile", html)
+
+    def test_pending_application_session_upgrades_to_student_dashboard_after_admin_acceptance(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            service = app.config["service"]
+            service.submit_application_request(
+                applicant_name="Approved Student",
+                student_label="Approved",
+                user_name="23030002",
+                password="erp-password",
+                site_login_username="approved-user",
+                site_login_password="approved-pass-123",
+                whatsapp_number="",
+                telegram_chat_id="5570554766",
+                timezone="Asia/Kolkata",
+                reg_id="9002",
+                note="Please approve soon.",
+                created_from_ip="website",
+            )
+
+            pending_client = app.test_client()
+            login_html = pending_client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            pending_login_response = pending_client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "approved-user",
+                    "password": "approved-pass-123",
+                    "next_path": "/",
+                },
+                follow_redirects=True,
+            )
+            self.assertIn("Application Access Dashboard", pending_login_response.get_data(as_text=True))
+
+            admin_client = app.test_client()
+            admin_login_html = admin_client.get("/admin/login").get_data(as_text=True)
+            admin_csrf = self._extract_csrf_token(admin_login_html)
+            admin_client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": admin_csrf,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+            dashboard_html = admin_client.get("/").get_data(as_text=True)
+            accept_csrf = self._extract_csrf_token(dashboard_html)
+            admin_client.post(
+                "/applications/1/accept",
+                data={
+                    "csrf_token": accept_csrf,
+                    "site_login_username": "approved-user",
+                    "site_login_password": "",
+                },
+                follow_redirects=True,
+            )
+
+            upgraded_response = pending_client.get("/", follow_redirects=True)
+            upgraded_html = upgraded_response.get_data(as_text=True)
+
+            self.assertEqual(upgraded_response.status_code, 200)
+            self.assertIn("Student Control Dashboard", upgraded_html)
+            self.assertIn("Edit Profile", upgraded_html)
+            self.assertNotIn("Application Access Dashboard", upgraded_html)
+
+    def test_admin_dashboard_shows_application_request_credentials_for_admin_review(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
         env_values = {
             "DATABASE_PATH": str(db_path),
@@ -715,6 +931,8 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Tapendra",
                 user_name="23030682",
                 password="erp-password",
+                site_login_username="tapendra-site",
+                site_login_password="site-pass-123",
                 whatsapp_number="+919634549096",
                 telegram_chat_id="5570554766",
                 timezone="Asia/Kolkata",
@@ -736,9 +954,205 @@ class IntegrationFlowTests(unittest.TestCase):
 
             html = client.get("/").get_data(as_text=True)
 
-            self.assertIn("ERP password: submitted securely and hidden from admin views.", html)
-            self.assertNotIn("Reveal submitted ERP password", html)
-            self.assertNotIn("erp-password", html)
+            self.assertIn("Submitted ERP password", html)
+            self.assertIn("erp-password", html)
+            self.assertIn('name="site_login_username"', html)
+            self.assertIn('name="site_login_password"', html)
+            self.assertIn('value="tapendra-site"', html)
+            self.assertIn("The applicant already created a website password during signup.", html)
+
+    def test_admin_can_accept_application_request_from_dashboard(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            fake_session = FakeTelegramSession()
+            service.telegram._session = fake_session
+
+            service.submit_application_request(
+                applicant_name="Tapendra Chaudhary",
+                student_label="Tapendra",
+                user_name="23030682",
+                password="erp-password",
+                site_login_username="tapendra-site",
+                site_login_password="site-pass-123",
+                whatsapp_number="+919634549096",
+                telegram_chat_id="5570554766",
+                timezone="Asia/Kolkata",
+                reg_id="8027",
+                note="Please add my profile for attendance alerts.",
+                created_from_ip="website",
+            )
+
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            self.assertIn("Approve Application", dashboard_html)
+            accept_csrf = self._extract_csrf_token(dashboard_html)
+            fake_session.calls.clear()
+
+            response = client.post(
+                "/applications/1/accept",
+                data={
+                    "csrf_token": accept_csrf,
+                    "site_login_username": "tapendra-web",
+                    "site_login_password": "site-pass-789",
+                },
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+            student = service.get_student_by_site_login_username("tapendra-web")
+            application = service.get_application_request(1)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIsNotNone(student)
+            assert student is not None
+            self.assertEqual(student.student_label, "Tapendra")
+            self.assertEqual(student.user_name, "23030682")
+            self.assertEqual(student.site_login_username, "tapendra-web")
+            self.assertEqual(student.telegram_chat_id, "5570554766")
+            self.assertEqual(student.reg_id, "8027")
+            self.assertIsNotNone(application)
+            assert application is not None
+            self.assertEqual(application.status, "accepted")
+            self.assertIn("Application approved.", html)
+            self.assertIn("username tapendra-web", html)
+            self.assertIn("website password site-pass-789", html)
+            texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
+            chats = [str(call.get("json", {}).get("chat_id") or "") for call in fake_session.calls]
+            self.assertIn("5570554766", chats)
+            self.assertTrue(any("Your QUMS application has been approved." in text for text in texts))
+            self.assertTrue(any("Website password: site-pass-789" in text for text in texts))
+
+            student_client = app.test_client()
+            login_html = student_client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            login_response = student_client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "tapendra-web",
+                    "password": "site-pass-789",
+                    "next_path": "/",
+                },
+                follow_redirects=True,
+            )
+
+            self.assertEqual(login_response.status_code, 200)
+            self.assertIn("Student Control Dashboard", login_response.get_data(as_text=True))
+
+    def test_admin_can_reject_application_request_from_dashboard(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_ADMIN_CHAT_IDS": "5570554765",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            fake_session = FakeTelegramSession()
+            service.telegram._session = fake_session
+
+            service.submit_application_request(
+                applicant_name="Tapendra Chaudhary",
+                student_label="Tapendra",
+                user_name="23030682",
+                password="erp-password",
+                site_login_username="tapendra-site",
+                site_login_password="site-pass-123",
+                whatsapp_number="+919634549096",
+                telegram_chat_id="5570554766",
+                timezone="Asia/Kolkata",
+                reg_id="8027",
+                note="Please add my profile for attendance alerts.",
+                created_from_ip="website",
+            )
+
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            self.assertIn("Reject Application", dashboard_html)
+            reject_csrf = self._extract_csrf_token(dashboard_html)
+            fake_session.calls.clear()
+
+            response = client.post(
+                "/applications/1/reject",
+                data={"csrf_token": reject_csrf},
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+            application = service.get_application_request(1)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIsNotNone(application)
+            assert application is not None
+            self.assertEqual(application.status, "rejected")
+            self.assertEqual(service.list_students(), [])
+            self.assertIn("Application rejected.", html)
+            self.assertIn("All reviewed", html)
+            self.assertIn("0 approved and 1 rejected", html)
+            self.assertIn("Rejected / Reviewed", html)
+            self.assertNotIn("1 awaiting review", html)
+            texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
+            chats = [str(call.get("json", {}).get("chat_id") or "") for call in fake_session.calls]
+            self.assertIn("5570554766", chats)
+            self.assertTrue(any("Your QUMS application has been reviewed and was not approved." in text for text in texts))
+
+            student_client = app.test_client()
+            login_html = student_client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            login_response = student_client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "tapendra-site",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+                follow_redirects=True,
+            )
+            rejected_html = login_response.get_data(as_text=True)
+
+            self.assertEqual(login_response.status_code, 200)
+            self.assertIn("Application Closed", rejected_html)
+            self.assertIn("reviewed and closed", rejected_html)
+            self.assertNotIn("Application Under Review", rejected_html)
 
     def test_database_init_creates_missing_parent_directories(self) -> None:
         db_path = self.tmp / "nested" / "data" / "bot.sqlite3"
@@ -815,6 +1229,7 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIn("/login", html)
             self.assertIn("Admin Security", html)
             self.assertIn("Logout", html)
+            self.assertIn("@userinfo3bot", html)
             self.assertNotIn("Create Application", html)
 
     def test_student_login_shows_scoped_dashboard_without_admin_sections(self) -> None:
@@ -865,6 +1280,7 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIn("Message History", html)
             self.assertIn("Dead-Letter Queue", html)
             self.assertIn("scoped-user", html)
+            self.assertIn("@userinfo3bot", html)
             self.assertNotIn("Admin Security", html)
             self.assertNotIn("Add Student", html)
             self.assertNotIn("Create Application", html)
@@ -923,8 +1339,7 @@ class IntegrationFlowTests(unittest.TestCase):
                     "student_label": "Editable Student Updated",
                     "user_name": "editable_erp_2",
                     "password": "",
-                    "whatsapp_number": "+919999999999",
-                    "telegram_chat_id": "5570554766",
+                    "telegram_chat_id": "5570554777",
                     "timezone": "UTC",
                 },
                 follow_redirects=True,
@@ -933,17 +1348,36 @@ class IntegrationFlowTests(unittest.TestCase):
             student = app.config["service"].get_student(student_id)
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn("Profile updated successfully.", html)
+            self.assertIn("Profile updated successfully. The admin dashboard and admin Telegram notification have been updated.", html)
             self.assertIsNotNone(student)
             assert student is not None
             self.assertEqual(student.student_label, "Editable Student Updated")
             self.assertEqual(student.user_name, "editable_erp_2")
-            self.assertEqual(student.whatsapp_number, "+919999999999")
-            self.assertEqual(student.telegram_chat_id, "5570554766")
+            self.assertEqual(student.telegram_chat_id, "5570554777")
             self.assertEqual(student.timezone, "UTC")
+            self.assertIn("Student profile self-service update:", student.last_bot_activity_text or "")
+            self.assertIn("Telegram chat id: 5570554766 -> 5570554777", student.last_bot_activity_text or "")
             texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
-            self.assertTrue(any("Student profile updated" in text for text in texts))
+            self.assertTrue(any("Student profile updated from the self-service dashboard" in text for text in texts))
             self.assertTrue(any("Editable Student Updated" in text for text in texts))
+            self.assertTrue(any("Telegram chat id: 5570554766 -> 5570554777" in text for text in texts))
+            self.assertTrue(any("Admin dashboard status: synchronized automatically" in text for text in texts))
+
+            admin_client = app.test_client()
+            admin_login_html = admin_client.get("/admin/login").get_data(as_text=True)
+            admin_csrf = self._extract_csrf_token(admin_login_html)
+            admin_client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": admin_csrf,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+            admin_html = admin_client.get("/").get_data(as_text=True)
+            self.assertIn("5570554777", admin_html)
+            self.assertIn("Telegram chat id: 5570554766 -&gt; 5570554777", admin_html)
 
     def test_student_dashboard_history_and_dead_letter_are_scoped(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -1120,6 +1554,135 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIn("Own Student", html)
             self.assertNotIn("Other Student", html)
             self.assertIn("Login username: <code>own-user</code>", html)
+
+    def test_student_dashboard_can_send_manual_substitution_report_for_own_profile(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            student_id = service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            self.assertIn("Send Manual Substitution Report", dashboard_html)
+            csrf_token = self._extract_csrf_token(dashboard_html)
+            called: list[int] = []
+
+            def fake_send_substitution(student_id_arg, force=False):
+                called.append(student_id_arg)
+                return "ok"
+
+            service.send_substitution_report = fake_send_substitution
+
+            response = client.post(
+                f"/students/{student_id}/send-substitution-report",
+                data={"csrf_token": csrf_token},
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(called, [student_id])
+            self.assertIn("Manual substitution report sent to configured channels.", html)
+
+    def test_student_dashboard_cannot_send_manual_substitution_report_for_other_profile(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "token",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.save_student(
+                student_id=None,
+                student_label="Own Student",
+                user_name="own_erp",
+                password="erp-pass-123",
+                site_login_username="own-user",
+                site_login_password="site-pass-123",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            other_id = service.save_student(
+                student_id=None,
+                student_label="Other Student",
+                user_name="other_erp",
+                password="erp-pass-456",
+                site_login_username="other-user",
+                site_login_password="site-pass-456",
+                whatsapp_number="+919876543210",
+                telegram_chat_id="5570554766",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+
+            login_html = client.get("/login").get_data(as_text=True)
+            login_csrf = self._extract_csrf_token(login_html)
+            client.post(
+                "/login",
+                data={
+                    "csrf_token": login_csrf,
+                    "login_username": "own-user",
+                    "password": "site-pass-123",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            csrf_token = self._extract_csrf_token(dashboard_html)
+            response = client.post(
+                f"/students/{other_id}/send-substitution-report",
+                data={"csrf_token": csrf_token},
+                follow_redirects=True,
+            )
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("You can only use actions for your own student profile.", html)
 
     def test_student_dashboard_live_data_shows_only_the_logged_in_students_profile(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -1973,6 +2536,47 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(response.status_code, 302)
             self.assertEqual(response.headers["Location"], "/")
 
+    def test_send_substitution_report_route_handles_telegram_delivery_failure(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "TELEGRAM_BOT_TOKEN": "token",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            student_id = service.save_student(
+                student_id=None,
+                student_label="Substitution Route Student",
+                user_name="substitution_route_user",
+                password="password",
+                whatsapp_number="+911234567890",
+                telegram_chat_id="5570554765",
+                email_address="",
+                enabled=True,
+                timezone="Asia/Kolkata",
+            )
+            dashboard_html = client.get("/").get_data(as_text=True)
+            self.assertIn("Send Manual Substitution Report", dashboard_html)
+            csrf_token = self._extract_csrf_token(dashboard_html)
+
+            def fail_send_substitution_report(*args, **kwargs):
+                raise TelegramError("telegram delivery failed")
+
+            service.send_substitution_report = fail_send_substitution_report
+
+            response = client.post(
+                f"/students/{student_id}/send-substitution-report",
+                data={"csrf_token": csrf_token},
+            )
+
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers["Location"], "/")
+
     def test_dashboard_separates_erp_session_from_recent_bot_activity(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
         env_values = {
@@ -2441,8 +3045,10 @@ class IntegrationFlowTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
+            self.assertIn("hero_live_grid_html", payload)
             self.assertIn("student_cards_html", payload)
             self.assertIn("action_center_html", payload)
+            self.assertIn("Dashboard Time", payload["hero_live_grid_html"])
             self.assertIn("Unique live body", payload["message_history_html"])
             self.assertIn("Retry Title", payload["dead_letter_html"])
             self.assertIn("audit_log_html", payload)

@@ -168,9 +168,45 @@ ADMIN_RATE_LIMIT_COUNT=10
 ADMIN_RATE_LIMIT_WINDOW_SECONDS=60
 SENTRY_DSN=
 SENTRY_TRACES_SAMPLE_RATE=0.0
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_WHATSAPP_MODE=sandbox
+TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
+TWILIO_SANDBOX_JOIN_CODE=
+TWILIO_STATUS_MESSAGE_LIMIT=50
+TWILIO_STATUS_CALLBACK_URL=
+TWILIO_CONTENT_SID_DEFAULT=
+TWILIO_CONTENT_SID_MORNING=
+TWILIO_CONTENT_SID_ATTENDANCE=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_API_BASE_URL=https://api.telegram.org
+TELEGRAM_ADMIN_CHAT_IDS=
+TELEGRAM_POLL_INTERVAL_SECONDS=1
+TELEGRAM_BOT_LINK=
+OWNER_TELEGRAM_CONTACT=
+OWNER_WHATSAPP_CONTACT=
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM_EMAIL=
+SMTP_USE_TLS=1
+SMTP_USE_SSL=0
+EMAIL_SUBJECT_PREFIX=QUMS Bot
 ```
+
+## Sentry setup
+
+If you want production error reporting in Sentry:
+
+1. Create a new Python project in Sentry.
+2. Copy the project DSN into `SENTRY_DSN`.
+3. Keep `SENTRY_TRACES_SAMPLE_RATE=0.0` if you only want error reporting, or raise it gradually if you also want performance traces.
+
+With `SENTRY_DSN` configured, this repo now reports:
+- Flask request failures
+- scheduler and background-task exceptions
+- RQ worker job failures when `TASK_QUEUE_MODE=rq`
 
 Admin login recovery:
 - `ADMIN_USERNAME` and `ADMIN_PASSWORD` remain the bootstrap credentials
@@ -233,7 +269,7 @@ The bot supports Telegram-driven admin and student actions, including:
 - the deployed dashboard should always be protected with `ADMIN_USERNAME` and `ADMIN_PASSWORD`
 - if lecture end times are missing from the routine, the end-of-day report falls back to `EVENING_REPORT_TIME`
 - set `PUBLIC_BASE_URL` if you want correct Telegram-linked dashboard URLs
-- set `SENTRY_DSN` if you want unhandled errors reported to Sentry
+- set `SENTRY_DSN` if you want request, scheduler, and worker failures reported to Sentry
 
 ## Project structure
 

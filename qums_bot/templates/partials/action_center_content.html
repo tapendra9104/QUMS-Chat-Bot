@@ -1,10 +1,10 @@
 {% if action_center %}
     {% for item in action_center %}
-        <div class="action-item {{ item.level }}">
+        <article class="action-item {{ item.level }}">
             <strong>{{ item.title }}</strong>
             <div class="meta">{{ item.detail }}</div>
-        </div>
+        </article>
     {% endfor %}
 {% else %}
-    <p class="meta">No operational issues are active right now.</p>
+    <p class="meta empty-state">No operational issues are active right now.</p>
 {% endif %}
