@@ -17,7 +17,6 @@ from qums_bot.parsers import parse_attendance_summary
 from qums_bot.scheduler import build_scheduler
 from qums_bot.service import BotService, NotificationDeliveryError
 from qums_bot.task_queue import TaskDispatcher
-from qums_bot.whatsapp import WhatsAppChannelStatus
 
 
 def make_settings(db_path: Path) -> Settings:
@@ -58,18 +57,9 @@ def make_settings(db_path: Path) -> Settings:
         admin_rate_limit_window_seconds=60,
         sentry_dsn="",
         sentry_traces_sample_rate=0.0,
-        twilio_account_sid="",
-        twilio_auth_token="",
-        twilio_whatsapp_mode="sandbox",
-        twilio_whatsapp_from="whatsapp:+14155238886",
-        twilio_sandbox_join_code="demo-code",
-        twilio_status_message_limit=50,
-        twilio_status_callback_url="https://example.com/webhooks/twilio/status",
-        twilio_content_sid_default="",
-        twilio_content_sid_morning="",
-        twilio_content_sid_attendance="",
         telegram_admin_chat_ids=("5570554765",),
         telegram_poll_interval_seconds=5,
+        lecture_schedule_poll_interval_seconds=30,
     )
 
 
@@ -107,48 +97,6 @@ class FakeERP:
         return object()
 
 
-class FakeWhatsApp:
-    def __init__(self, status: WhatsAppChannelStatus | None = None) -> None:
-        self.messages: list[tuple[str, str, str]] = []
-        self._status = status or WhatsAppChannelStatus(
-            configured=True,
-            mode="sandbox",
-            sender="whatsapp:+14155238886",
-            ready=True,
-            state="sandbox_ready",
-            detail="ok",
-            join_command="join demo-code",
-            last_inbound_at=None,
-            sandbox_expires_at=None,
-            last_outbound_status=None,
-            last_error_code=None,
-        )
-
-    def send_text(self, to_number: str, body: str, *, message_kind: str = "generic") -> str:
-        self.messages.append((to_number, message_kind, body))
-        return f"fake-{len(self.messages)}"
-
-    def get_channel_status(self, to_number: str) -> WhatsAppChannelStatus:
-        return self._status
-
-
-class BrokenWhatsApp(FakeWhatsApp):
-    def get_channel_status(self, to_number: str) -> WhatsAppChannelStatus:
-        raise RuntimeError("twilio unavailable")
-
-
-class FlakyWhatsApp(FakeWhatsApp):
-    def __init__(self) -> None:
-        super().__init__()
-        self.failures_remaining = 1
-
-    def send_text(self, to_number: str, body: str, *, message_kind: str = "generic") -> str:
-        if self.failures_remaining > 0:
-            self.failures_remaining -= 1
-            raise RuntimeError("temporary delivery failure")
-        return super().send_text(to_number, body, message_kind=message_kind)
-
-
 class FakeTelegram:
     configured = False
 
@@ -184,12 +132,33 @@ class FakeTelegram:
         self.commands = list(commands)
 
 
-class NullEmail:
-    configured = False
+class ConfiguredTelegram(FakeTelegram):
+    configured = True
+
+
+class BrokenTelegram(ConfiguredTelegram):
+    def send_text(self, chat_id: str, body: str, *, message_kind: str = "generic", reply_markup=None) -> str:
+        raise RuntimeError("telegram unavailable")
+
+
+class FlakyTelegram(ConfiguredTelegram):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 1
+
+    def send_text(self, chat_id: str, body: str, *, message_kind: str = "generic", reply_markup=None) -> str:
+        if self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            raise RuntimeError("temporary delivery failure")
+        return super().send_text(chat_id, body, message_kind=message_kind, reply_markup=reply_markup)
+
 
 
 class DummyService:
     def run_scheduled_dispatch(self):
+        return None
+
+    def run_lecture_schedule_sweep(self):
         return None
 
     def run_due_checks(self):
@@ -232,9 +201,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label=label,
             user_name=label.lower().replace(" ", "_"),
             password_encrypted="secret",
-            whatsapp_number="+911234567890",
-            telegram_chat_id="",
-            email_address="",
+            telegram_chat_id="5570554766",
             enabled=True,
             timezone=timezone,
         )
@@ -267,16 +234,13 @@ class SchedulerServiceTests(unittest.TestCase):
         self,
         *,
         erp: FakeERP | None = None,
-        whatsapp: FakeWhatsApp | None = None,
         telegram: FakeTelegram | None = None,
     ) -> BotService:
         return BotService(
             settings=self.settings,
             db=self.db,
             erp_client=erp or FakeERP(),
-            whatsapp=whatsapp or FakeWhatsApp(),
-            telegram=telegram or FakeTelegram(),
-            emailer=NullEmail(),  # type: ignore[arg-type]
+            telegram=telegram or ConfiguredTelegram(),
         )
 
     def test_scheduler_registers_expected_jobs(self) -> None:
@@ -288,6 +252,7 @@ class SchedulerServiceTests(unittest.TestCase):
             job_ids,
             {
                 "scheduled-dispatch",
+                "lecture-schedule-checks",
                 "attendance-checks",
                 "substitution-checks",
                 "monitor-checks",
@@ -299,6 +264,10 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertTrue(scheduler._job_defaults["coalesce"])
         self.assertEqual(scheduler._job_defaults["max_instances"], 1)
         self.assertEqual(scheduler._job_defaults["misfire_grace_time"], 60)
+        self.assertEqual(
+            jobs_by_id["lecture-schedule-checks"].trigger.interval.total_seconds(),
+            self.settings.lecture_schedule_poll_interval_seconds,
+        )
         self.assertEqual(jobs_by_id["telegram-inbound-checks"].trigger.interval.total_seconds(), 5)
         self.assertEqual(jobs_by_id["telegram-admin-refresh-checks"].trigger.interval.total_seconds(), 30)
 
@@ -312,37 +281,18 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
         now = datetime(2026, 3, 13, 6, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
 
         service.run_scheduled_dispatch(now=now)
 
-        self.assertEqual(len(whatsapp.messages), 1)
+        self.assertEqual(len(telegram.messages), 1)
         history = service.list_message_history()
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0].category, "morning_summary")
         self.assertTrue(self.db.has_notification_event(student_india, "morning_digest", "2026-03-13"))
         self.assertFalse(self.db.has_notification_event(student_utc, "morning_digest", "2026-03-13"))
-
-    def test_save_student_normalizes_whatsapp_number(self) -> None:
-        service = self._make_service()
-
-        student_id = service.save_student(
-            student_id=None,
-            student_label="Normalize Student",
-            user_name="normalize_user",
-            password="secret",
-            whatsapp_number="whatsapp: +91 98765-43210",
-            telegram_chat_id="",
-            email_address="",
-            enabled=True,
-            timezone="Asia/Kolkata",
-        )
-
-        student = self.db.get_student(student_id)
-        assert student is not None
-        self.assertEqual(student.whatsapp_number, "+919876543210")
 
     def test_database_creates_parent_directory_for_custom_path(self) -> None:
         nested_db_path = self.tmp / "nested" / "data" / "bot.sqlite3"
@@ -362,9 +312,7 @@ class SchedulerServiceTests(unittest.TestCase):
                 student_label="Telegram Student",
                 user_name="telegram_user",
                 password="secret",
-                whatsapp_number="+919876543210",
                 telegram_chat_id="https://t.me/gunda872",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -378,20 +326,15 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label=student.student_label,
             user_name=student.user_name,
             password_encrypted=student.password_encrypted,
-            whatsapp_number=student.whatsapp_number,
             telegram_chat_id="123456789",
-            email_address="",
             enabled=student.enabled,
             timezone=student.timezone,
         )
-        telegram = FakeTelegram()
-        telegram.configured = True
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(whatsapp=whatsapp, telegram=telegram)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(telegram=telegram)
 
         service.send_test_message(student_id)
 
-        self.assertEqual(len(whatsapp.messages), 0)
         self.assertEqual(len(telegram.messages), 1)
         history = service.list_message_history()
         self.assertEqual(len(history), 1)
@@ -403,9 +346,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Routing Student",
             user_name="routing_user",
             password_encrypted="secret",
-            whatsapp_number="+911234567890",
             telegram_chat_id="123456789",
-            email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
             disabled_actions_json="[]",
@@ -413,7 +354,7 @@ class SchedulerServiceTests(unittest.TestCase):
         )
         telegram = FakeTelegram()
         telegram.configured = True
-        service = self._make_service(whatsapp=FakeWhatsApp(), telegram=telegram)
+        service = self._make_service(telegram=telegram)
 
         student = self.db.get_student(student_id)
         assert student is not None
@@ -435,9 +376,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Control Student",
             user_name="control_user",
             password_encrypted="secret",
-            whatsapp_number="+911234567890",
             telegram_chat_id="123456789",
-            email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
             disabled_actions_json='["send_morning","send_day_report"]',
@@ -450,9 +389,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Control Student Updated",
             user_name="control_user_updated",
             password="",
-            whatsapp_number="+911234567890",
             telegram_chat_id="123456789",
-            email_address="",
             enabled=True,
             timezone="UTC",
         )
@@ -499,7 +436,7 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp(), telegram=FakeTelegram())
+        service = self._make_service(erp=erp)
 
         body = service.send_attendance_summary_report(student_id, target_date=date(2026, 3, 16), force=True)
 
@@ -517,9 +454,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label=student.student_label,
             user_name=student.user_name,
             password_encrypted=student.password_encrypted,
-            whatsapp_number=student.whatsapp_number,
             telegram_chat_id="123456789",
-            email_address="",
             enabled=student.enabled,
             timezone=student.timezone,
         )
@@ -561,10 +496,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        telegram = FakeTelegram()
-        telegram.configured = True
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp, telegram=telegram)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         body = service.send_attendance_summary_report(student_id, force=True)
 
@@ -587,7 +520,6 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("Absent: 2", body)
         self.assertIn("Physics Lab (PHYL102)", body)
         self.assertIn("Faculty: Prof Timetable Physics", body)
-        self.assertEqual(len(whatsapp.messages), 0)
         self.assertEqual(len(telegram.messages), 1)
         history = service.list_message_history()
         self.assertEqual(len(history), 1)
@@ -602,9 +534,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label=student.student_label,
             user_name=student.user_name,
             password_encrypted=student.password_encrypted,
-            whatsapp_number=student.whatsapp_number,
             telegram_chat_id="123456789",
-            email_address="",
             enabled=student.enabled,
             timezone=student.timezone,
         )
@@ -631,10 +561,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        telegram = FakeTelegram()
-        telegram.configured = True
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp, telegram=telegram)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         body = service.send_substitution_report(student_id, target_date=target_date, force=True)
 
@@ -644,7 +572,6 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("Substitute Lectures", body)
         self.assertIn("Physics Lab", body)
         self.assertIn("Faculty: Prof C", body)
-        self.assertEqual(len(whatsapp.messages), 0)
         self.assertEqual(len(telegram.messages), 1)
         self.assertEqual(telegram.messages[0][0], "123456789")
         self.assertEqual(telegram.messages[0][1], "attendance")
@@ -679,7 +606,7 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp())
+        service = self._make_service(erp=erp, telegram=ConfiguredTelegram())
 
         body = service.send_attendance_summary_report(student_id, target_date=date(2026, 3, 16), force=True)
 
@@ -698,9 +625,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Manual Expired Student",
             user_name="manual_expired_student",
             password_encrypted="secret",
-            whatsapp_number="+911234567890",
             telegram_chat_id="5570554766",
-            email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
             timezone="Asia/Kolkata",
@@ -714,7 +639,6 @@ class SchedulerServiceTests(unittest.TestCase):
         telegram.configured = True
         service = self._make_service(
             erp=AttendanceAuthERP(),
-            whatsapp=BrokenWhatsApp(),
             telegram=telegram,
         )
 
@@ -751,7 +675,6 @@ class SchedulerServiceTests(unittest.TestCase):
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "skip"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "skip"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "demo-pass"})
-        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "+919876543210"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "self"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "Asia/Kolkata"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "yes"})
@@ -792,7 +715,6 @@ class SchedulerServiceTests(unittest.TestCase):
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "23030682"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "erp-pass"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "8027"})
-        service._handle_telegram_message({"chat": {"id": chat_id}, "text": "+919634549096"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "self"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "Asia/Kolkata"})
         service._handle_telegram_message({"chat": {"id": chat_id}, "text": "Please add my profile."})
@@ -822,7 +744,6 @@ class SchedulerServiceTests(unittest.TestCase):
             password="erp-pass-123",
             site_login_username="tapendra-site",
             site_login_password="site-pass-123",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554766",
             timezone="Asia/Kolkata",
             reg_id="8027",
@@ -852,11 +773,40 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(application.status, "accepted")
         self.assertEqual(approval["website_password_source"], "custom")
         self.assertEqual(approval["site_login_password_display"], "site-pass-789")
-        self.assertEqual(len(telegram.messages), 1)
-        self.assertEqual(telegram.messages[0][0], "5570554766")
-        self.assertIn("application has been approved", telegram.messages[0][2].lower())
-        self.assertIn("Website password: site-pass-789", telegram.messages[0][2])
-        self.assertIn("/login", telegram.messages[0][2])
+        self.assertEqual(len(telegram.messages), 2)
+        chats = [message[0] for message in telegram.messages]
+        bodies = [message[2] for message in telegram.messages]
+        self.assertIn("5570554766", chats)
+        self.assertIn("5570554765", chats)
+        self.assertTrue(any("application has been approved" in body.lower() for body in bodies))
+        self.assertTrue(any("Website password: site-pass-789" in body for body in bodies))
+        self.assertTrue(any("/login" in body for body in bodies))
+        self.assertTrue(any("Application approved from website dashboard." in body for body in bodies))
+
+    def test_approve_application_request_reports_explicit_telegram_errors_when_notifications_cannot_be_sent(self) -> None:
+        telegram = FakeTelegram()
+        telegram.configured = False
+        service = self._make_service(telegram=telegram)
+        result = service.submit_application_request(
+            applicant_name="Tapendra Chaudhary",
+            student_label="Tapendra",
+            user_name="23030682",
+            password="erp-pass-123",
+            site_login_username="tapendra-site",
+            site_login_password="site-pass-123",
+            telegram_chat_id="",
+            timezone="Asia/Kolkata",
+            reg_id="8027",
+            note="Please add my profile.",
+            created_from_ip="website",
+        )
+
+        approval = service.approve_application_request(int(result["id"]))
+
+        self.assertFalse(approval["applicant_notification_sent"])
+        self.assertFalse(approval["admin_notification_sent"])
+        self.assertEqual(approval["applicant_notification_error"], "Telegram bot is not configured.")
+        self.assertEqual(approval["admin_notification_error"], "Telegram bot is not configured.")
 
     def test_student_telegram_menu_shows_only_the_linked_profile(self) -> None:
         telegram = FakeTelegram()
@@ -867,9 +817,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Own Student",
             user_name="own_erp",
             password_encrypted="secret",
-            whatsapp_number="+911111111111",
             telegram_chat_id="2001",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -878,9 +826,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Other Student",
             user_name="other_erp",
             password_encrypted="secret",
-            whatsapp_number="+922222222222",
             telegram_chat_id="2002",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -904,9 +850,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Own Student",
             user_name="own_erp",
             password_encrypted="secret",
-            whatsapp_number="+911111111111",
             telegram_chat_id="2001",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -915,9 +859,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Other Student",
             user_name="other_erp",
             password_encrypted="secret",
-            whatsapp_number="+922222222222",
             telegram_chat_id="2002",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -950,9 +892,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Own Student",
             user_name="own_erp",
             password_encrypted="secret",
-            whatsapp_number="+911111111111",
             telegram_chat_id="2001",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -961,9 +901,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Other Student",
             user_name="other_erp",
             password_encrypted="secret",
-            whatsapp_number="+922222222222",
             telegram_chat_id="2002",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -991,7 +929,6 @@ class SchedulerServiceTests(unittest.TestCase):
             password="erp-pass",
             site_login_username="tapendra-site",
             site_login_password="site-pass-123",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554766",
             timezone="Asia/Kolkata",
             reg_id="8027",
@@ -1009,6 +946,36 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("Website login username: tapendra-site", telegram.messages[1][2])
         self.assertIn("ERP password: erp-pass", telegram.messages[1][2])
 
+    def test_admin_telegram_applications_command_hides_accepted_requests(self) -> None:
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(telegram=telegram)
+        result = service.submit_application_request(
+            applicant_name="Tapendra Chaudhary",
+            student_label="Tapendra",
+            user_name="23030682",
+            password="erp-pass-123",
+            site_login_username="tapendra-site",
+            site_login_password="site-pass-123",
+            telegram_chat_id="5570554766",
+            timezone="Asia/Kolkata",
+            reg_id="8027",
+            note="Please add my profile.",
+            created_from_ip="website",
+        )
+        service.approve_application_request(
+            int(result["id"]),
+            site_login_username="tapendra-web",
+            site_login_password="site-pass-789",
+        )
+        telegram.messages.clear()
+
+        service._handle_telegram_message({"chat": {"id": "5570554765"}, "text": "/applications"})
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("No pending application requests right now.", telegram.messages[0][2])
+        self.assertNotIn("Tapendra", telegram.messages[0][2])
+
     def test_telegram_application_accept_callback_creates_student_profile(self) -> None:
         telegram = FakeTelegram()
         telegram.configured = True
@@ -1020,7 +987,6 @@ class SchedulerServiceTests(unittest.TestCase):
             password="erp-pass-123",
             site_login_username="tapendra-site",
             site_login_password="site-pass-123",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554766",
             timezone="Asia/Kolkata",
             reg_id="8027",
@@ -1060,7 +1026,6 @@ class SchedulerServiceTests(unittest.TestCase):
             password="erp-pass-123",
             site_login_username="tapendra-site",
             site_login_password="site-pass-123",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554766",
             timezone="Asia/Kolkata",
             reg_id="8027",
@@ -1095,7 +1060,6 @@ class SchedulerServiceTests(unittest.TestCase):
             password="erp-pass-123",
             site_login_username="tapendra-site",
             site_login_password="site-pass-123",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554766",
             timezone="Asia/Kolkata",
             reg_id="8027",
@@ -1115,7 +1079,6 @@ class SchedulerServiceTests(unittest.TestCase):
             password="erp-pass-123",
             site_login_username="tapendra-site",
             site_login_password="site-pass-123",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554766",
             timezone="Asia/Kolkata",
             reg_id="8027",
@@ -1175,9 +1138,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Attendance Student",
             user_name="attendance_student",
             password_encrypted="secret",
-            whatsapp_number="+919876543210",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1222,9 +1183,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Substitution Student",
             user_name="sub_student",
             password_encrypted="secret",
-            whatsapp_number="+919876543210",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1308,9 +1267,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Substitution Student",
             user_name="sub_student",
             password_encrypted="secret",
-            whatsapp_number="+919876543210",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1373,7 +1330,7 @@ class SchedulerServiceTests(unittest.TestCase):
         callback["id"] = "cb-test-2"
         service._handle_telegram_callback(callback)
 
-        self.assertEqual(len(telegram.messages), 1)
+        self.assertEqual(len(telegram.messages), 2)
         self.assertEqual(telegram.callback_answers[-1], ("cb-test-2", "This action was already sent recently.", True))
 
     def test_telegram_shortage_command_does_not_echo_duplicate_report_to_same_chat(self) -> None:
@@ -1382,9 +1339,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Tapendra",
             user_name="23030682",
             password_encrypted="secret",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1427,9 +1382,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Tapendra",
             user_name="23030682",
             password_encrypted="secret",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1509,9 +1462,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Own Student",
             user_name="own_erp",
             password_encrypted="secret",
-            whatsapp_number="+911111111111",
             telegram_chat_id="2001",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1520,9 +1471,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Other Student",
             user_name="other_erp",
             password_encrypted="secret",
-            whatsapp_number="+922222222222",
             telegram_chat_id="2002",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1553,9 +1502,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Tapendra",
             user_name="23030682",
             password_encrypted="secret",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1609,9 +1556,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Tapendra",
             user_name="23030682",
             password_encrypted="secret",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1649,9 +1594,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Tapendra",
             user_name="23030682",
             password_encrypted="secret",
-            whatsapp_number="+919634549096",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1776,9 +1719,9 @@ class SchedulerServiceTests(unittest.TestCase):
         service._handle_telegram_message({"chat": {"id": "5570554765"}, "text": f"/test {student_id}"})
         service._handle_telegram_message({"chat": {"id": "5570554765"}, "text": f"/test {student_id}"})
 
-        self.assertEqual(len(service.telegram.messages), 2)
+        self.assertEqual(len(service.telegram.messages), 3)
         self.assertIn("configured delivery channels are working", service.telegram.messages[0][2])
-        self.assertIn("already sent recently", service.telegram.messages[1][2])
+        self.assertIn("already sent recently", service.telegram.messages[-1][2])
 
     def test_save_student_rejects_invalid_timezone(self) -> None:
         service = self._make_service()
@@ -1789,23 +1732,19 @@ class SchedulerServiceTests(unittest.TestCase):
                 student_label="Timezone Student",
                 user_name="timezone_user",
                 password="secret",
-                whatsapp_number="+919876543210",
                 telegram_chat_id="",
-                email_address="",
                 enabled=True,
                 timezone="Mars/Olympus",
             )
 
-    def test_save_student_rejects_duplicate_user_name_and_whatsapp(self) -> None:
+    def test_save_student_rejects_duplicate_user_name_and_telegram_chat_id(self) -> None:
         service = self._make_service()
         service.save_student(
             student_id=None,
             student_label="First Student",
             user_name="duplicate_user",
             password="secret",
-            whatsapp_number="+919876543210",
-            telegram_chat_id="",
-            email_address="",
+            telegram_chat_id="123456789",
             enabled=True,
             timezone="Asia/Kolkata",
         )
@@ -1816,9 +1755,7 @@ class SchedulerServiceTests(unittest.TestCase):
                 student_label="Second Student",
                 user_name="duplicate_user",
                 password="secret",
-                whatsapp_number="+919876543211",
                 telegram_chat_id="",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1829,9 +1766,7 @@ class SchedulerServiceTests(unittest.TestCase):
                 student_label="Third Student",
                 user_name="another_user",
                 password="secret",
-                whatsapp_number="whatsapp:+91 98765 43210",
-                telegram_chat_id="",
-                email_address="",
+                telegram_chat_id="123456789",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1916,9 +1851,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Monitor Student",
             user_name="monitor_student",
             password_encrypted="secret",
-            whatsapp_number="+911234567890",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
             timezone="Asia/Kolkata",
@@ -1934,7 +1867,6 @@ class SchedulerServiceTests(unittest.TestCase):
         telegram.configured = True
         service = self._make_service(
             erp=FakeERP(auth_required=True),
-            whatsapp=FakeWhatsApp(),
             telegram=telegram,
         )
         now = datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -1947,19 +1879,6 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertIn("erp_session_expired", categories)
 
-    def test_get_whatsapp_status_returns_fallback_for_dashboard_failures(self) -> None:
-        student_id = self._add_student(label="Dashboard Student", timezone="Asia/Kolkata")
-        student = self.db.get_student(student_id)
-        assert student is not None
-        service = self._make_service(whatsapp=BrokenWhatsApp())
-
-        status = service.get_whatsapp_status(student)
-
-        self.assertFalse(status.ready)
-        self.assertEqual(status.state, "status_check_failed")
-        self.assertIn("twilio unavailable", status.detail)
-        self.assertEqual(status.join_command, "join demo-code")
-
     def test_monitor_sweep_handles_status_lookup_failure_during_erp_expiry(self) -> None:
         student_id = self._add_student(label="Expired Student", timezone="Asia/Kolkata")
         self.db.update_student_session(
@@ -1969,7 +1888,7 @@ class SchedulerServiceTests(unittest.TestCase):
         )
         stale_at = (datetime.now(tz=ZoneInfo("UTC")) - timedelta(minutes=20)).replace(microsecond=0).isoformat()
         self._set_student_activity_times(student_id, session_updated_at=stale_at, last_erp_sync_at=stale_at)
-        service = self._make_service(erp=FakeERP(auth_required=True), whatsapp=BrokenWhatsApp())
+        service = self._make_service(erp=FakeERP(auth_required=True), telegram=BrokenTelegram())
         now = datetime.now(ZoneInfo("Asia/Kolkata"))
 
         service.run_monitor_sweep(now=now)
@@ -1982,15 +1901,13 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertFalse(self.db.has_notification_event(student_id, "erp_session_expired", refreshed.session_updated_at))
         self.assertIn("ERP session expired", refreshed.last_login_status or "")
 
-    def test_monitor_sweep_sends_erp_expiry_alert_via_telegram_when_whatsapp_lookup_fails(self) -> None:
+    def test_monitor_sweep_sends_erp_expiry_alert_via_telegram_when_telegram_lookup_fails(self) -> None:
         student_id = self.db.upsert_student(
             student_id=None,
             student_label="Telegram Expired Student",
             user_name="telegram_expired_student",
             password_encrypted="secret",
-            whatsapp_number="+911234567890",
             telegram_chat_id="5570554766",
-            email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
             timezone="Asia/Kolkata",
@@ -2006,7 +1923,6 @@ class SchedulerServiceTests(unittest.TestCase):
         telegram.configured = True
         service = self._make_service(
             erp=FakeERP(auth_required=True),
-            whatsapp=BrokenWhatsApp(),
             telegram=telegram,
         )
         now = datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -2032,9 +1948,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Fresh Login Student",
             user_name="fresh_login_student",
             password_encrypted="secret",
-            whatsapp_number="+911234567890",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
             timezone="Asia/Kolkata",
@@ -2048,7 +1962,6 @@ class SchedulerServiceTests(unittest.TestCase):
         telegram.configured = True
         service = self._make_service(
             erp=FakeERP(auth_required=True),
-            whatsapp=BrokenWhatsApp(),
             telegram=telegram,
         )
         now = datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -2070,9 +1983,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Due Check Expired Student",
             user_name="due_check_expired_student",
             password_encrypted="secret",
-            whatsapp_number="+911234567890",
             telegram_chat_id="5570554766",
-            email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
             timezone="Asia/Kolkata",
@@ -2103,7 +2014,6 @@ class SchedulerServiceTests(unittest.TestCase):
         telegram.configured = True
         service = self._make_service(
             erp=AttendanceAuthERP(),
-            whatsapp=BrokenWhatsApp(),
             telegram=telegram,
         )
         service._local_now = lambda: datetime(2026, 3, 14, 10, 5, tzinfo=ZoneInfo("Asia/Kolkata"))  # type: ignore[method-assign]
@@ -2138,8 +2048,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service.preview_today(student_id, target_date=target_date)
         event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
@@ -2163,7 +2073,7 @@ class SchedulerServiceTests(unittest.TestCase):
         self.db.update_student_status(student_id, "Substitution check failed: temporary upstream timeout")
         service = self._make_service(
             erp=FakeERP(substitutions_payload={"state": []}),
-            whatsapp=FakeWhatsApp(),
+            telegram=ConfiguredTelegram(),
         )
         now = datetime(2026, 3, 15, 14, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
 
@@ -2179,17 +2089,17 @@ class SchedulerServiceTests(unittest.TestCase):
         student_id = self._add_student(label="Idempotent Student", timezone="Asia/Kolkata")
         student = self.db.get_student(student_id)
         assert student is not None
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(telegram=telegram)
 
-        service._send_whatsapp(
+        service._send_notification(
             student,
             "Attendance Update\n\nStatus: Present",
             message_kind="attendance",
             history_category="attendance_update",
             idempotency_key="attendance_update:test-key",
         )
-        service._send_whatsapp(
+        service._send_notification(
             student,
             "Attendance Update\n\nStatus: Present",
             message_kind="attendance",
@@ -2197,10 +2107,10 @@ class SchedulerServiceTests(unittest.TestCase):
             idempotency_key="attendance_update:test-key",
         )
 
-        self.assertEqual(len(whatsapp.messages), 1)
+        self.assertEqual(len(telegram.messages), 1)
         history = service.list_message_history()
         self.assertEqual(len(history), 1)
-        self.assertEqual(history[0].idempotency_key, "attendance_update:test-key:whatsapp")
+        self.assertEqual(history[0].idempotency_key, "attendance_update:test-key:telegram")
 
     def test_task_dispatcher_claims_each_periodic_slot_once(self) -> None:
         self.db.upsert_student(
@@ -2208,9 +2118,7 @@ class SchedulerServiceTests(unittest.TestCase):
             student_label="Dispatch Student",
             user_name="dispatch_student",
             password_encrypted="secret",
-            whatsapp_number="",
             telegram_chat_id="5570554765",
-            email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
             disabled_actions_json="[]",
@@ -2225,7 +2133,7 @@ class SchedulerServiceTests(unittest.TestCase):
         )
         telegram = FakeTelegram()
         telegram.configured = True
-        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp(), telegram=telegram)
+        service = self._make_service(erp=erp, telegram=telegram)
         dispatcher = TaskDispatcher(settings=self.settings, db=self.db, service=service)
         now = datetime(2026, 3, 13, 6, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
 
@@ -2272,14 +2180,14 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service.send_morning_update(student_id, target_date=date(2026, 3, 15))
 
         categories = {item.category for item in service.list_message_history()}
         self.assertIn("attendance_shortage_report", categories)
-        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
+        shortage_messages = [body for _, _, body in telegram.messages if "Attendance Shortage Report" in body]
         self.assertEqual(len(shortage_messages), 1)
         subject_shortage = next(body for body in shortage_messages if "Mathematics (MATH101)" in body)
         self.assertIn("Threshold: 75% per subject", subject_shortage)
@@ -2313,12 +2221,12 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service.send_morning_update(student_id, target_date=date(2026, 3, 16))
 
-        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
+        shortage_messages = [body for _, _, body in telegram.messages if "Attendance Shortage Report" in body]
         self.assertEqual(len(shortage_messages), 1)
         subject_shortage = next(body for body in shortage_messages if "Physics (PHY101)" in body)
         self.assertIn("Faculty: Prof Timetable Physics", subject_shortage)
@@ -2352,12 +2260,12 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service.send_morning_update(student_id, target_date=date(2026, 3, 16))
 
-        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
+        shortage_messages = [body for _, _, body in telegram.messages if "Attendance Shortage Report" in body]
         self.assertEqual(shortage_messages, [])
         categories = {item.category for item in service.list_message_history()}
         self.assertNotIn("attendance_shortage_report", categories)
@@ -2390,8 +2298,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service.send_morning_update(student_id, target_date=date(2026, 3, 15))
         service._process_attendance_scan(
@@ -2400,7 +2308,7 @@ class SchedulerServiceTests(unittest.TestCase):
             datetime(2026, 3, 15, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
 
-        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
+        shortage_messages = [body for _, _, body in telegram.messages if "Attendance Shortage Report" in body]
         self.assertEqual(len(shortage_messages), 1)
 
     def test_shortage_report_scan_uses_weekly_reference_faculty_when_today_has_no_matching_event(self) -> None:
@@ -2430,8 +2338,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service._process_attendance_scan(
             student,
@@ -2439,7 +2347,7 @@ class SchedulerServiceTests(unittest.TestCase):
             datetime(2026, 3, 14, 17, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
 
-        shortage_messages = [body for _, _, body in whatsapp.messages if "Attendance Shortage Report" in body]
+        shortage_messages = [body for _, _, body in telegram.messages if "Attendance Shortage Report" in body]
         self.assertEqual(len(shortage_messages), 1)
         self.assertIn("Faculty: MANVI TYAGI", shortage_messages[0])
         self.assertNotIn("Faculty: Not available", shortage_messages[0])
@@ -2490,8 +2398,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service._process_attendance_scan(
             student,
@@ -2499,8 +2407,8 @@ class SchedulerServiceTests(unittest.TestCase):
             datetime(2026, 3, 14, 9, 42, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
 
-        self.assertEqual(len(whatsapp.messages), 1)
-        body = whatsapp.messages[0][2]
+        self.assertEqual(len(telegram.messages), 1)
+        body = telegram.messages[0][2]
         self.assertIn("Attendance Update", body)
         self.assertIn("Final status: Present", body)
         self.assertIn("Technical Skills Development-V", body)
@@ -2553,8 +2461,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service._process_attendance_scan(
             student,
@@ -2562,8 +2470,8 @@ class SchedulerServiceTests(unittest.TestCase):
             datetime(2026, 3, 14, 9, 56, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
 
-        self.assertEqual(len(whatsapp.messages), 1)
-        body = whatsapp.messages[0][2]
+        self.assertEqual(len(telegram.messages), 1)
+        body = telegram.messages[0][2]
         self.assertIn("Attendance Pending Update", body)
         self.assertIn("Current status: Not marked yet", body)
         event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
@@ -2575,7 +2483,7 @@ class SchedulerServiceTests(unittest.TestCase):
             [],
             datetime(2026, 3, 14, 10, 1, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
-        self.assertEqual(len(whatsapp.messages), 1)
+        self.assertEqual(len(telegram.messages), 1)
 
     def test_live_attendance_scan_sends_lecture_finished_status_once_after_present_marking(self) -> None:
         student_id = self._add_student(label="Lecture Finish Student", timezone="Asia/Kolkata")
@@ -2623,24 +2531,24 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service._process_attendance_scan(
             student,
             [],
             datetime(2026, 3, 14, 9, 42, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
-        self.assertEqual(len(whatsapp.messages), 1)
-        self.assertIn("Attendance Update", whatsapp.messages[0][2])
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("Attendance Update", telegram.messages[0][2])
 
         service._process_attendance_scan(
             student,
             [],
             datetime(2026, 3, 14, 9, 56, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
-        self.assertEqual(len(whatsapp.messages), 2)
-        lecture_finish_body = whatsapp.messages[1][2]
+        self.assertEqual(len(telegram.messages), 2)
+        lecture_finish_body = telegram.messages[1][2]
         self.assertIn("Lecture Finished Attendance Status", lecture_finish_body)
         self.assertIn("Final status: Present", lecture_finish_body)
         self.assertIn("Technical Skills Development-V", lecture_finish_body)
@@ -2650,7 +2558,7 @@ class SchedulerServiceTests(unittest.TestCase):
             [],
             datetime(2026, 3, 14, 10, 2, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
-        self.assertEqual(len(whatsapp.messages), 2)
+        self.assertEqual(len(telegram.messages), 2)
 
     def test_automation_status_reports_poll_based_next_scan_and_next_lecture_milestone(self) -> None:
         student_id = self._add_student(label="Automation Student", timezone="Asia/Kolkata")
@@ -2745,15 +2653,145 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(status["timetable_lecture_subject"], "Engineering Mathematics")
         self.assertEqual(status["timetable_lecture_time_label"], "10:30 - 11:25")
 
+    def test_run_lecture_schedule_sweep_sends_one_minute_upcoming_reminder_once_even_after_routine_resync(self) -> None:
+        student_id = self._add_student(label="Upcoming Reminder Student", timezone="Asia/Kolkata")
+        target_date = date(2026, 3, 16)
+        slot = LectureSlot(
+            slot_label="09:00 - 09:55",
+            subject_key="math101",
+            subject_name="Mathematics",
+            teacher_name="Prof A",
+            raw_cell="Mathematics\nProf A\n09:00 - 09:55",
+            start_time=time(9, 0),
+            end_time=time(9, 55),
+            is_break=False,
+        )
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[slot],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=FakeERP(), telegram=telegram)
+        now = datetime(2026, 3, 16, 8, 59, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+        service.run_lecture_schedule_sweep(now=now)
+
+        self.assertEqual(len(telegram.messages), 1)
+        body = telegram.messages[0][2]
+        self.assertIn("Upcoming Lecture Reminder", body)
+        self.assertIn("Mathematics", body)
+        self.assertIn("Lecture time: 09:00 - 09:55", body)
+        self.assertIn("Substitute status: No substitute assigned", body)
+
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[slot],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        later = datetime(2026, 3, 16, 8, 59, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+        service.run_lecture_schedule_sweep(now=later)
+
+        self.assertEqual(len(telegram.messages), 1)
+        history = service.list_message_history()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].category, "lecture_upcoming_alert")
+
+    def test_run_lecture_schedule_sweep_sends_live_update_with_substitute_details_once(self) -> None:
+        student_id = self._add_student(label="Live Substitute Reminder Student", timezone="Asia/Kolkata")
+        target_date = date(2026, 3, 16)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="10:00 - 11:00",
+                    subject_key="physics",
+                    subject_name="Physics",
+                    teacher_name="Prof B",
+                    raw_cell="Physics\nProf B\n10:00 - 11:00",
+                    start_time=time(10, 0),
+                    end_time=time(11, 0),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
+        self.db.update_lecture_event_assignment(
+            event.id,
+            subject_key="physics",
+            subject_name="Physics Lab",
+            teacher_name="Prof C",
+            raw_cell="Physics Lab\nProf C\n10:00 - 11:00",
+            note="Substitute lecture assigned | Original faculty: Prof B | Ends at: 11:00",
+        )
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=FakeERP(), telegram=telegram)
+        now = datetime(2026, 3, 16, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+        service.run_lecture_schedule_sweep(now=now)
+
+        self.assertEqual(len(telegram.messages), 1)
+        body = telegram.messages[0][2]
+        self.assertIn("Live Lecture Update", body)
+        self.assertIn("Physics Lab", body)
+        self.assertIn("Current status: Lecture is now running", body)
+        self.assertIn("Substitute status: Assigned for Physics Lab", body)
+        self.assertIn("Substitute faculty: Prof C", body)
+        self.assertIn("Original faculty: Prof B", body)
+
+        service.run_lecture_schedule_sweep(now=datetime(2026, 3, 16, 10, 5, tzinfo=ZoneInfo("Asia/Kolkata")))
+
+        self.assertEqual(len(telegram.messages), 1)
+        history = service.list_message_history()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].category, "lecture_live_alert")
+
+    def test_run_lecture_schedule_sweep_does_not_depend_on_attendance_summary_endpoint(self) -> None:
+        class AttendanceAuthERP(FakeERP):
+            def get_attendance_summary(self, student):
+                raise AuthenticationRequired("expired")
+
+        student_id = self._add_student(label="Reminder Independence Student", timezone="Asia/Kolkata")
+        target_date = date(2026, 3, 16)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="math101",
+                    subject_name="Mathematics",
+                    teacher_name="Prof A",
+                    raw_cell="Mathematics\nProf A\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=AttendanceAuthERP(), telegram=telegram)
+
+        service.run_lecture_schedule_sweep(
+            now=datetime(2026, 3, 16, 8, 59, tzinfo=ZoneInfo("Asia/Kolkata"))
+        )
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("Upcoming Lecture Reminder", telegram.messages[0][2])
+
     def test_run_due_checks_bootstraps_missing_todays_routine_and_sends_one_alert_per_finished_lecture(self) -> None:
         student_id = self.db.upsert_student(
             student_id=None,
             student_label="Bootstrap Student",
             user_name="bootstrap_student",
             password_encrypted="secret",
-            whatsapp_number="",
             telegram_chat_id="123456789",
-            email_address="",
             enabled=True,
             notification_channel_mode="telegram_only",
             disabled_actions_json="[]",
@@ -2777,7 +2815,7 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp(), telegram=telegram)
+        service = self._make_service(erp=erp, telegram=telegram)
         service._local_now = lambda: datetime(2026, 3, 14, 12, 30, tzinfo=ZoneInfo("Asia/Kolkata"))  # type: ignore[method-assign]
 
         service.run_due_checks()
@@ -2829,8 +2867,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         report = service.send_shortage_report(student_id, target_date=date(2026, 3, 16), force=True)
 
@@ -2843,7 +2881,7 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("Mathematics (MATH101)", report)
         self.assertIn("Faculty: Prof Timetable", report)
         self.assertNotIn("Chemistry (CHEM101)", report)
-        self.assertEqual(len(whatsapp.messages), 1)
+        self.assertEqual(len(telegram.messages), 1)
         self.assertEqual(service.list_message_history()[0].category, "attendance_shortage_report")
 
     def test_attendance_summary_change_scan_silently_builds_initial_baseline(self) -> None:
@@ -2882,8 +2920,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service._process_attendance_scan(
             student,
@@ -2891,7 +2929,7 @@ class SchedulerServiceTests(unittest.TestCase):
             datetime(2026, 3, 13, 17, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
 
-        self.assertFalse(any("Attendance Summary Change Update" in body for _, _, body in whatsapp.messages))
+        self.assertFalse(any("Attendance Summary Change Update" in body for _, _, body in telegram.messages))
         snapshots = self.db.get_attendance_snapshots(student_id)
         self.assertEqual(len(snapshots), 2)
 
@@ -2951,8 +2989,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         service._process_attendance_scan(
             student,
@@ -2960,7 +2998,7 @@ class SchedulerServiceTests(unittest.TestCase):
             datetime(2026, 3, 13, 17, 5, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
 
-        messages = [body for _, _, body in whatsapp.messages if "Attendance Summary Change Update" in body]
+        messages = [body for _, _, body in telegram.messages if "Attendance Summary Change Update" in body]
         self.assertEqual(len(messages), 1)
         body = messages[0]
         self.assertIn("Overall attendance", body)
@@ -3000,14 +3038,14 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
         now = datetime(2026, 3, 13, 17, 10, tzinfo=ZoneInfo("Asia/Kolkata"))
 
         service._process_attendance_scan(student, [], now)
         service._process_attendance_scan(student, [], now + timedelta(minutes=1))
 
-        messages = [body for _, _, body in whatsapp.messages if "Attendance Summary Change Update" in body]
+        messages = [body for _, _, body in telegram.messages if "Attendance Summary Change Update" in body]
         self.assertEqual(len(messages), 1)
 
     def test_preview_today_does_not_send_risk_alert_side_effects(self) -> None:
@@ -3031,13 +3069,13 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             },
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
 
         preview = service.preview_today(student_id, target_date=date(2026, 3, 15))
 
         self.assertIn("Morning Schedule Update", preview)
-        self.assertEqual(len(whatsapp.messages), 0)
+        self.assertEqual(len(telegram.messages), 0)
         self.assertEqual(service.list_message_history(), [])
 
     def test_morning_summary_includes_class_location_from_timetable(self) -> None:
@@ -3053,7 +3091,7 @@ class SchedulerServiceTests(unittest.TestCase):
                 "col": "Day/Period,P1 09:00 - 09:55",
             }
         )
-        service = self._make_service(erp=erp, whatsapp=FakeWhatsApp())
+        service = self._make_service(erp=erp, telegram=ConfiguredTelegram())
 
         preview = service.preview_today(student_id, target_date=date(2026, 3, 13))
 
@@ -3086,7 +3124,7 @@ class SchedulerServiceTests(unittest.TestCase):
             "notified_present",
             status_recorded_at=datetime(2026, 3, 13, 10, 15, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
-        service = self._make_service(whatsapp=FakeWhatsApp())
+        service = self._make_service(telegram=ConfiguredTelegram())
 
         report = service.send_evening_report(student_id, target_date=target_date, force=True)
 
@@ -3097,11 +3135,11 @@ class SchedulerServiceTests(unittest.TestCase):
         student_id = self._add_student(label="Retry Student", timezone="Asia/Kolkata")
         student = self.db.get_student(student_id)
         assert student is not None
-        whatsapp = FlakyWhatsApp()
-        service = self._make_service(whatsapp=whatsapp)
+        telegram = FlakyTelegram()
+        service = self._make_service(telegram=telegram)
 
         with self.assertRaises(NotificationDeliveryError):
-            service._send_whatsapp(
+            service._send_notification(
                 student,
                 "Attendance Update\n\nStatus: Present",
                 message_kind="attendance",
@@ -3123,11 +3161,11 @@ class SchedulerServiceTests(unittest.TestCase):
         student_id = self._add_student(label="Retry History Student", timezone="Asia/Kolkata")
         student = self.db.get_student(student_id)
         assert student is not None
-        whatsapp = FlakyWhatsApp()
-        service = self._make_service(whatsapp=whatsapp)
+        telegram = FlakyTelegram()
+        service = self._make_service(telegram=telegram)
 
         with self.assertRaises(NotificationDeliveryError):
-            service._send_whatsapp(
+            service._send_notification(
                 student,
                 "Attendance Update\n\nStatus: Present",
                 message_kind="attendance",
@@ -3147,14 +3185,14 @@ class SchedulerServiceTests(unittest.TestCase):
         student_id = self._add_student(label="Dead Letter Student", timezone="Asia/Kolkata")
         student = self.db.get_student(student_id)
         assert student is not None
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(telegram=telegram)
 
         claimed = self.db.claim_outbound_message(
             idempotency_key="attendance_update:dead-letter-test",
             student_id=student_id,
-            channel="whatsapp",
-            recipient=student.whatsapp_number,
+            channel="telegram",
+            recipient=student.telegram_chat_id,
             category="attendance_update",
             message_kind="attendance",
             title="Attendance Update",
@@ -3173,7 +3211,7 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertIn("retried successfully", result.lower())
         self.assertEqual(self.db.get_outbound_queue_summary()["dead_letter"], 0)
         self.assertEqual(self.db.get_outbound_queue_summary()["sent"], 1)
-        self.assertEqual(len(whatsapp.messages), 1)
+        self.assertEqual(len(telegram.messages), 1)
         self.assertEqual(len(service.list_message_history()), 1)
 
     def test_force_resend_evening_report_uses_new_delivery_idempotency(self) -> None:
@@ -3204,15 +3242,15 @@ class SchedulerServiceTests(unittest.TestCase):
             "notified_present",
             status_recorded_at=datetime(2026, 3, 15, 10, 15, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(telegram=telegram)
 
         first = service.send_evening_report(student_id, target_date=target_date, force=True)
         second = service.send_evening_report(student_id, target_date=target_date, force=True)
 
         self.assertIn("End-of-Day Attendance Report", first)
         self.assertIn("End-of-Day Attendance Report", second)
-        self.assertEqual(len(whatsapp.messages), 2)
+        self.assertEqual(len(telegram.messages), 2)
 
     def test_force_resend_morning_update_uses_new_delivery_idempotency(self) -> None:
         student_id = self._add_student(label="Force Morning Student", timezone="Asia/Kolkata")
@@ -3228,8 +3266,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
         target_date = date(2026, 3, 15)
 
         first = service.send_morning_update(student_id, target_date=target_date)
@@ -3237,14 +3275,14 @@ class SchedulerServiceTests(unittest.TestCase):
 
         self.assertIn("Morning Schedule Update", first)
         self.assertIn("Morning Schedule Update", second)
-        self.assertEqual(len(whatsapp.messages), 2)
+        self.assertEqual(len(telegram.messages), 2)
 
     def test_delete_student_cleans_outbound_messages(self) -> None:
         student_id = self._add_student(label="Delete Student", timezone="Asia/Kolkata")
         student = self.db.get_student(student_id)
         assert student is not None
         service = self._make_service()
-        service._send_whatsapp(
+        service._send_notification(
             student,
             "Attendance Update\n\nStatus: Present",
             message_kind="attendance",
@@ -3312,8 +3350,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
         event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
         detected_at = datetime(2026, 3, 12, 9, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
 
@@ -3325,8 +3363,8 @@ class SchedulerServiceTests(unittest.TestCase):
             snapshots=self.db.get_attendance_snapshots(student_id),
         )
 
-        self.assertEqual(len(whatsapp.messages), 1)
-        body = whatsapp.messages[0][2]
+        self.assertEqual(len(telegram.messages), 1)
+        body = telegram.messages[0][2]
         self.assertIn("Final status: Absent", body)
         self.assertIn("Lecture type: Substitute lecture", body)
         self.assertIn("Substitute faculty: Prof C", body)
@@ -3388,8 +3426,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
         event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
         detected_at = datetime(2026, 3, 11, 11, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
 
@@ -3401,8 +3439,8 @@ class SchedulerServiceTests(unittest.TestCase):
             snapshots=self.db.get_attendance_snapshots(student_id),
         )
 
-        self.assertEqual(len(whatsapp.messages), 1)
-        body = whatsapp.messages[0][2]
+        self.assertEqual(len(telegram.messages), 1)
+        body = telegram.messages[0][2]
         self.assertIn("Final status: Present", body)
         self.assertIn("Faculty: Prof C", body)
         self.assertIn("Attendance marked by: Prof C", body)
@@ -3456,8 +3494,8 @@ class SchedulerServiceTests(unittest.TestCase):
                 ]
             }
         )
-        whatsapp = FakeWhatsApp()
-        service = self._make_service(erp=erp, whatsapp=whatsapp)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
         events = self.db.get_pending_lecture_events()
         detected_at = datetime(2026, 3, 12, 9, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
 
@@ -3469,12 +3507,16 @@ class SchedulerServiceTests(unittest.TestCase):
             snapshots=self.db.get_attendance_snapshots(student_id),
         )
 
-        self.assertEqual(len(whatsapp.messages), 2)
-        self.assertTrue(all("Final status: Present" in message[2] for message in whatsapp.messages))
-        self.assertTrue(all("ERP updated 2 pending lecture(s)" in message[2] for message in whatsapp.messages))
+        self.assertEqual(len(telegram.messages), 2)
+        self.assertTrue(all("Final status: Present" in message[2] for message in telegram.messages))
+        self.assertTrue(all("ERP updated 2 pending lecture(s)" in message[2] for message in telegram.messages))
         refreshed = self.db.get_lecture_events_between(student_id, date(2026, 3, 10), date(2026, 3, 11))
         self.assertTrue(all(event.status == "notified_present" for event in refreshed))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+

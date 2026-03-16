@@ -75,7 +75,7 @@
                             {% elif is_pending_authenticated %}
                                 Pending view: your account is signed in, but dashboard actions, profile management, and live automation features remain unavailable until approval.
                             {% else %}
-                                Public view: this is a guided preview. Live student records and internal operational data remain hidden until sign-in.
+                                Public view: prototype view only. Live student records and internal operational data remain hidden until sign-in.
                             {% endif %}
                         </p>
                         {% if settings.telegram_bot_link %}
@@ -615,7 +615,7 @@
                 <div class="section-head">
                     <div class="section-title-block">
                         <span class="eyebrow">Onboarding</span>
-                        <h2>Sign Up & Submit Application</h2>
+                        <h2>Create Application</h2>
                         <p class="meta section-copy">
                             Create your own website login credentials, submit the ERP application, and sign in to the user panel immediately. Student features unlock after administrative approval.
                         </p>
@@ -700,7 +700,7 @@
                         <textarea id="note" name="note" placeholder="Add any useful context, preferred timings, or extra instructions."></textarea>
                     </div>
                     <div class="actions">
-                        <button type="submit">Sign Up & Submit Application</button>
+                        <button type="submit">Create Application</button>
                         <a class="button-link ghost" href="{{ url_for('login_alias', next=request.path) }}">Login</a>
                     </div>
                 </form>

@@ -163,7 +163,6 @@ write_env_file() {
   local telegram_admin_chat_ids_value
   local admin_telegram_username_value
   local owner_telegram_contact_value
-  local owner_whatsapp_contact_value
   local local_timezone_value
 
   app_secret_value="$(prompt_required 'APP_SECRET' "$generated_secret" 1)"
@@ -174,7 +173,6 @@ write_env_file() {
   telegram_admin_chat_ids_value="$(prompt_optional 'TELEGRAM_ADMIN_CHAT_IDS' '' 0)"
   admin_telegram_username_value="$(prompt_optional 'ADMIN_TELEGRAM_USERNAME' '' 0)"
   owner_telegram_contact_value="$(prompt_optional 'OWNER_TELEGRAM_CONTACT' '' 0)"
-  owner_whatsapp_contact_value="$(prompt_optional 'OWNER_WHATSAPP_CONTACT' '' 0)"
   local_timezone_value="$(prompt_optional 'LOCAL_TIMEZONE' "$LOCAL_TIMEZONE_DEFAULT" 0)"
 
   cat > "$APP_DIR/.env" <<EOF
@@ -214,31 +212,13 @@ ADMIN_RATE_LIMIT_COUNT=10
 ADMIN_RATE_LIMIT_WINDOW_SECONDS=60
 SENTRY_DSN=
 SENTRY_TRACES_SAMPLE_RATE=0.0
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_WHATSAPP_MODE=sandbox
-TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
-TWILIO_SANDBOX_JOIN_CODE=
-TWILIO_STATUS_MESSAGE_LIMIT=50
-TWILIO_STATUS_CALLBACK_URL=
-TWILIO_CONTENT_SID_DEFAULT=
-TWILIO_CONTENT_SID_MORNING=
-TWILIO_CONTENT_SID_ATTENDANCE=
 TELEGRAM_BOT_TOKEN=$telegram_bot_token_value
 TELEGRAM_API_BASE_URL=https://api.telegram.org
 TELEGRAM_ADMIN_CHAT_IDS=$telegram_admin_chat_ids_value
 TELEGRAM_POLL_INTERVAL_SECONDS=1
+LECTURE_SCHEDULE_POLL_INTERVAL_SECONDS=30
 TELEGRAM_BOT_LINK=
 OWNER_TELEGRAM_CONTACT=$owner_telegram_contact_value
-OWNER_WHATSAPP_CONTACT=$owner_whatsapp_contact_value
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_USERNAME=
-SMTP_PASSWORD=
-SMTP_FROM_EMAIL=
-SMTP_USE_TLS=1
-SMTP_USE_SSL=0
-EMAIL_SUBJECT_PREFIX=QUMS Bot
 EOF
 }
 

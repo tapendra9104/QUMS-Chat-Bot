@@ -2,8 +2,8 @@
     <article class="student">
         <div class="student-head">
             <div>
-                <span class="eyebrow">{% if is_pending_authenticated %}Pending Access{% else %}Public Preview{% endif %}</span>
-                <h3>{% if is_pending_authenticated %}Signed-In Applicant Account{% else %}Access Preview{% endif %}</h3>
+                <span class="eyebrow">{% if is_pending_authenticated %}Pending Access{% else %}Product Preview{% endif %}</span>
+                <h3>{% if is_pending_authenticated %}Signed-In Applicant Account{% else %}Prototype Preview{% endif %}</h3>
             </div>
             <div class="student-badges">
                 <span class="status {% if is_pending_authenticated and current_application_account.status|lower == 'accepted' %}ready{% elif is_pending_authenticated and current_application_account.status|lower == 'rejected' %}closed{% elif is_pending_authenticated %}pending{% else %}not-ready{% endif %}">

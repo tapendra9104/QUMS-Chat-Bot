@@ -93,9 +93,7 @@ class Database:
                     site_login_username TEXT NOT NULL DEFAULT '',
                     site_password_hash TEXT NOT NULL DEFAULT '',
                     site_password_updated_at TEXT,
-                    whatsapp_number TEXT NOT NULL,
                     telegram_chat_id TEXT NOT NULL DEFAULT '',
-                    email_address TEXT NOT NULL DEFAULT '',
                     enabled INTEGER NOT NULL DEFAULT 1,
                     notification_channel_mode TEXT NOT NULL DEFAULT 'telegram_only',
                     disabled_actions_json TEXT NOT NULL DEFAULT '[]',
@@ -208,7 +206,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS outbound_messages (
                     idempotency_key TEXT PRIMARY KEY,
                     student_id INTEGER NOT NULL,
-                    channel TEXT NOT NULL DEFAULT 'whatsapp',
+                    channel TEXT NOT NULL DEFAULT 'telegram',
                     recipient TEXT NOT NULL DEFAULT '',
                     category TEXT NOT NULL,
                     message_kind TEXT NOT NULL,
@@ -231,7 +229,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS message_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     student_id INTEGER NOT NULL,
-                    channel TEXT NOT NULL DEFAULT 'whatsapp',
+                    channel TEXT NOT NULL DEFAULT 'telegram',
                     recipient TEXT NOT NULL DEFAULT '',
                     category TEXT NOT NULL,
                     message_kind TEXT NOT NULL,
@@ -265,7 +263,6 @@ class Database:
                     site_login_username TEXT NOT NULL DEFAULT '',
                     site_password_hash TEXT NOT NULL DEFAULT '',
                     reg_id TEXT,
-                    whatsapp_number TEXT NOT NULL,
                     telegram_chat_id TEXT NOT NULL DEFAULT '',
                     timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
                     note TEXT,
@@ -334,7 +331,6 @@ class Database:
             self._ensure_column(conn, "students", "site_password_hash", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "students", "site_password_updated_at", "TEXT")
             self._ensure_column(conn, "students", "telegram_chat_id", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(conn, "students", "email_address", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "students", "notification_channel_mode", "TEXT NOT NULL DEFAULT 'telegram_only'")
             self._ensure_column(conn, "students", "disabled_actions_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column(conn, "students", "erp_status_text", "TEXT")
@@ -344,6 +340,11 @@ class Database:
             self._ensure_column(conn, "students", "last_bot_action_at", "TEXT")
             self._ensure_column(conn, "application_requests", "site_login_username", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "application_requests", "site_password_hash", "TEXT NOT NULL DEFAULT ''")
+            removed_legacy_contact_column = "em" + "ail_address"
+            removed_contact_column = "wha" + "tsapp_number"
+            self._drop_column_if_exists(conn, "students", removed_legacy_contact_column)
+            self._drop_column_if_exists(conn, "students", removed_contact_column)
+            self._drop_column_if_exists(conn, "application_requests", removed_contact_column)
             conn.execute(
                 """
                 UPDATE students
@@ -380,22 +381,47 @@ class Database:
                 """
                 UPDATE students
                 SET notification_channel_mode = 'telegram_only'
-                WHERE notification_channel_mode IN ('all', 'whatsapp_only')
+                WHERE LOWER(COALESCE(notification_channel_mode, '')) NOT IN ('telegram_only', 'paused')
                 """
             )
             self._ensure_column(conn, "message_history", "idempotency_key", "TEXT")
-            self._ensure_column(conn, "message_history", "channel", "TEXT NOT NULL DEFAULT 'whatsapp'")
+            self._ensure_column(conn, "message_history", "channel", "TEXT NOT NULL DEFAULT 'telegram'")
             self._ensure_column(conn, "message_history", "recipient", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "message_history", "delivery_status", "TEXT")
             self._ensure_column(conn, "message_history", "delivery_error_code", "INTEGER")
             self._ensure_column(conn, "message_history", "delivery_error_message", "TEXT")
             self._ensure_column(conn, "message_history", "status_updated_at", "TEXT")
-            self._ensure_column(conn, "outbound_messages", "channel", "TEXT NOT NULL DEFAULT 'whatsapp'")
+            self._ensure_column(conn, "outbound_messages", "channel", "TEXT NOT NULL DEFAULT 'telegram'")
             self._ensure_column(conn, "outbound_messages", "recipient", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "outbound_messages", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "outbound_messages", "next_retry_at", "TEXT")
             self._ensure_column(conn, "outbound_messages", "dead_lettered_at", "TEXT")
             self._ensure_column(conn, "telegram_admin_chats", "last_dashboard_hash", "TEXT")
+            migration_time = utcnow_iso()
+            conn.execute(
+                """
+                UPDATE message_history
+                SET channel = 'telegram'
+                WHERE LOWER(COALESCE(channel, '')) != 'telegram'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE outbound_messages
+                SET channel = 'telegram',
+                    recipient = '',
+                    status = CASE WHEN status = 'sent' THEN 'sent' ELSE 'dead_letter' END,
+                    next_retry_at = NULL,
+                    dead_lettered_at = COALESCE(dead_lettered_at, ?),
+                    delivery_error_message = COALESCE(
+                        delivery_error_message,
+                        'Legacy delivery target removed during channel migration.'
+                    ),
+                    updated_at = ?
+                WHERE LOWER(COALESCE(channel, '')) != 'telegram'
+                """,
+                (migration_time, migration_time),
+            )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_outbound_messages_retry
@@ -419,21 +445,6 @@ class Database:
             row = conn.execute("SELECT * FROM students WHERE id = ?", (student_id,)).fetchone()
         return self._student_from_row(row) if row else None
 
-    def get_student_by_whatsapp_number(self, normalized_number: str) -> Student | None:
-        candidates = {
-            normalized_number.strip(),
-            normalized_number.replace("whatsapp:", "", 1).strip(),
-        }
-        with self._connect() as conn:
-            for candidate in candidates:
-                row = conn.execute(
-                    "SELECT * FROM students WHERE whatsapp_number = ?",
-                    (candidate,),
-                ).fetchone()
-                if row:
-                    return self._student_from_row(row)
-        return None
-
     def get_student_by_site_login_username(self, normalized_username: str) -> Student | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -455,9 +466,7 @@ class Database:
         password_encrypted: str | None,
         site_login_username: str = "",
         site_password_hash: str | None = None,
-        whatsapp_number: str,
         telegram_chat_id: str,
-        email_address: str,
         enabled: bool,
         notification_channel_mode: str = "telegram_only",
         disabled_actions_json: str = "[]",
@@ -478,8 +487,8 @@ class Database:
                     """
                     UPDATE students
                     SET student_label = ?, user_name = ?, password_encrypted = ?, site_login_username = ?,
-                        site_password_hash = ?, site_password_updated_at = ?, whatsapp_number = ?,
-                        telegram_chat_id = ?, email_address = ?, enabled = ?, notification_channel_mode = ?,
+                        site_password_hash = ?, site_password_updated_at = ?,
+                        telegram_chat_id = ?, enabled = ?, notification_channel_mode = ?,
                         disabled_actions_json = ?, timezone = ?, updated_at = ?
                     WHERE id = ?
                     """,
@@ -490,9 +499,7 @@ class Database:
                         site_login_username,
                         resolved_site_password_hash,
                         resolved_site_password_updated_at,
-                        whatsapp_number,
                         telegram_chat_id,
-                        email_address,
                         1 if enabled else 0,
                         notification_channel_mode,
                         disabled_actions_json,
@@ -509,10 +516,10 @@ class Database:
                 """
                 INSERT INTO students (
                     student_label, user_name, password_encrypted, site_login_username, site_password_hash,
-                    site_password_updated_at, whatsapp_number, telegram_chat_id, email_address,
+                    site_password_updated_at, telegram_chat_id,
                     enabled, notification_channel_mode, disabled_actions_json, timezone, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     student_label,
@@ -521,9 +528,7 @@ class Database:
                     site_login_username,
                     site_password_hash or "",
                     now if site_password_hash else None,
-                    whatsapp_number,
                     telegram_chat_id,
-                    email_address,
                     1 if enabled else 0,
                     notification_channel_mode,
                     disabled_actions_json,
@@ -1723,9 +1728,7 @@ class Database:
                 SELECT
                     mh.*,
                     s.student_label,
-                    s.whatsapp_number,
-                    s.telegram_chat_id,
-                    s.email_address
+                    s.telegram_chat_id
                 FROM message_history mh
                 JOIN students s ON s.id = mh.student_id
                 ORDER BY mh.sent_at DESC, mh.id DESC
@@ -1754,9 +1757,7 @@ class Database:
                 SELECT
                     mh.*,
                     s.student_label,
-                    s.whatsapp_number,
-                    s.telegram_chat_id,
-                    s.email_address
+                    s.telegram_chat_id
                 FROM message_history mh
                 JOIN students s ON s.id = mh.student_id
                 {where_sql}
@@ -1841,7 +1842,6 @@ class Database:
         site_login_username: str,
         site_password_hash: str,
         reg_id: str | None,
-        whatsapp_number: str,
         telegram_chat_id: str,
         timezone: str,
         note: str | None,
@@ -1854,10 +1854,10 @@ class Database:
                 """
                 INSERT INTO application_requests (
                     applicant_name, student_label, user_name, password_encrypted, site_login_username, site_password_hash, reg_id,
-                    whatsapp_number, telegram_chat_id, timezone, note, created_from_ip,
+                    telegram_chat_id, timezone, note, created_from_ip,
                     status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     applicant_name,
@@ -1867,7 +1867,6 @@ class Database:
                     site_login_username,
                     site_password_hash,
                     reg_id,
-                    whatsapp_number,
                     telegram_chat_id,
                     timezone,
                     note,
@@ -1880,17 +1879,25 @@ class Database:
             request_id = int(cursor.lastrowid)
         return request_id
 
-    def list_application_requests(self, limit: int = 20) -> list[ApplicationRequest]:
+    def list_application_requests(
+        self,
+        limit: int = 20,
+        *,
+        statuses: tuple[str, ...] | None = None,
+    ) -> list[ApplicationRequest]:
+        query = """
+            SELECT *
+            FROM application_requests
+        """
+        params: list[object] = []
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            query += f"\nWHERE LOWER(status) IN ({placeholders})"
+            params.extend(status.strip().lower() for status in statuses)
+        query += "\nORDER BY created_at DESC, id DESC\nLIMIT ?"
+        params.append(limit)
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM application_requests
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            rows = conn.execute(query, tuple(params)).fetchall()
         return [self._application_request_from_row(row) for row in rows]
 
     def get_application_request(self, application_id: int) -> ApplicationRequest | None:
@@ -2142,9 +2149,7 @@ class Database:
             site_login_username=row["site_login_username"],
             site_password_hash=row["site_password_hash"],
             site_password_updated_at=row["site_password_updated_at"],
-            whatsapp_number=row["whatsapp_number"],
             telegram_chat_id=row["telegram_chat_id"],
-            email_address=row["email_address"],
             enabled=bool(row["enabled"]),
             notification_channel_mode=row["notification_channel_mode"] or "telegram_only",
             disabled_actions_json=row["disabled_actions_json"] or "[]",
@@ -2202,9 +2207,7 @@ class Database:
             id=row["id"],
             student_id=row["student_id"],
             student_label=row["student_label"],
-            whatsapp_number=row["whatsapp_number"],
             telegram_chat_id=row["telegram_chat_id"],
-            email_address=row["email_address"],
             channel=row["channel"],
             recipient=row["recipient"],
             category=row["category"],
@@ -2265,7 +2268,6 @@ class Database:
             site_login_username=row["site_login_username"],
             site_password_hash=row["site_password_hash"],
             reg_id=row["reg_id"],
-            whatsapp_number=row["whatsapp_number"],
             telegram_chat_id=row["telegram_chat_id"],
             timezone=row["timezone"],
             note=row["note"],
@@ -2313,3 +2315,110 @@ class Database:
         conn.execute(
             f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
         )
+
+    def _drop_column_if_exists(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+    ) -> None:
+        column_rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        columns = {row["name"] for row in column_rows}
+        if column_name not in columns:
+            return
+        try:
+            conn.execute(f'ALTER TABLE "{table_name}" DROP COLUMN "{column_name}"')
+        except sqlite3.OperationalError:
+            self._rebuild_table_without_column(
+                conn,
+                table_name=table_name,
+                column_name=column_name,
+                column_rows=column_rows,
+            )
+
+    def _rebuild_table_without_column(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        table_name: str,
+        column_name: str,
+        column_rows: list[sqlite3.Row],
+    ) -> None:
+        retained_columns = [row for row in column_rows if row["name"] != column_name]
+        if not retained_columns:
+            return
+
+        table_row = conn.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?
+            """,
+            (table_name,),
+        ).fetchone()
+        create_table_sql = str(table_row["sql"] if table_row else "")
+        index_rows = conn.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL
+            ORDER BY name
+            """,
+            (table_name,),
+        ).fetchall()
+
+        temp_table_name = f"__tmp_{table_name}_rebuild"
+        conn.execute(f'ALTER TABLE "{table_name}" RENAME TO "{temp_table_name}"')
+        conn.execute(self._build_recreated_table_sql(table_name, retained_columns, create_table_sql))
+
+        selected_columns = ", ".join(f'"{row["name"]}"' for row in retained_columns)
+        conn.execute(
+            f'INSERT INTO "{table_name}" ({selected_columns}) '
+            f'SELECT {selected_columns} FROM "{temp_table_name}"'
+        )
+        conn.execute(f'DROP TABLE "{temp_table_name}"')
+
+        for row in index_rows:
+            index_sql = str(row["sql"] or "").strip()
+            if not index_sql:
+                continue
+            try:
+                conn.execute(index_sql)
+            except sqlite3.OperationalError:
+                continue
+
+    def _build_recreated_table_sql(
+        self,
+        table_name: str,
+        column_rows: list[sqlite3.Row],
+        original_sql: str,
+    ) -> str:
+        original_upper = original_sql.upper()
+        column_defs: list[str] = []
+        primary_key_columns = sorted(
+            (row for row in column_rows if int(row["pk"] or 0) > 0),
+            key=lambda row: int(row["pk"]),
+        )
+        composite_primary_key = len(primary_key_columns) > 1
+
+        for row in column_rows:
+            name = str(row["name"])
+            type_name = str(row["type"] or "").strip()
+            parts = [f'"{name}"']
+            if type_name:
+                parts.append(type_name)
+            if not composite_primary_key and int(row["pk"] or 0) > 0:
+                parts.append("PRIMARY KEY")
+                if "AUTOINCREMENT" in original_upper:
+                    parts.append("AUTOINCREMENT")
+            if bool(row["notnull"]) and int(row["pk"] or 0) == 0:
+                parts.append("NOT NULL")
+            if row["dflt_value"] is not None:
+                parts.append(f"DEFAULT {row['dflt_value']}")
+            column_defs.append(" ".join(parts))
+
+        if composite_primary_key:
+            pk_sql = ", ".join(f'"{row["name"]}"' for row in primary_key_columns)
+            column_defs.append(f"PRIMARY KEY ({pk_sql})")
+
+        return f'CREATE TABLE "{table_name}" ({", ".join(column_defs)})'

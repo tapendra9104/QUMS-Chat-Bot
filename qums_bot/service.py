@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import hashlib
 from io import StringIO
@@ -14,7 +15,6 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import Database, utcnow_iso
-from .emailer import EmailSender
 from .erp_client import AuthenticationRequired, ERPClient, ERPClientError
 from .models import ApplicationRequest, LectureEvent, LectureSlot, PendingLogin, Student, Substitution, TelegramAdminSession
 from .parsers import (
@@ -29,7 +29,6 @@ from .parsers import (
 )
 from .security import decrypt_text, encrypt_text
 from .telegram import TelegramError, TelegramSender
-from .whatsapp import WhatsAppChannelStatus, WhatsAppError, WhatsAppSender
 from .errors import StudentValidationError
 from werkzeug.security import generate_password_hash
 
@@ -38,6 +37,14 @@ logger = logging.getLogger(__name__)
 
 class NotificationDeliveryError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class ApplicationNotificationResult:
+    applicant_sent: bool
+    applicant_error: str | None
+    admin_sent: bool
+    admin_error: str | None
 
 
 STUDENT_ACTION_LABELS: dict[str, str] = {
@@ -62,6 +69,7 @@ NOTIFICATION_CHANNEL_MODE_LABELS: dict[str, str] = {
 
 ERP_SESSION_MONITOR_COOLDOWN_MINUTES = 15
 ERP_SESSION_EXPIRED_STATUS_TEXT = "ERP session expired. Open the dashboard and complete login again with a fresh captcha."
+LECTURE_UPCOMING_ALERT_LEAD_SECONDS = 60
 
 
 class BotService:
@@ -71,16 +79,12 @@ class BotService:
         settings: Settings,
         db: Database,
         erp_client: ERPClient,
-        whatsapp: WhatsAppSender,
         telegram: TelegramSender,
-        emailer: EmailSender,
     ) -> None:
         self.settings = settings
         self.db = db
         self.erp = erp_client
-        self.whatsapp = whatsapp
         self.telegram = telegram
-        self.emailer = emailer
         self.timezone = ZoneInfo(settings.local_timezone)
 
     def list_students(self) -> list[Student]:
@@ -92,8 +96,16 @@ class BotService:
     def list_admin_audit_log(self, limit: int | None = 50):
         return self.db.get_recent_admin_audit_log(limit)
 
-    def list_application_requests(self, limit: int = 20) -> list[ApplicationRequest]:
-        return self.db.list_application_requests(limit)
+    def list_application_requests(
+        self,
+        limit: int = 20,
+        *,
+        statuses: tuple[str, ...] | None = None,
+    ) -> list[ApplicationRequest]:
+        return self.db.list_application_requests(limit, statuses=statuses)
+
+    def list_pending_application_requests(self, limit: int = 20) -> list[ApplicationRequest]:
+        return self.list_application_requests(limit, statuses=("new",))
 
     def get_application_request(self, application_id: int) -> ApplicationRequest | None:
         return self.db.get_application_request(application_id)
@@ -322,9 +334,6 @@ class BotService:
     def delete_student(self, student_id: int) -> bool:
         return self.db.delete_student(student_id)
 
-    def get_whatsapp_status(self, student: Student):
-        return self.whatsapp.get_channel_status(student.whatsapp_number)
-
     def save_student(
         self,
         *,
@@ -335,9 +344,7 @@ class BotService:
         site_login_username: str = "",
         site_login_password: str = "",
         site_password_hash_override: str | None = None,
-        whatsapp_number: str,
         telegram_chat_id: str,
-        email_address: str,
         enabled: bool,
         timezone: str,
         notification_channel_mode: str | None = None,
@@ -348,9 +355,7 @@ class BotService:
         cleaned_user_name = user_name.strip()
         cleaned_timezone = timezone.strip() or self.settings.local_timezone
         normalized_site_login_username = self._normalize_site_login_username(site_login_username)
-        canonical_whatsapp = self._canonical_whatsapp_number(whatsapp_number)
         canonical_telegram = self._normalize_telegram_chat_id(telegram_chat_id)
-        canonical_email = self._normalize_email_address(email_address)
         resolved_notification_mode = self._normalize_notification_channel_mode(
             notification_channel_mode if notification_channel_mode is not None else (
                 current_student.notification_channel_mode if current_student else "telegram_only"
@@ -376,9 +381,7 @@ class BotService:
             student_label=cleaned_label,
             user_name=cleaned_user_name,
             site_login_username=normalized_site_login_username,
-            whatsapp_number=canonical_whatsapp,
             telegram_chat_id=canonical_telegram,
-            email_address=canonical_email,
             timezone_name=cleaned_timezone,
         )
         encrypted = encrypt_text(self.settings.app_secret, password) if password else None
@@ -389,9 +392,7 @@ class BotService:
             password_encrypted=encrypted,
             site_login_username=normalized_site_login_username,
             site_password_hash=site_password_hash,
-            whatsapp_number=canonical_whatsapp,
             telegram_chat_id=canonical_telegram,
-            email_address=canonical_email,
             enabled=enabled,
             notification_channel_mode=resolved_notification_mode,
             disabled_actions_json=json.dumps(sorted(resolved_disabled_actions)),
@@ -443,7 +444,6 @@ class BotService:
         password: str,
         site_login_username: str,
         site_login_password: str,
-        whatsapp_number: str,
         telegram_chat_id: str,
         timezone: str,
         reg_id: str,
@@ -459,7 +459,6 @@ class BotService:
         cleaned_timezone = (timezone or "").strip() or self.settings.local_timezone
         cleaned_reg_id = " ".join((reg_id or "").strip().split()) or None
         cleaned_note = (note or "").strip() or None
-        canonical_whatsapp = self._canonical_whatsapp_number(whatsapp_number)
         canonical_telegram = self._normalize_telegram_chat_id(telegram_chat_id)
 
         if len(cleaned_applicant_name) < 3:
@@ -470,20 +469,23 @@ class BotService:
             raise StudentValidationError("ERP user id is required.")
         if len(cleaned_password) < 4:
             raise StudentValidationError("ERP password is required.")
-        if not cleaned_site_login_username:
-            raise StudentValidationError("Website login username is required.")
-        if len(cleaned_site_login_password) < 8:
+        has_site_login_username = bool(cleaned_site_login_username)
+        has_site_login_password = bool(cleaned_site_login_password)
+        if has_site_login_username and len(cleaned_site_login_password) < 8:
             raise StudentValidationError("Website login password must be at least 8 characters long.")
+        if has_site_login_password and not has_site_login_username:
+            raise StudentValidationError("Website login username is required.")
         if cleaned_note and len(cleaned_note) > 1500:
             raise StudentValidationError("Application note must be 1500 characters or fewer.")
         try:
             ZoneInfo(cleaned_timezone)
         except Exception as exc:
             raise StudentValidationError(f"Invalid timezone: {cleaned_timezone}") from exc
-        self._validate_application_site_login_username(
-            application_id=None,
-            site_login_username=cleaned_site_login_username,
-        )
+        if has_site_login_username:
+            self._validate_application_site_login_username(
+                application_id=None,
+                site_login_username=cleaned_site_login_username,
+            )
 
         request_id = self.db.insert_application_request(
             applicant_name=cleaned_applicant_name,
@@ -491,9 +493,8 @@ class BotService:
             user_name=cleaned_user_name,
             password_encrypted=encrypt_text(self.settings.app_secret, cleaned_password),
             site_login_username=cleaned_site_login_username,
-            site_password_hash=generate_password_hash(cleaned_site_login_password),
+            site_password_hash=generate_password_hash(cleaned_site_login_password) if has_site_login_password else "",
             reg_id=cleaned_reg_id,
-            whatsapp_number=canonical_whatsapp,
             telegram_chat_id=canonical_telegram,
             timezone=cleaned_timezone,
             note=cleaned_note,
@@ -583,9 +584,7 @@ class BotService:
             site_login_username=resolved_site_login_username,
             site_login_password="",
             site_password_hash_override=resolved_site_password_hash,
-            whatsapp_number=application.whatsapp_number,
             telegram_chat_id=application.telegram_chat_id,
-            email_address="",
             enabled=True,
             timezone=application.timezone,
         )
@@ -605,23 +604,12 @@ class BotService:
             "Application approved. Student profile created and ready for ERP sign-in.",
         )
 
-        notification_sent = False
-        notification_error = None
-        if self.telegram.configured and application.telegram_chat_id:
-            try:
-                self.telegram.send_text(
-                    application.telegram_chat_id,
-                    self._build_application_accepted_message(
-                        student_label=application.student_label,
-                        site_login_username=resolved_site_login_username,
-                        website_password_source=website_password_source,
-                        site_login_password_display=site_login_password_display,
-                    ),
-                    message_kind="application_accepted",
-                )
-                notification_sent = True
-            except TelegramError as exc:
-                notification_error = str(exc)
+        notification_result = self._send_application_accepted_notifications(
+            application=application,
+            site_login_username=resolved_site_login_username,
+            website_password_source=website_password_source,
+            site_login_password_display=site_login_password_display,
+        )
 
         student = self._require_student(student_id)
         return {
@@ -630,8 +618,12 @@ class BotService:
             "site_login_username": resolved_site_login_username,
             "site_login_password_display": site_login_password_display,
             "website_password_source": website_password_source,
-            "notification_sent": notification_sent,
-            "notification_error": notification_error,
+            "notification_sent": notification_result.applicant_sent,
+            "notification_error": notification_result.applicant_error,
+            "applicant_notification_sent": notification_result.applicant_sent,
+            "applicant_notification_error": notification_result.applicant_error,
+            "admin_notification_sent": notification_result.admin_sent,
+            "admin_notification_error": notification_result.admin_error,
         }
 
     def reject_application_request(self, application_id: int) -> dict[str, object]:
@@ -669,6 +661,86 @@ class BotService:
             "notification_sent": notification_sent,
             "notification_error": notification_error,
         }
+
+    def _send_application_accepted_notifications(
+        self,
+        *,
+        application: ApplicationRequest,
+        site_login_username: str,
+        website_password_source: str,
+        site_login_password_display: str,
+    ) -> ApplicationNotificationResult:
+        if not self.telegram.configured:
+            return ApplicationNotificationResult(
+                applicant_sent=False,
+                applicant_error="Telegram bot is not configured.",
+                admin_sent=False,
+                admin_error="Telegram bot is not configured.",
+            )
+
+        applicant_chat_id = str(application.telegram_chat_id or "").strip()
+        applicant_sent = False
+        applicant_error = None
+        if applicant_chat_id:
+            try:
+                self.telegram.send_text(
+                    applicant_chat_id,
+                    self._build_application_accepted_message(
+                        student_label=application.student_label,
+                        site_login_username=site_login_username,
+                        website_password_source=website_password_source,
+                        site_login_password_display=site_login_password_display,
+                    ),
+                    message_kind="application_accepted",
+                )
+                applicant_sent = True
+            except TelegramError as exc:
+                applicant_error = str(exc)
+        else:
+            applicant_error = "Student Telegram chat id is missing."
+
+        admin_sent = False
+        admin_error = None
+        admin_chat_ids = self._iter_distinct_admin_application_notification_chats(applicant_chat_id)
+        admin_message = self._build_application_accepted_admin_message(
+            application_id=application.id,
+            applicant_name=application.applicant_name,
+            student_label=application.student_label,
+            site_login_username=site_login_username,
+            website_password_source=website_password_source,
+            site_login_password_display=site_login_password_display,
+            user_telegram_chat_id=applicant_chat_id,
+        )
+        try:
+            for admin_chat_id in admin_chat_ids:
+                self.telegram.send_text(
+                    admin_chat_id,
+                    admin_message,
+                    message_kind="application_accepted_admin",
+                )
+                admin_sent = True
+        except TelegramError as exc:
+            admin_error = str(exc)
+        if not admin_sent and admin_error is None and not admin_chat_ids:
+            admin_error = "No Telegram admin chat is configured."
+
+        return ApplicationNotificationResult(
+            applicant_sent=applicant_sent,
+            applicant_error=applicant_error,
+            admin_sent=admin_sent,
+            admin_error=admin_error,
+        )
+
+    def _iter_distinct_admin_application_notification_chats(self, applicant_chat_id: str) -> list[str]:
+        unique_chats: list[str] = []
+        seen: set[str] = set()
+        for admin_chat_id in self.settings.telegram_admin_chat_ids:
+            admin_chat = str(admin_chat_id or "").strip()
+            if not admin_chat or admin_chat == applicant_chat_id or admin_chat in seen:
+                continue
+            seen.add(admin_chat)
+            unique_chats.append(admin_chat)
+        return unique_chats
 
     def clear_application_request(self, application_id: int) -> ApplicationRequest:
         application = self.get_application_request(application_id)
@@ -745,7 +817,7 @@ class BotService:
             lambda: self._collect_daily_summary(student, target, send_risk_alerts=True),
             detected_at=current,
         )
-        self._send_whatsapp(
+        self._send_notification(
             student,
             summary["message"],
             message_kind="morning",
@@ -823,7 +895,7 @@ class BotService:
             subject_references=subject_references,
             generated_at=current,
         )
-        self._send_whatsapp(
+        self._send_notification(
             student,
             message,
             message_kind="attendance",
@@ -867,7 +939,7 @@ class BotService:
             subject_references=subject_references,
             generated_at=current,
         )
-        self._send_whatsapp(
+        self._send_notification(
             student,
             message,
             message_kind="attendance",
@@ -941,7 +1013,7 @@ class BotService:
             lecture_events=lecture_events,
             generated_at=current,
         )
-        self._send_whatsapp(
+        self._send_notification(
             student,
             message,
             message_kind="attendance",
@@ -963,7 +1035,7 @@ class BotService:
             "QUMS bot test message.\n"
             "If you received this, the configured delivery channels are working."
         )
-        self._send_whatsapp(student, body, message_kind="generic", history_category="test_message")
+        self._send_notification(student, body, message_kind="generic", history_category="test_message")
         return body
 
     def run_telegram_inbound_sweep(self) -> None:
@@ -2142,16 +2214,6 @@ class BotService:
                 self._send_telegram_text(chat_id, "ERP password is required.")
                 return
             payload["password"] = normalized
-        elif step == "site_login_username":
-            if not normalized:
-                self._send_telegram_text(chat_id, "Website login username is required.")
-                return
-            payload["site_login_username"] = normalized
-        elif step == "site_login_password":
-            if len(normalized) < 8:
-                self._send_telegram_text(chat_id, "Website login password must be at least 8 characters long.")
-                return
-            payload["site_login_password"] = normalized
         elif step == "reg_id":
             payload["reg_id"] = "" if lower_value == "skip" else normalized
         elif step == "telegram_chat_id":
@@ -2173,8 +2235,6 @@ class BotService:
             "student_label",
             "user_name",
             "password",
-            "site_login_username",
-            "site_login_password",
             "reg_id",
             "telegram_chat_id",
             "timezone",
@@ -2229,7 +2289,6 @@ class BotService:
                 "site_login_username": student.site_login_username,
                 "site_login_password": "",
                 "password": "",
-                "whatsapp_number": "",
                 "telegram_chat_id": student.telegram_chat_id,
                 "timezone": student.timezone,
                 "enabled": bool(student.enabled),
@@ -2241,7 +2300,6 @@ class BotService:
                 "site_login_username": "",
                 "site_login_password": "",
                 "password": "",
-                "whatsapp_number": "",
                 "telegram_chat_id": "",
                 "timezone": self.settings.local_timezone,
                 "enabled": True,
@@ -2264,8 +2322,6 @@ class BotService:
             "student_label": "",
             "user_name": "",
             "password": "",
-            "site_login_username": "",
-            "site_login_password": "",
             "reg_id": "",
             "telegram_chat_id": chat_id,
             "timezone": self.settings.local_timezone,
@@ -2296,9 +2352,7 @@ class BotService:
             password=str(payload.get("password") or ""),
             site_login_username=str(payload.get("site_login_username") or ""),
             site_login_password=str(payload.get("site_login_password") or ""),
-            whatsapp_number="",
             telegram_chat_id=str(payload.get("telegram_chat_id") or ""),
-            email_address="",
             enabled=bool(payload.get("enabled")),
             timezone=str(payload.get("timezone") or self.settings.local_timezone),
         )
@@ -2327,9 +2381,8 @@ class BotService:
             student_label=str(payload.get("student_label") or ""),
             user_name=str(payload.get("user_name") or ""),
             password=str(payload.get("password") or ""),
-            site_login_username=str(payload.get("site_login_username") or ""),
-            site_login_password=str(payload.get("site_login_password") or ""),
-            whatsapp_number="",
+            site_login_username="",
+            site_login_password="",
             telegram_chat_id=str(payload.get("telegram_chat_id") or ""),
             timezone=str(payload.get("timezone") or self.settings.local_timezone),
             reg_id=str(payload.get("reg_id") or ""),
@@ -2554,10 +2607,10 @@ class BotService:
         ]
 
     def _build_telegram_applications_text(self) -> str:
-        applications = self.list_application_requests(10)
+        applications = self.list_pending_application_requests(10)
         lines = ["Application Requests", ""]
         if not applications:
-            lines.append("No application requests have been submitted yet.")
+            lines.append("No pending application requests right now.")
             return "\n".join(lines)
         for item in applications:
             lines.extend(
@@ -2836,10 +2889,6 @@ class BotService:
             return "ERP user id\nSend your ERP user id."
         if step == "password":
             return "ERP password\nSend your ERP password so the admin can add your profile."
-        if step == "site_login_username":
-            return "Website login username\nSend the username you want to use for website sign-in."
-        if step == "site_login_password":
-            return "Website login password\nSend a website password with at least 8 characters."
         if step == "reg_id":
             return "Registration id\nSend your RegID, or send skip."
         if step == "telegram_chat_id":
@@ -2859,8 +2908,6 @@ class BotService:
                 f"Preferred label: {payload.get('student_label') or 'Not set'}",
                 f"ERP user id: {payload.get('user_name') or 'Not set'}",
                 f"ERP password: {'Provided' if payload.get('password') else 'Not set'}",
-                f"Website login username: {payload.get('site_login_username') or 'Not set'}",
-                f"Website login password: {'Provided' if payload.get('site_login_password') else 'Not set'}",
                 f"RegID: {payload.get('reg_id') or 'Not provided'}",
                 f"Telegram: {payload.get('telegram_chat_id') or 'Not provided'}",
                 f"Timezone: {payload.get('timezone') or self.settings.local_timezone}",
@@ -3114,8 +3161,28 @@ class BotService:
                 self.send_morning_update(student.id, target_date=student_now.date())
             except AuthenticationRequired:
                 self._handle_authentication_required(student, detected_at=student_now)
-            except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+            except (ERPClientError, TelegramError, NotificationDeliveryError) as exc:
                 self.db.update_student_status(student.id, f"Morning sync failed: {exc}")
+
+    def run_lecture_schedule_sweep(self, *, now: datetime | None = None) -> None:
+        current = now or self._local_now()
+        for student in self.db.list_students():
+            if not student.enabled:
+                continue
+            student_now = self._now_for_student(student, current)
+            try:
+                lecture_events = self.db.get_lecture_events_for_day(student.id, student_now.date())
+                if not lecture_events:
+                    self._ensure_attendance_tracking_for_date(student, student_now.date(), detected_at=student_now)
+                    lecture_events = self.db.get_lecture_events_for_day(student.id, student_now.date())
+                if lecture_events:
+                    self._emit_lecture_schedule_notifications(student, lecture_events, student_now)
+            except AuthenticationRequired:
+                self._handle_authentication_required(student, detected_at=student_now)
+            except ERPClientError as exc:
+                self.db.update_student_status(student.id, f"Lecture schedule sync failed: {exc}")
+            except (TelegramError, NotificationDeliveryError) as exc:
+                self.db.update_student_status(student.id, f"Delivery failed: {exc}")
 
     def run_substitution_sweep(self, *, now: datetime | None = None) -> None:
         current = now or self._local_now()
@@ -3147,7 +3214,7 @@ class BotService:
                 self._handle_authentication_required(student, detected_at=student_now)
             except ERPClientError as exc:
                 self.db.update_student_status(student.id, f"Substitution check failed: {exc}")
-            except (WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+            except (TelegramError, NotificationDeliveryError) as exc:
                 self.db.update_student_status(student.id, f"Delivery failed: {exc}")
 
     def run_monitor_sweep(self, *, now: datetime | None = None) -> None:
@@ -3158,8 +3225,8 @@ class BotService:
             student_now = self._now_for_student(student, current)
 
             try:
-                self._check_erp_session(student, None, student_now)
-            except (WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+                self._check_erp_session(student, student_now)
+            except (TelegramError, NotificationDeliveryError) as exc:
                 self.db.update_student_status(student.id, f"Delivery failed: {exc}")
 
     def run_retry_sweep(self, *, now: datetime | None = None) -> None:
@@ -3228,12 +3295,16 @@ class BotService:
             if not due_events and not has_recent_history:
                 continue
             try:
-                self._process_attendance_scan(student, due_events, student_now)
+                self._process_attendance_scan(
+                    student,
+                    due_events,
+                    student_now,
+                )
             except AuthenticationRequired:
                 self._handle_authentication_required(student, detected_at=student_now)
             except ERPClientError as exc:
                 self.db.update_student_status(student.id, f"Attendance check failed: {exc}")
-            except (WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+            except (TelegramError, NotificationDeliveryError) as exc:
                 self.db.update_student_status(student.id, f"Delivery failed: {exc}")
 
         self.run_evening_sweep(now=now)
@@ -3295,7 +3366,7 @@ class BotService:
                 self._handle_authentication_required(student, detected_at=student_now)
             except ERPClientError as exc:
                 self.db.update_student_status(student.id, f"Evening report failed: {exc}")
-            except (WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+            except (TelegramError, NotificationDeliveryError) as exc:
                 self.db.update_student_status(student.id, f"Delivery failed: {exc}")
 
     def _collect_daily_summary(
@@ -3388,18 +3459,9 @@ class BotService:
             ]
         return []
 
-    def _check_sandbox_expiry(
-        self,
-        student: Student,
-        channel_status: WhatsAppChannelStatus,
-        now: datetime,
-    ) -> None:
-        return
-
     def _check_erp_session(
         self,
         student: Student,
-        channel_status: WhatsAppChannelStatus | None,
         now: datetime,
     ) -> None:
         if not student.session_cookies:
@@ -3410,7 +3472,7 @@ class BotService:
         try:
             self.erp.ensure_authenticated(student)
         except AuthenticationRequired:
-            self._handle_authentication_required(student, detected_at=now, channel_status=channel_status)
+            self._handle_authentication_required(student, detected_at=now)
         except ERPClientError as exc:
             self.db.update_student_bot_activity(student.id, f"ERP session check failed: {exc}")
 
@@ -3443,7 +3505,6 @@ class BotService:
         student: Student,
         *,
         detected_at: datetime,
-        channel_status: WhatsAppChannelStatus | None = None,
     ) -> None:
         status_text = ERP_SESSION_EXPIRED_STATUS_TEXT
         self.db.update_student_erp_status(student.id, status_text)
@@ -3475,6 +3536,8 @@ class BotService:
                 delivery_errors.append("student: Telegram delivery failed")
 
         for admin_chat_id in self.settings.telegram_admin_chat_ids:
+            if str(admin_chat_id).strip() == str(student.telegram_chat_id or "").strip():
+                continue
             admin_delivered = self._send_direct_telegram_notification(
                 student,
                 admin_chat_id,
@@ -3541,7 +3604,7 @@ class BotService:
             if send_alerts:
                 alert_time = detected_at or self._local_now()
                 body = self._render_substitution_alert(target_date, context, detected_at=alert_time)
-                self._send_whatsapp(
+                self._send_notification(
                     student,
                     body,
                     message_kind="attendance",
@@ -3713,7 +3776,12 @@ class BotService:
         ]
         return "|".join(parts)
 
-    def _process_attendance_scan(self, student: Student, due_events: list[LectureEvent], now: datetime) -> None:
+    def _process_attendance_scan(
+        self,
+        student: Student,
+        due_events: list[LectureEvent],
+        now: datetime,
+    ) -> None:
         payload = self.erp.get_attendance_summary(student)
         attendance = parse_attendance_summary(payload)
         self.db.mark_student_erp_sync(student.id)
@@ -3754,6 +3822,84 @@ class BotService:
         )
         self._sync_attendance_snapshots(student, attendance)
         self._evaluate_attendance_risk(student, attendance, now, lecture_events=due_events)
+
+    def _emit_lecture_schedule_notifications(
+        self,
+        student: Student,
+        events: list[LectureEvent],
+        now: datetime,
+    ) -> None:
+        now_naive = now.replace(tzinfo=None)
+        for event in sorted(
+            events,
+            key=lambda item: (
+                item.event_date.isoformat(),
+                item.start_time.isoformat() if item.start_time else "99:99",
+                item.id,
+            ),
+        ):
+            if event.is_break or self._is_no_class_event(event) or event.start_time is None:
+                continue
+
+            lecture_start = datetime.combine(event.event_date, event.start_time)
+            seconds_until_start = (lecture_start - now_naive).total_seconds()
+            if 0 < seconds_until_start <= LECTURE_UPCOMING_ALERT_LEAD_SECONDS:
+                self._send_lecture_schedule_notification(
+                    student,
+                    event,
+                    now,
+                    category="lecture_upcoming_alert",
+                    history_category="lecture_upcoming_alert",
+                    renderer=self._render_upcoming_lecture_alert,
+                )
+
+            if self._event_has_started_by(event, now_naive) and not self._event_has_finished_by(event, now_naive):
+                self._send_lecture_schedule_notification(
+                    student,
+                    event,
+                    now,
+                    category="lecture_live_alert",
+                    history_category="lecture_live_alert",
+                    renderer=self._render_live_lecture_alert,
+                )
+
+    def _send_lecture_schedule_notification(
+        self,
+        student: Student,
+        event: LectureEvent,
+        now: datetime,
+        *,
+        category: str,
+        history_category: str,
+        renderer,
+    ) -> None:
+        notification_key = self._lecture_schedule_notification_key(event)
+        if self.db.has_notification_event(student.id, category, notification_key):
+            return
+
+        body = renderer(event, detected_at=now)
+        self._send_notification(
+            student,
+            body,
+            message_kind="attendance",
+            history_category=history_category,
+            idempotency_key=f"{history_category}:{student.id}:{notification_key}",
+        )
+        self.db.upsert_notification_event(
+            student_id=student.id,
+            category=category,
+            notification_key=notification_key,
+            message_text=body,
+        )
+
+    def _lecture_schedule_notification_key(self, event: LectureEvent) -> str:
+        parts = [
+            event.event_date.isoformat(),
+            event.start_time.strftime("%H:%M") if event.start_time else "",
+            event.end_time.strftime("%H:%M") if event.end_time else "",
+            self._normalize_text(event.slot_label),
+        ]
+        return "|".join(parts)
 
     def _live_attendance_candidate_events(
         self,
@@ -3836,7 +3982,7 @@ class BotService:
                             inferred_from_batch=inferred_from_batch,
                             batch_size=resolved_count,
                         )
-                        self._send_whatsapp(
+                        self._send_notification(
                             student,
                             body,
                             message_kind="attendance",
@@ -3890,7 +4036,7 @@ class BotService:
     ) -> None:
         body = self._render_not_marked_message(event)
         if event.status == "scheduled":
-            self._send_whatsapp(
+            self._send_notification(
                 student,
                 body,
                 message_kind="attendance",
@@ -3934,7 +4080,7 @@ class BotService:
                     detected_at=now,
                 )
 
-            self._send_whatsapp(
+            self._send_notification(
                 student,
                 body,
                 message_kind="attendance",
@@ -4106,7 +4252,7 @@ class BotService:
                 message_text=body,
             )
             return
-        self._send_whatsapp(
+        self._send_notification(
             student,
             body,
             message_kind="attendance",
@@ -4205,7 +4351,7 @@ class BotService:
                 previous_present=previous_present,
                 corrected_present=corrected_present,
             )
-            self._send_whatsapp(
+            self._send_notification(
                 student,
                 body,
                 message_kind="attendance",
@@ -4273,7 +4419,7 @@ class BotService:
                         threshold=threshold,
                         detected_at=now,
                     )
-                    self._send_whatsapp(
+                    self._send_notification(
                         student,
                         body,
                         message_kind="attendance",
@@ -4307,7 +4453,7 @@ class BotService:
                             threshold=threshold,
                             detected_at=now,
                         )
-                        self._send_whatsapp(
+                        self._send_notification(
                             student,
                             body,
                             message_kind="attendance",
@@ -4338,7 +4484,7 @@ class BotService:
                 threshold=shortage_threshold,
             )
         )
-        self._send_whatsapp(
+        self._send_notification(
             student,
             body,
             message_kind="attendance",
@@ -4417,7 +4563,7 @@ class BotService:
                             inferred_from_batch=inferred_from_batch,
                             batch_size=resolved_count,
                         )
-                        self._send_whatsapp(
+                        self._send_notification(
                             student,
                             body,
                             message_kind="attendance",
@@ -4493,7 +4639,7 @@ class BotService:
             events=lecture_events,
             generated_at=now,
         )
-        self._send_whatsapp(
+        self._send_notification(
             student,
             report["body"],
             message_kind="attendance",
@@ -5265,6 +5411,85 @@ class BotService:
             lines.append(f"Note: {primary_event.note}")
         return "\n".join(lines)
 
+    def _render_upcoming_lecture_alert(
+        self,
+        event: LectureEvent,
+        *,
+        detected_at: datetime,
+    ) -> str:
+        start_reference = datetime.combine(
+            event.event_date,
+            event.start_time or time(0, 0),
+            tzinfo=detected_at.tzinfo or self.timezone,
+        )
+        lines = [
+            "Upcoming Lecture Reminder",
+            "",
+            f"Subject: {event.subject_name}",
+            f"Faculty: {event.teacher_name or 'Not available'}",
+            f"Lecture date: {event.event_date.strftime('%A, %d %B %Y')}",
+            f"Lecture time: {self._format_event_time(event)}",
+            f"Starts at: {self._format_datetime(start_reference)}",
+            f"Reminder sent at: {self._format_datetime(detected_at)}",
+        ]
+        lines.extend(self._lecture_schedule_context_lines(event))
+        lines.extend(
+            [
+                "",
+                "This lecture will start in about 1 minute.",
+                "Attendance tracking will continue silently in the background.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _render_live_lecture_alert(
+        self,
+        event: LectureEvent,
+        *,
+        detected_at: datetime,
+    ) -> str:
+        start_reference = datetime.combine(
+            event.event_date,
+            event.start_time or time(0, 0),
+            tzinfo=detected_at.tzinfo or self.timezone,
+        )
+        status_text = "Lecture is now running" if detected_at <= start_reference + timedelta(minutes=1) else "Lecture is in progress"
+        lines = [
+            "Live Lecture Update",
+            "",
+            f"Subject: {event.subject_name}",
+            f"Faculty: {event.teacher_name or 'Not available'}",
+            f"Lecture date: {event.event_date.strftime('%A, %d %B %Y')}",
+            f"Lecture time: {self._format_event_time(event)}",
+            f"Started at: {self._format_datetime(start_reference)}",
+            f"Checked at: {self._format_datetime(detected_at)}",
+            f"Current status: {status_text}",
+        ]
+        lines.extend(self._lecture_schedule_context_lines(event))
+        lines.extend(
+            [
+                "",
+                "This lecture is currently in progress.",
+                "Attendance tracking will continue silently in the background.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _lecture_schedule_context_lines(self, event: LectureEvent) -> list[str]:
+        lines: list[str] = []
+        class_text = self._event_class_location(event)
+        if class_text:
+            lines.append(f"Class: {class_text}")
+        if event.note and "substitute lecture assigned" in event.note.lower():
+            lines.append(f"Substitute status: Assigned for {event.subject_name}")
+            lines.append(f"Substitute faculty: {event.teacher_name or 'Not available'}")
+            original_faculty = self._extract_note_value(event.note, "Original faculty")
+            if original_faculty:
+                lines.append(f"Original faculty: {original_faculty}")
+            return lines
+        lines.append("Substitute status: No substitute assigned")
+        return lines
+
     def _render_substitution_summary_line(
         self,
         context: dict[str, LectureEvent | str | None],
@@ -5327,34 +5552,6 @@ class BotService:
                 "A substitute lecture has been assigned for this class.",
             ]
         )
-        return "\n".join(lines)
-
-    def _render_sandbox_expiry_reminder(
-        self,
-        *,
-        student: Student,
-        channel_status: WhatsAppChannelStatus,
-        expires_at: datetime,
-        detected_at: datetime,
-        remaining: timedelta,
-    ) -> str:
-        join_text = channel_status.join_command or "join <code>"
-        lines = [
-            "Twilio Sandbox Expiry Reminder",
-            "",
-            f"Student: {student.student_name or student.student_label}",
-            f"Recipient: {student.whatsapp_number}",
-            f"Detected at: {self._format_datetime(detected_at)}",
-            f"Sandbox expires at: {self._format_datetime(expires_at)}",
-            f"Time remaining: {self._format_remaining_time(remaining)}",
-            "",
-            "Action required:",
-            "The join message must be sent manually from the recipient's WhatsApp.",
-            f"Current join command: {join_text}",
-            "If the sandbox expires, send the current join command again to whatsapp:+14155238886.",
-        ]
-        if not channel_status.join_command:
-            lines.append("Note: Set TWILIO_SANDBOX_JOIN_CODE in .env if you want the exact join command shown here.")
         return "\n".join(lines)
 
     def _render_erp_session_expired_alert(
@@ -5901,6 +6098,12 @@ class BotService:
         timezone: str,
         note: str | None,
     ) -> str:
+        website_login_username = site_login_username or f"{user_name} (default on approval)"
+        website_password_line = (
+            "Website password: Submitted securely by the user during website signup."
+            if site_login_username
+            else "Website password: not set yet. Approval will reuse the ERP password if possible or ask the admin to choose one."
+        )
         lines = [
             "New student application request",
             "",
@@ -5908,12 +6111,12 @@ class BotService:
             f"Applicant: {applicant_name}",
             f"Preferred label: {student_label}",
             f"ERP user id: {user_name}",
-            f"Website login username: {site_login_username}",
+            f"Website login username: {website_login_username}",
             f"RegID: {reg_id or 'Not provided'}",
             f"Telegram: {telegram_chat_id or 'Not provided'}",
             f"Timezone: {timezone}",
             "ERP password: Submitted securely in the website application.",
-            "Website password: Submitted securely by the user during website signup.",
+            website_password_line,
         ]
         if note:
             lines.extend(["", "Application note:", note])
@@ -5950,6 +6153,37 @@ class BotService:
                 "Your profile is now active. ERP CAPTCHA sign-in may still need to be completed before live synchronization begins.",
             ]
         )
+        return "\n".join(lines)
+
+    def _build_application_accepted_admin_message(
+        self,
+        *,
+        application_id: int,
+        applicant_name: str,
+        student_label: str,
+        site_login_username: str,
+        website_password_source: str,
+        site_login_password_display: str,
+        user_telegram_chat_id: str,
+    ) -> str:
+        password_line = "Website password: unchanged from the user's website sign-up."
+        if website_password_source == "erp_submitted":
+            password_line = "Website password: reusing the ERP password submitted with the application."
+        elif website_password_source == "generated":
+            password_line = f"Temporary website password: {site_login_password_display}"
+        elif website_password_source == "custom":
+            password_line = f"Website password: {site_login_password_display}"
+        lines = [
+            "Application approved from website dashboard.",
+            "",
+            f"Request id: {application_id}",
+            f"Applicant: {applicant_name}",
+            f"Student profile: {student_label}",
+            f"Website login username: {site_login_username}",
+            password_line,
+            f"Telegram user chat: {user_telegram_chat_id or 'Not provided'}",
+            "Status: Accepted and removed from the pending Telegram review queue.",
+        ]
         return "\n".join(lines)
 
     def _build_application_rejected_message(
@@ -5992,22 +6226,6 @@ class BotService:
             return f"{hours} hour(s)"
         return f"{minutes} minute(s)"
 
-    def _normalize_whatsapp_number(self, value: str) -> str:
-        return value.strip().removeprefix("whatsapp:")
-
-    def _canonical_whatsapp_number(self, value: str) -> str:
-        raw = self._normalize_whatsapp_number(value)
-        if not raw.strip():
-            return ""
-        normalized = re.sub(r"[^\d+]", "", raw)
-        if normalized.startswith("00"):
-            normalized = f"+{normalized[2:]}"
-        if not normalized.startswith("+"):
-            normalized = f"+{normalized}"
-        if not re.fullmatch(r"\+[1-9]\d{7,14}", normalized):
-            raise StudentValidationError("WhatsApp number must be in E.164 format, for example +91XXXXXXXXXX.")
-        return normalized
-
     def _normalize_telegram_chat_id(self, value: str) -> str:
         cleaned = str(value or "").strip()
         if not cleaned:
@@ -6018,14 +6236,6 @@ class BotService:
             "Telegram chat id must be numeric, for example 123456789 or -1001234567890. "
             "Open the bot, send /start, then save that numeric chat id instead of an @username."
         )
-
-    def _normalize_email_address(self, value: str) -> str:
-        cleaned = str(value or "").strip()
-        if not cleaned:
-            return ""
-        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cleaned):
-            raise StudentValidationError("Email address is not valid.")
-        return cleaned.lower()
 
     def _normalize_site_login_username(self, value: str) -> str:
         cleaned = str(value or "").strip()
@@ -6080,9 +6290,7 @@ class BotService:
         student_label: str,
         user_name: str,
         site_login_username: str,
-        whatsapp_number: str,
         telegram_chat_id: str,
-        email_address: str,
         timezone_name: str,
     ) -> None:
         if not student_label:
@@ -6096,9 +6304,7 @@ class BotService:
 
         user_name_key = user_name.casefold()
         site_login_key = site_login_username.casefold()
-        whatsapp_key = whatsapp_number
         telegram_key = telegram_chat_id
-        email_key = email_address.casefold()
         for student in self.db.list_students():
             if student_id and student.id == student_id:
                 continue
@@ -6106,31 +6312,8 @@ class BotService:
                 raise StudentValidationError("ERP user id already exists in another student profile.")
             if site_login_key and student.site_login_username.casefold() == site_login_key:
                 raise StudentValidationError("Site login username already exists in another student profile.")
-            if whatsapp_key:
-                try:
-                    student_whatsapp = self._canonical_whatsapp_number(student.whatsapp_number)
-                except ValueError:
-                    student_whatsapp = student.whatsapp_number.strip()
-                if student_whatsapp == whatsapp_key:
-                    raise StudentValidationError("WhatsApp number already exists in another student profile.")
             if telegram_key and (student.telegram_chat_id or "").strip() == telegram_key:
                 raise StudentValidationError("Telegram chat id already exists in another student profile.")
-            if email_key and (student.email_address or "").strip().casefold() == email_key:
-                raise StudentValidationError("Email address already exists in another student profile.")
-
-    def _find_student_by_whatsapp_number(self, value: str) -> Student | None:
-        try:
-            target = self._canonical_whatsapp_number(value)
-        except ValueError:
-            target = self._normalize_whatsapp_number(value).strip()
-        for student in self.db.list_students():
-            try:
-                candidate = self._canonical_whatsapp_number(student.whatsapp_number)
-            except ValueError:
-                candidate = self._normalize_whatsapp_number(student.whatsapp_number).strip()
-            if candidate == target:
-                return student
-        return None
 
     def _find_student_by_telegram_chat_id(self, value: str) -> Student | None:
         target = str(value or "").strip()
@@ -6219,7 +6402,7 @@ class BotService:
     def _student_bot_activity_text(self, student: Student) -> str:
         return (student.last_bot_activity_text or "").strip() or "No recent bot activity recorded."
 
-    def _send_whatsapp(
+    def _send_notification(
         self,
         student: Student,
         body: str,
@@ -6452,8 +6635,6 @@ class BotService:
 
     def _normalize_notification_channel_mode(self, value: str | None) -> str:
         normalized = str(value or "telegram_only").strip().lower()
-        if normalized in {"all", "whatsapp_only"}:
-            return "telegram_only"
         if normalized not in NOTIFICATION_CHANNEL_MODE_LABELS:
             return "telegram_only"
         return normalized

@@ -19,7 +19,6 @@ from qums_bot.models import PendingLogin
 from qums_bot.parsers import extract_login_state, parse_attendance_summary, parse_timetable_slots
 from qums_bot.telegram import TelegramSender
 from qums_bot.telegram import TelegramError
-from qums_bot.whatsapp import WhatsAppSender
 
 
 def env_context(values: dict[str, str]):
@@ -195,60 +194,6 @@ class IntegrationFlowTests(unittest.TestCase):
         self.assertEqual(slots[0].subject_name, "Holiday")
         self.assertIn("Holiday", slots[0].note)
 
-    def test_whatsapp_sender_reports_removed(self) -> None:
-        settings = Settings(
-            base_url="https://example.com",
-            database_path=self.tmp / "bot.sqlite3",
-            app_secret="secret",
-            app_env="development",
-            use_waitress=False,
-            waitress_threads=8,
-            dashboard_auto_refresh_seconds=30,
-            run_scheduler=False,
-            task_queue_mode="inline",
-            redis_url="",
-            task_queue_name="qums-bot",
-            admin_username="",
-            admin_password="",
-            admin_telegram_username="",
-            local_timezone="Asia/Kolkata",
-            morning_digest_time="06:30",
-            evening_report_time="19:00",
-            attendance_poll_interval_minutes=10,
-            substitution_poll_interval_minutes=5,
-            monitor_poll_interval_minutes=5,
-            sandbox_expiry_warning_minutes=10,
-            lecture_grace_minutes=20,
-            attendance_correction_lookback_days=14,
-            attendance_shortage_buffer_lectures=1,
-            delivery_retry_limit=3,
-            delivery_retry_backoff_seconds=1,
-            low_attendance_thresholds=(75, 70, 65),
-            flask_host="127.0.0.1",
-            flask_port=5000,
-            public_base_url="https://bot.example.com",
-            webhook_rate_limit_count=60,
-            webhook_rate_limit_window_seconds=60,
-            admin_rate_limit_count=10,
-            admin_rate_limit_window_seconds=60,
-            sentry_dsn="",
-            sentry_traces_sample_rate=0.0,
-            twilio_account_sid="sid",
-            twilio_auth_token="token",
-            twilio_whatsapp_mode="sandbox",
-            twilio_whatsapp_from="whatsapp:+14155238886",
-            twilio_sandbox_join_code="demo-code",
-            twilio_status_message_limit=50,
-            twilio_status_callback_url="",
-            twilio_content_sid_default="",
-            twilio_content_sid_morning="",
-            twilio_content_sid_attendance="",
-        )
-        sender = WhatsAppSender(settings)
-
-        with self.assertRaisesRegex(Exception, "WhatsApp delivery has been removed"):
-            sender.send_text("+911234567890", "Test delivery", message_kind="attendance")
-
     def test_telegram_sender_omits_null_reply_markup_for_plain_text(self) -> None:
         settings = Settings(
             base_url="https://example.com",
@@ -287,20 +232,11 @@ class IntegrationFlowTests(unittest.TestCase):
             admin_rate_limit_window_seconds=60,
             sentry_dsn="",
             sentry_traces_sample_rate=0.0,
-            twilio_account_sid="",
-            twilio_auth_token="",
-            twilio_whatsapp_mode="sandbox",
-            twilio_whatsapp_from="whatsapp:+14155238886",
-            twilio_sandbox_join_code="demo-code",
-            twilio_status_message_limit=50,
-            twilio_status_callback_url="",
-            twilio_content_sid_default="",
-            twilio_content_sid_morning="",
-            twilio_content_sid_attendance="",
             telegram_bot_token="token",
             telegram_api_base_url="https://api.telegram.org",
             telegram_admin_chat_ids=("5570554765",),
             telegram_poll_interval_seconds=5,
+            lecture_schedule_poll_interval_seconds=30,
         )
         sender = TelegramSender(settings)
         sender._session = FakeTelegramSession()
@@ -349,20 +285,11 @@ class IntegrationFlowTests(unittest.TestCase):
             admin_rate_limit_window_seconds=60,
             sentry_dsn="",
             sentry_traces_sample_rate=0.0,
-            twilio_account_sid="",
-            twilio_auth_token="",
-            twilio_whatsapp_mode="sandbox",
-            twilio_whatsapp_from="whatsapp:+14155238886",
-            twilio_sandbox_join_code="demo-code",
-            twilio_status_message_limit=50,
-            twilio_status_callback_url="",
-            twilio_content_sid_default="",
-            twilio_content_sid_morning="",
-            twilio_content_sid_attendance="",
             telegram_bot_token="token",
             telegram_api_base_url="https://api.telegram.org",
             telegram_admin_chat_ids=("5570554765",),
             telegram_poll_interval_seconds=5,
+            lecture_schedule_poll_interval_seconds=30,
         )
         sender = TelegramSender(settings)
 
@@ -407,37 +334,12 @@ class IntegrationFlowTests(unittest.TestCase):
             admin_rate_limit_window_seconds=60,
             sentry_dsn="",
             sentry_traces_sample_rate=0.0,
-            twilio_account_sid="",
-            twilio_auth_token="",
-            twilio_whatsapp_mode="sandbox",
-            twilio_whatsapp_from="whatsapp:+14155238886",
-            twilio_sandbox_join_code="demo-code",
-            twilio_status_message_limit=50,
-            twilio_status_callback_url="",
-            twilio_content_sid_default="",
-            twilio_content_sid_morning="",
-            twilio_content_sid_attendance="",
         )
         client = ERPClient(settings)
         session = FakeERPSession(FakeERPResponse(status_code=403, text="Forbidden"))
 
         with self.assertRaises(AuthenticationRequired):
             client._post_json(session, "/Account/GetStudentDetail", {})
-
-    def test_removed_twilio_webhooks_are_not_exposed(self) -> None:
-        db_path = self.tmp / "bot.sqlite3"
-        env_values = {
-            "DATABASE_PATH": str(db_path),
-            "APP_SECRET": "secret",
-            "USE_WAITRESS": "0",
-            "RUN_SCHEDULER": "0",
-            "PUBLIC_BASE_URL": "https://bot.example.com",
-        }
-        with env_context(env_values):
-            app = create_app(start_scheduler=False)
-            client = app.test_client()
-            self.assertEqual(client.post("/webhooks/twilio/status").status_code, 404)
-            self.assertEqual(client.post("/webhooks/twilio/inbound").status_code, 404)
 
     def test_healthz_reports_runtime_scheduler_state(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -446,10 +348,6 @@ class IntegrationFlowTests(unittest.TestCase):
             "APP_SECRET": "secret",
             "USE_WAITRESS": "0",
             "RUN_SCHEDULER": "1",
-            "TWILIO_ACCOUNT_SID": "sid",
-            "TWILIO_AUTH_TOKEN": "token",
-            "TWILIO_WHATSAPP_FROM": "whatsapp:+14155238886",
-            "TWILIO_WHATSAPP_MODE": "sandbox",
         }
         with env_context(env_values):
             app = create_app(start_scheduler=False)
@@ -520,16 +418,6 @@ class IntegrationFlowTests(unittest.TestCase):
             admin_rate_limit_window_seconds=60,
             sentry_dsn="",
             sentry_traces_sample_rate=0.0,
-            twilio_account_sid="",
-            twilio_auth_token="",
-            twilio_whatsapp_mode="sandbox",
-            twilio_whatsapp_from="whatsapp:+14155238886",
-            twilio_sandbox_join_code="demo-code",
-            twilio_status_message_limit=50,
-            twilio_status_callback_url="",
-            twilio_content_sid_default="",
-            twilio_content_sid_morning="",
-            twilio_content_sid_attendance="",
         )
         client = ERPClient(settings)
         session = SequenceERPSession(
@@ -562,6 +450,8 @@ class IntegrationFlowTests(unittest.TestCase):
             "RUN_SCHEDULER": "0",
             "ADMIN_USERNAME": "admin",
             "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "",
+            "TELEGRAM_ADMIN_CHAT_IDS": "",
         }
         with env_context(env_values):
             app = create_app(start_scheduler=False)
@@ -590,6 +480,8 @@ class IntegrationFlowTests(unittest.TestCase):
             "RUN_SCHEDULER": "0",
             "ADMIN_USERNAME": "admin",
             "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "",
+            "TELEGRAM_ADMIN_CHAT_IDS": "",
         }
         with env_context(env_values):
             app = create_app(start_scheduler=False)
@@ -616,7 +508,6 @@ class IntegrationFlowTests(unittest.TestCase):
             "ADMIN_USERNAME": "admin",
             "ADMIN_PASSWORD": "password",
             "OWNER_TELEGRAM_CONTACT": "@gunda872",
-            "OWNER_WHATSAPP_CONTACT": "+919634549096",
         }
         with env_context(env_values):
             app = create_app(start_scheduler=False)
@@ -629,9 +520,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="hidden-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -642,7 +531,7 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn("prototype view only", html)
             self.assertIn("@gunda872", html)
-            self.assertIn("+919634549096", html)
+            self.assertNotIn("+919634549096", html)
             self.assertIn("Create Application", html)
             self.assertNotIn("Hidden Student", html)
 
@@ -656,7 +545,6 @@ class IntegrationFlowTests(unittest.TestCase):
             "ADMIN_USERNAME": "admin",
             "ADMIN_PASSWORD": "password",
             "OWNER_TELEGRAM_CONTACT": "@gunda872",
-            "OWNER_WHATSAPP_CONTACT": "+919634549096",
         }
         with env_context(env_values):
             app = create_app(start_scheduler=False)
@@ -669,9 +557,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="hidden-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -693,6 +579,8 @@ class IntegrationFlowTests(unittest.TestCase):
             "RUN_SCHEDULER": "0",
             "ADMIN_USERNAME": "admin",
             "ADMIN_PASSWORD": "password",
+            "TELEGRAM_BOT_TOKEN": "",
+            "TELEGRAM_ADMIN_CHAT_IDS": "",
         }
         with env_context(env_values):
             app = create_app(start_scheduler=False)
@@ -763,7 +651,6 @@ class IntegrationFlowTests(unittest.TestCase):
                     "site_login_username": "tapendra-site",
                     "site_login_password": "site-pass-123",
                     "reg_id": "8027",
-                    "whatsapp_number": "+919634549096",
                     "telegram_chat_id": "5570554766",
                     "timezone": "Asia/Kolkata",
                     "note": "Please add my profile for attendance alerts.",
@@ -809,7 +696,6 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-password",
                 site_login_username="pending-user",
                 site_login_password="pending-pass-123",
-                whatsapp_number="",
                 telegram_chat_id="5570554766",
                 timezone="Asia/Kolkata",
                 reg_id="9001",
@@ -858,7 +744,6 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-password",
                 site_login_username="approved-user",
                 site_login_password="approved-pass-123",
-                whatsapp_number="",
                 telegram_chat_id="5570554766",
                 timezone="Asia/Kolkata",
                 reg_id="9002",
@@ -934,7 +819,6 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-password",
                 site_login_username="tapendra-site",
                 site_login_password="site-pass-123",
-                whatsapp_number="+919634549096",
                 telegram_chat_id="5570554766",
                 timezone="Asia/Kolkata",
                 reg_id="8027",
@@ -988,7 +872,6 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-password",
                 site_login_username="tapendra-site",
                 site_login_password="site-pass-123",
-                whatsapp_number="+919634549096",
                 telegram_chat_id="5570554766",
                 timezone="Asia/Kolkata",
                 reg_id="8027",
@@ -1042,8 +925,11 @@ class IntegrationFlowTests(unittest.TestCase):
             texts = [str(call.get("json", {}).get("text") or "") for call in fake_session.calls]
             chats = [str(call.get("json", {}).get("chat_id") or "") for call in fake_session.calls]
             self.assertIn("5570554766", chats)
+            self.assertIn("5570554765", chats)
             self.assertTrue(any("Your QUMS application has been approved." in text for text in texts))
             self.assertTrue(any("Website password: site-pass-789" in text for text in texts))
+            self.assertTrue(any("Application approved from website dashboard." in text for text in texts))
+            self.assertTrue(any("removed from the pending Telegram review queue" in text for text in texts))
 
             student_client = app.test_client()
             login_html = student_client.get("/login").get_data(as_text=True)
@@ -1060,7 +946,67 @@ class IntegrationFlowTests(unittest.TestCase):
             )
 
             self.assertEqual(login_response.status_code, 200)
-            self.assertIn("Student Control Dashboard", login_response.get_data(as_text=True))
+
+    def test_admin_dashboard_shows_explicit_telegram_delivery_failures_on_application_approval(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+            service = app.config["service"]
+            service.telegram = type("DisabledTelegram", (), {"configured": False})()
+
+            service.submit_application_request(
+                applicant_name="Tapendra Chaudhary",
+                student_label="Tapendra",
+                user_name="23030682",
+                password="erp-password",
+                site_login_username="tapendra-site",
+                site_login_password="site-pass-123",
+                telegram_chat_id="",
+                timezone="Asia/Kolkata",
+                reg_id="8027",
+                note="Please add my profile for attendance alerts.",
+                created_from_ip="website",
+            )
+
+            csrf_token = self._extract_csrf_token(client.get("/admin/login").get_data(as_text=True))
+            client.post(
+                "/admin/login",
+                data={
+                    "csrf_token": csrf_token,
+                    "username": "admin",
+                    "password": "password",
+                    "next_path": "/",
+                },
+            )
+
+            dashboard_html = client.get("/").get_data(as_text=True)
+            accept_csrf = self._extract_csrf_token(dashboard_html)
+
+            response = client.post(
+                "/applications/1/accept",
+                data={
+                    "csrf_token": accept_csrf,
+                    "site_login_username": "tapendra-web",
+                    "site_login_password": "site-pass-789",
+                },
+                follow_redirects=True,
+            )
+
+            html = response.get_data(as_text=True)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Application approved.", html)
+            self.assertIn("Student Telegram notification was not sent: Telegram bot is not configured.", html)
+            self.assertIn("Admin Telegram notification was not sent: Telegram bot is not configured.", html)
 
     def test_admin_can_reject_application_request_from_dashboard(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -1088,7 +1034,6 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-password",
                 site_login_username="tapendra-site",
                 site_login_password="site-pass-123",
-                whatsapp_number="+919634549096",
                 telegram_chat_id="5570554766",
                 timezone="Asia/Kolkata",
                 reg_id="8027",
@@ -1177,7 +1122,6 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-password",
                 site_login_username="tapendra-site",
                 site_login_password="site-pass-123",
-                whatsapp_number="+919634549096",
                 telegram_chat_id="5570554766",
                 timezone="Asia/Kolkata",
                 reg_id="8027",
@@ -1320,9 +1264,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="scoped-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1378,9 +1320,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="editable-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554766",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1467,9 +1407,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1480,9 +1418,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="other-user",
                 site_login_password="site-pass-456",
-                whatsapp_number="+919876543210",
                 telegram_chat_id="5570554766",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1583,9 +1519,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1596,9 +1530,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-456",
                 site_login_username="other-user",
                 site_login_password="site-pass-456",
-                whatsapp_number="+919876543210",
                 telegram_chat_id="5570554766",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1644,9 +1576,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1707,9 +1637,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1761,9 +1689,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1825,9 +1751,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554766",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1896,9 +1820,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1909,9 +1831,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-456",
                 site_login_username="other-user",
                 site_login_password="site-pass-456",
-                whatsapp_number="+919876543210",
                 telegram_chat_id="5570554766",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1962,9 +1882,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -1975,9 +1893,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-456",
                 site_login_username="other-user",
                 site_login_password="site-pass-456",
-                whatsapp_number="+919876543210",
                 telegram_chat_id="5570554766",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2028,9 +1944,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2087,9 +2001,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="own-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2100,9 +2012,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-456",
                 site_login_username="other-user",
                 site_login_password="site-pass-456",
-                whatsapp_number="+919876543210",
                 telegram_chat_id="5570554766",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2147,9 +2057,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="editable-admin-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2193,9 +2101,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="controlled-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2259,9 +2165,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="blocked-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2319,9 +2223,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="reset-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2392,9 +2294,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="change-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2478,9 +2378,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 password="erp-pass-123",
                 site_login_username="delete-user",
                 site_login_password="site-pass-123",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554766",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2669,7 +2567,6 @@ class IntegrationFlowTests(unittest.TestCase):
                     "student_label": "No Token",
                     "user_name": "notoken",
                     "password": "password",
-                    "whatsapp_number": "+911234567890",
                     "timezone": "Asia/Kolkata",
                     "enabled": "on",
                 },
@@ -2686,7 +2583,6 @@ class IntegrationFlowTests(unittest.TestCase):
                     "student_label": "With Token",
                     "user_name": "withtoken",
                     "password": "password",
-                    "whatsapp_number": "+911234567890",
                     "timezone": "Asia/Kolkata",
                     "enabled": "on",
                 },
@@ -2857,9 +2753,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Morning Route Student",
                 user_name="route_user",
                 password="password",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2895,9 +2789,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Attendance Route Student",
                 user_name="attendance_route_user",
                 password="password",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2936,9 +2828,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Substitution Route Student",
                 user_name="substitution_route_user",
                 password="password",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2976,9 +2866,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Status Student",
                 user_name="status_user",
                 password="password",
-                whatsapp_number="+911234567890",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -2991,7 +2879,7 @@ class IntegrationFlowTests(unittest.TestCase):
             )
             service.db.update_student_status(
                 student_id,
-                "Twilio sandbox is not ready. The message `join <code>` must be sent manually from the recipient's WhatsApp again.",
+                "Telegram delivery is not configured for this student profile.",
             )
             service.db.mark_student_erp_sync(student_id, synced_at="2026-03-13T11:00:00+00:00")
 
@@ -3000,8 +2888,8 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertIn("ERP session: ERP session saved.", html)
             self.assertIn("Last ERP sync at:", html)
             self.assertIn("Last bot action at:", html)
-            self.assertIn("Recent bot activity: Twilio sandbox is not ready.", html)
-            self.assertNotIn("Status: Twilio sandbox is not ready.", html)
+            self.assertIn("Recent bot activity: Telegram delivery is not configured", html)
+            self.assertNotIn("Status: Telegram delivery is not configured", html)
 
     def test_dashboard_only_links_open_captcha_when_pending_login_exists(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
@@ -3020,9 +2908,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Captcha Student",
                 user_name="captcha_user",
                 password="password",
-                whatsapp_number="+911234567891",
                 telegram_chat_id="",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -3065,9 +2951,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Filter Student",
                 user_name="filter_user",
                 password="password",
-                whatsapp_number="+911234567892",
                 telegram_chat_id="5570554765",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -3085,7 +2969,7 @@ class IntegrationFlowTests(unittest.TestCase):
             )
             service.db.insert_message_history(
                 student_id=student_id,
-                channel="whatsapp",
+                channel="telegram",
                 recipient="+911234567892",
                 category="morning_summary",
                 message_kind="morning",
@@ -3137,16 +3021,14 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Page Student",
                 user_name="page_user",
                 password="password",
-                whatsapp_number="+911234567894",
                 telegram_chat_id="",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
             for index in range(25):
                 service.db.insert_message_history(
                     student_id=student_id,
-                    channel="whatsapp",
+                    channel="telegram",
                     recipient="+911234567894",
                     category="attendance_update",
                     message_kind="attendance",
@@ -3189,9 +3071,7 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Retry Route Student",
                 user_name="retry_route_user",
                 password="password",
-                whatsapp_number="+911234567893",
                 telegram_chat_id="",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
@@ -3256,16 +3136,14 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Export Student",
                 user_name="export_user",
                 password="password",
-                whatsapp_number="+911234567895",
                 telegram_chat_id="",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
             for index in range(505):
                 service.db.insert_message_history(
                     student_id=student_id,
-                    channel="whatsapp",
+                    channel="telegram",
                     recipient="+911234567895",
                     category="attendance_update",
                     message_kind="attendance",
@@ -3315,16 +3193,14 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Export Page Student",
                 user_name="export_page_user",
                 password="password",
-                whatsapp_number="+911234567896",
                 telegram_chat_id="",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
             for index in range(12):
                 service.db.insert_message_history(
                     student_id=student_id,
-                    channel="telegram" if index % 2 else "whatsapp",
+                    channel="telegram",
                     recipient="5570554765" if index % 2 else "+911234567896",
                     category="attendance_update",
                     message_kind="attendance",
@@ -3387,15 +3263,13 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Live Data Student",
                 user_name="live_data_user",
                 password="password",
-                whatsapp_number="+911234567897",
                 telegram_chat_id="",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
             service.db.insert_message_history(
                 student_id=student_id,
-                channel="whatsapp",
+                channel="telegram",
                 recipient="+911234567897",
                 category="attendance_update",
                 message_kind="attendance",
@@ -3408,7 +3282,7 @@ class IntegrationFlowTests(unittest.TestCase):
             claimed = service.db.claim_outbound_message(
                 idempotency_key="live-dead-letter-1",
                 student_id=student_id,
-                channel="whatsapp",
+                channel="telegram",
                 recipient="+911234567897",
                 category="attendance_update",
                 message_kind="attendance",
@@ -3513,16 +3387,14 @@ class IntegrationFlowTests(unittest.TestCase):
                 student_label="Large History Student",
                 user_name="large_history_user",
                 password="password",
-                whatsapp_number="+911234567898",
                 telegram_chat_id="",
-                email_address="",
                 enabled=True,
                 timezone="Asia/Kolkata",
             )
             for index in range(205):
                 service.db.insert_message_history(
                     student_id=student_id,
-                    channel="whatsapp",
+                    channel="telegram",
                     recipient="+911234567898",
                     category="attendance_update",
                     message_kind="attendance",
@@ -3567,7 +3439,6 @@ class IntegrationFlowTests(unittest.TestCase):
                             "student_label": "Student",
                             "user_name": "user",
                             "password": "password",
-                            "whatsapp_number": "+911234567899",
                             "telegram_chat_id": "",
                             "timezone": "Asia/Kolkata",
                             "enabled": "on",
@@ -3598,7 +3469,6 @@ class IntegrationFlowTests(unittest.TestCase):
                         "student_label": "Student",
                         "user_name": "user",
                         "password": "password",
-                        "whatsapp_number": "+911234567899",
                         "telegram_chat_id": "",
                         "timezone": "Mars/Olympus",
                         "enabled": "on",
@@ -3633,3 +3503,6 @@ class IntegrationFlowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

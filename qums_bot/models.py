@@ -14,9 +14,7 @@ class Student:
     site_login_username: str
     site_password_hash: str
     site_password_updated_at: str | None
-    whatsapp_number: str
     telegram_chat_id: str
-    email_address: str
     enabled: bool
     notification_channel_mode: str
     disabled_actions_json: str
@@ -123,9 +121,7 @@ class MessageHistoryRecord:
     id: int
     student_id: int
     student_label: str
-    whatsapp_number: str
     telegram_chat_id: str
-    email_address: str
     channel: str
     recipient: str
     category: str
@@ -186,7 +182,6 @@ class ApplicationRequest:
     site_login_username: str
     site_password_hash: str
     reg_id: str | None
-    whatsapp_number: str
     telegram_chat_id: str
     timezone: str
     note: str | None

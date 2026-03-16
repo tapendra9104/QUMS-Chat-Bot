@@ -82,26 +82,6 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
-      - key: TWILIO_ACCOUNT_SID
-        sync: false
-      - key: TWILIO_AUTH_TOKEN
-        sync: false
-      - key: TWILIO_WHATSAPP_MODE
-        value: sandbox
-      - key: TWILIO_WHATSAPP_FROM
-        value: whatsapp:+14155238886
-      - key: TWILIO_SANDBOX_JOIN_CODE
-        sync: false
-      - key: TWILIO_STATUS_MESSAGE_LIMIT
-        value: "50"
-      - key: TWILIO_STATUS_CALLBACK_URL
-        sync: false
-      - key: TWILIO_CONTENT_SID_DEFAULT
-        sync: false
-      - key: TWILIO_CONTENT_SID_MORNING
-        sync: false
-      - key: TWILIO_CONTENT_SID_ATTENDANCE
-        sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_API_BASE_URL

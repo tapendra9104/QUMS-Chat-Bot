@@ -387,7 +387,6 @@ label {
 
 input[type="text"],
 input[type="password"],
-input[type="email"],
 textarea,
 select {
     -webkit-appearance: none;
@@ -416,7 +415,6 @@ textarea {
 
 input[type="text"]:focus,
 input[type="password"]:focus,
-input[type="email"]:focus,
 textarea:focus,
 select:focus {
     border-color: rgba(15, 111, 135, 0.70);

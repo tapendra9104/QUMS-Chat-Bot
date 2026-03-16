@@ -48,16 +48,7 @@ def make_settings(db_path: Path, *, sentry_dsn: str = "", task_queue_mode: str =
         admin_rate_limit_window_seconds=60,
         sentry_dsn=sentry_dsn,
         sentry_traces_sample_rate=0.25,
-        twilio_account_sid="",
-        twilio_auth_token="",
-        twilio_whatsapp_mode="sandbox",
-        twilio_whatsapp_from="whatsapp:+14155238886",
-        twilio_sandbox_join_code="demo-code",
-        twilio_status_message_limit=50,
-        twilio_status_callback_url="",
-        twilio_content_sid_default="",
-        twilio_content_sid_morning="",
-        twilio_content_sid_attendance="",
+        lecture_schedule_poll_interval_seconds=30,
     )
 
 

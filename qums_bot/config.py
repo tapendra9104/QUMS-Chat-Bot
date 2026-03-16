@@ -53,31 +53,13 @@ class Settings:
     admin_rate_limit_window_seconds: int
     sentry_dsn: str
     sentry_traces_sample_rate: float
-    twilio_account_sid: str
-    twilio_auth_token: str
-    twilio_whatsapp_mode: str
-    twilio_whatsapp_from: str
-    twilio_sandbox_join_code: str
-    twilio_status_message_limit: int
-    twilio_status_callback_url: str
-    twilio_content_sid_default: str
-    twilio_content_sid_morning: str
-    twilio_content_sid_attendance: str
     telegram_bot_token: str = ""
     telegram_api_base_url: str = "https://api.telegram.org"
     telegram_admin_chat_ids: tuple[str, ...] = ()
     telegram_poll_interval_seconds: int = 1
+    lecture_schedule_poll_interval_seconds: int = 30
     telegram_bot_link: str = ""
     owner_telegram_contact: str = ""
-    owner_whatsapp_contact: str = ""
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_username: str = ""
-    smtp_password: str = ""
-    smtp_from_email: str = ""
-    smtp_use_tls: bool = True
-    smtp_use_ssl: bool = False
-    email_subject_prefix: str = "QUMS Bot"
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -162,9 +144,6 @@ def load_settings() -> Settings:
     database_path.parent.mkdir(parents=True, exist_ok=True)
     app_env = os.getenv("APP_ENV", "development").strip().lower() or "development"
     use_waitress = env_bool("USE_WAITRESS", app_env == "production")
-    twilio_mode = os.getenv("TWILIO_WHATSAPP_MODE", "sandbox").strip().lower() or "sandbox"
-    if twilio_mode not in {"sandbox", "production"}:
-        twilio_mode = "sandbox"
     task_queue_mode = os.getenv("TASK_QUEUE_MODE", "inline").strip().lower() or "inline"
     if task_queue_mode not in {"inline", "rq"}:
         task_queue_mode = "inline"
@@ -206,31 +185,13 @@ def load_settings() -> Settings:
         admin_rate_limit_window_seconds=env_int("ADMIN_RATE_LIMIT_WINDOW_SECONDS", 60, minimum=1),
         sentry_dsn=os.getenv("SENTRY_DSN", "").strip(),
         sentry_traces_sample_rate=env_float("SENTRY_TRACES_SAMPLE_RATE", 0.0, minimum=0.0, maximum=1.0),
-        twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID", ""),
-        twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", ""),
-        twilio_whatsapp_mode=twilio_mode,
-        twilio_whatsapp_from=os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886"),
-        twilio_sandbox_join_code=os.getenv("TWILIO_SANDBOX_JOIN_CODE", "").strip(),
-        twilio_status_message_limit=env_int("TWILIO_STATUS_MESSAGE_LIMIT", 50, minimum=1),
-        twilio_status_callback_url=os.getenv("TWILIO_STATUS_CALLBACK_URL", "").strip(),
-        twilio_content_sid_default=os.getenv("TWILIO_CONTENT_SID_DEFAULT", "").strip(),
-        twilio_content_sid_morning=os.getenv("TWILIO_CONTENT_SID_MORNING", "").strip(),
-        twilio_content_sid_attendance=os.getenv("TWILIO_CONTENT_SID_ATTENDANCE", "").strip(),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_api_base_url=os.getenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org").rstrip("/"),
         telegram_admin_chat_ids=env_str_list("TELEGRAM_ADMIN_CHAT_IDS"),
         telegram_poll_interval_seconds=env_int("TELEGRAM_POLL_INTERVAL_SECONDS", 1, minimum=1, maximum=60),
+        lecture_schedule_poll_interval_seconds=env_int("LECTURE_SCHEDULE_POLL_INTERVAL_SECONDS", 30, minimum=5, maximum=300),
         telegram_bot_link=os.getenv("TELEGRAM_BOT_LINK", "https://t.me/QUMS_ALERT_BOT").strip(),
         owner_telegram_contact=os.getenv("OWNER_TELEGRAM_CONTACT", "").strip(),
-        owner_whatsapp_contact=os.getenv("OWNER_WHATSAPP_CONTACT", "").strip(),
-        smtp_host=os.getenv("SMTP_HOST", "").strip(),
-        smtp_port=env_int("SMTP_PORT", 587, minimum=1, maximum=65535),
-        smtp_username=os.getenv("SMTP_USERNAME", "").strip(),
-        smtp_password=os.getenv("SMTP_PASSWORD", "").strip(),
-        smtp_from_email=os.getenv("SMTP_FROM_EMAIL", "").strip(),
-        smtp_use_tls=env_bool("SMTP_USE_TLS", True),
-        smtp_use_ssl=env_bool("SMTP_USE_SSL", False),
-        email_subject_prefix=os.getenv("EMAIL_SUBJECT_PREFIX", "QUMS Bot").strip() or "QUMS Bot",
     )
     _validate_production_settings(settings)
     return settings

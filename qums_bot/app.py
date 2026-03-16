@@ -27,7 +27,6 @@ from .service import (
 )
 from .task_queue import TaskDispatcher
 from .telegram import TelegramError
-from .whatsapp import WhatsAppError
 
 
 ADMIN_RESET_STATE_KEY = "admin_password_reset"
@@ -654,9 +653,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 password=supplied_erp_password,
                 site_login_username=student.site_login_username,
                 site_login_password="",
-                whatsapp_number="",
                 telegram_chat_id=request.form.get("telegram_chat_id", ""),
-                email_address="",
                 enabled=student.enabled,
                 timezone=request.form.get("timezone", ""),
             )
@@ -757,9 +754,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 password=request.form.get("password", ""),
                 site_login_username=request.form.get("site_login_username", ""),
                 site_login_password=request.form.get("site_login_password", ""),
-                whatsapp_number="",
                 telegram_chat_id=request.form.get("telegram_chat_id", ""),
-                email_address="",
                 enabled=request.form.get("enabled") == "on",
                 timezone=request.form.get("timezone", ""),
             )
@@ -834,7 +829,6 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 password=request.form.get("password", ""),
                 site_login_username=request.form.get("site_login_username", ""),
                 site_login_password=request.form.get("site_login_password", ""),
-                whatsapp_number="",
                 telegram_chat_id=request.form.get("telegram_chat_id", ""),
                 timezone=request.form.get("timezone", ""),
                 reg_id=request.form.get("reg_id", ""),
@@ -918,10 +912,21 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 f"Application approved. {student.student_label} can sign in with username {site_login_username} using the website password {site_login_password_display}.",
                 "success",
             )
-        if result["notification_sent"]:
+        applicant_notification_sent = bool(result.get("applicant_notification_sent"))
+        admin_notification_sent = bool(result.get("admin_notification_sent"))
+        applicant_notification_error = str(result.get("applicant_notification_error") or "")
+        admin_notification_error = str(result.get("admin_notification_error") or "")
+        if applicant_notification_sent and admin_notification_sent:
+            flash("Approval notifications were sent to the student and Telegram admin chat.", "success")
+        elif applicant_notification_sent:
             flash("Approval notification sent to the student's Telegram account.", "success")
-        elif result["notification_error"]:
-            flash("The student profile was created, but the Telegram approval notification could not be delivered.", "warning")
+        elif admin_notification_sent:
+            flash("Telegram admin confirmation was sent.", "success")
+
+        if applicant_notification_error:
+            flash(f"Student Telegram notification was not sent: {applicant_notification_error}", "warning")
+        if admin_notification_error:
+            flash(f"Admin Telegram notification was not sent: {admin_notification_error}", "warning")
         return redirect(url_for("dashboard", edit=student.id))
 
     @app.post("/applications/<int:application_id>/reject")
@@ -1071,7 +1076,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return guard_response
         try:
             preview_text = _service().preview_today(student_id)
-        except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+        except (ERPClientError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
         _log_dashboard_student_action(
@@ -1090,7 +1095,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return guard_response
         try:
             _service().send_morning_update(student_id, force=True)
-        except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+        except (ERPClientError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
         _log_dashboard_student_action(
@@ -1109,7 +1114,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return guard_response
         try:
             _service().send_substitution_report(student_id, force=True)
-        except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+        except (ERPClientError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
         _log_dashboard_student_action(
@@ -1128,7 +1133,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return guard_response
         try:
             _service().send_attendance_summary_report(student_id, force=True)
-        except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+        except (ERPClientError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
         _log_dashboard_student_action(
@@ -1147,7 +1152,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return guard_response
         try:
             _service().send_evening_report(student_id, force=True)
-        except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+        except (ERPClientError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
         _log_dashboard_student_action(
@@ -1166,7 +1171,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return guard_response
         try:
             _service().send_shortage_report(student_id, force=True)
-        except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+        except (ERPClientError, TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
         _log_dashboard_student_action(
@@ -1185,7 +1190,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return guard_response
         try:
             _service().send_test_message(student_id)
-        except (WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+        except (TelegramError, NotificationDeliveryError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
         _log_dashboard_student_action(
@@ -1201,7 +1206,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
     def retry_dead_letter(idempotency_key: str):
         try:
             message = _service().retry_dead_letter_message(idempotency_key)
-        except (ERPClientError, WhatsAppError, TelegramError, NotificationDeliveryError) as exc:
+        except (ERPClientError, TelegramError, NotificationDeliveryError) as exc:
             if _wants_json_response():
                 return jsonify({"ok": False, "message": str(exc)}), 400
             flash(str(exc), "error")

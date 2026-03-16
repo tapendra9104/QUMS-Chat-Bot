@@ -20,6 +20,10 @@ def build_scheduler(
         settings.telegram_poll_interval_seconds,
         MIN_TELEGRAM_JOB_INTERVAL_SECONDS,
     )
+    lecture_schedule_interval_seconds = max(
+        settings.lecture_schedule_poll_interval_seconds,
+        MIN_TELEGRAM_JOB_INTERVAL_SECONDS,
+    )
     telegram_refresh_interval_seconds = max(
         settings.dashboard_auto_refresh_seconds,
         MIN_TELEGRAM_JOB_INTERVAL_SECONDS,
@@ -44,6 +48,19 @@ def build_scheduler(
         "interval",
         minutes=1,
         id="scheduled-dispatch",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _dispatch(
+            service.run_lecture_schedule_sweep,
+            dispatcher=dispatcher,
+            job_name="lecture-schedule-checks",
+            callback_name="run_lecture_schedule_sweep",
+            interval_seconds=lecture_schedule_interval_seconds,
+        ),
+        "interval",
+        seconds=lecture_schedule_interval_seconds,
+        id="lecture-schedule-checks",
         replace_existing=True,
     )
     scheduler.add_job(
