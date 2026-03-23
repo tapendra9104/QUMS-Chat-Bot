@@ -64,6 +64,7 @@ def init_monitoring(
         traces_sample_rate=settings.sentry_traces_sample_rate,
         integrations=integrations,
         send_default_pii=False,
+        auto_enabling_integrations=False,
     )
     sentry_sdk.set_tag("component", component)
     sentry_sdk.set_tag("task_queue_mode", settings.task_queue_mode)

@@ -12,10 +12,10 @@ from qums_bot.config import Settings
 from qums_bot.db import Database
 from qums_bot.errors import StudentValidationError
 from qums_bot.erp_client import AuthenticationRequired
-from qums_bot.models import LectureSlot
+from qums_bot.models import LectureSlot, PendingLogin
 from qums_bot.parsers import parse_attendance_summary
 from qums_bot.scheduler import build_scheduler
-from qums_bot.service import BotService, NotificationDeliveryError
+from qums_bot.service import BotService, ERP_SESSION_EXPIRED_STATUS_TEXT, NotificationDeliveryError
 from qums_bot.task_queue import TaskDispatcher
 
 
@@ -95,6 +95,18 @@ class FakeERP:
         if self.auth_required:
             raise AuthenticationRequired("expired")
         return object()
+
+    def start_manual_login(self, student):
+        return PendingLogin(
+            student_id=student.id,
+            request_verification_token="token",
+            hdn_msg="QGC",
+            check_online="0",
+            client_ip="127.0.0.1",
+            captcha_data_url="data:image/png;base64,abc",
+            cookies_json="[]",
+            created_at="2026-03-14T10:05:00+05:30",
+        )
 
 
 class FakeTelegram:
@@ -293,6 +305,226 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(history[0].category, "morning_summary")
         self.assertTrue(self.db.has_notification_event(student_india, "morning_digest", "2026-03-13"))
         self.assertFalse(self.db.has_notification_event(student_utc, "morning_digest", "2026-03-13"))
+
+    def test_lecture_schedule_notifications_respect_send_morning_disabled_action(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Schedule Blocked Student",
+            user_name="schedule_blocked_student",
+            password_encrypted="secret",
+            telegram_chat_id="123456789",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json='["send_morning"]',
+            timezone="Asia/Kolkata",
+        )
+        target_date = date(2026, 3, 16)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="math101",
+                    subject_name="Mathematics",
+                    teacher_name="Prof A",
+                    raw_cell="Mathematics\nProf A\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=FakeERP(), telegram=telegram)
+
+        service.run_lecture_schedule_sweep(now=datetime(2026, 3, 16, 8, 59, tzinfo=ZoneInfo("Asia/Kolkata")))
+
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(service.list_message_history(), [])
+
+    def test_attendance_notifications_respect_send_attendance_summary_disabled_action(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Attendance Blocked Student",
+            user_name="attendance_blocked_student",
+            password_encrypted="secret",
+            telegram_chat_id="123456789",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json='["send_attendance_summary"]',
+            timezone="Asia/Kolkata",
+        )
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=date(2026, 3, 14),
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="math101",
+                    subject_name="Mathematics",
+                    teacher_name="Prof A",
+                    raw_cell="Mathematics\nProf A\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        erp = FakeERP(
+            attendance_payload={
+                "state": [
+                    {
+                        "Subject": "Mathematics",
+                        "SubjectCode": "MATH101",
+                        "EMPNAME": "Prof A",
+                        "TotalLecture": "1",
+                        "TotalPresent": "1",
+                        "Percentage": "100.00%",
+                    }
+                ]
+            }
+        )
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
+        service._local_now = lambda: datetime(2026, 3, 14, 10, 30, tzinfo=ZoneInfo("Asia/Kolkata"))  # type: ignore[method-assign]
+
+        service.run_due_checks()
+
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(service.list_message_history(), [])
+        event = self.db.get_lecture_events_for_day(student_id, date(2026, 3, 14))[0]
+        self.assertEqual(event.status, "notified_present")
+
+    def test_erp_session_expired_alert_still_sends_when_attendance_feature_is_disabled(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Critical Alert Student",
+            user_name="critical_alert_student",
+            password_encrypted="secret",
+            telegram_chat_id="5570554766",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json='["send_attendance_summary"]',
+            timezone="Asia/Kolkata",
+        )
+        self.db.update_student_session(
+            student_id=student_id,
+            cookies_json="[]",
+            last_login_status="ERP session active.",
+        )
+        stale_at = (datetime.now(tz=ZoneInfo("UTC")) - timedelta(minutes=20)).replace(microsecond=0).isoformat()
+        self._set_student_activity_times(student_id, session_updated_at=stale_at, last_erp_sync_at=stale_at)
+        telegram = FakeTelegram()
+        telegram.configured = True
+        service = self._make_service(erp=FakeERP(auth_required=True), telegram=telegram)
+
+        service.run_monitor_sweep(now=datetime.now(ZoneInfo("Asia/Kolkata")))
+
+        self.assertEqual(len(telegram.messages), 2)
+        categories = {item.category for item in service.list_message_history()}
+        self.assertEqual(categories, {"erp_session_expired", "erp_session_expired_admin"})
+
+    def test_morning_summary_still_sends_when_shortage_notifications_are_disabled(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Shortage Blocked Student",
+            user_name="shortage_blocked_student",
+            password_encrypted="secret",
+            telegram_chat_id="123456789",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json='["send_shortage_report"]',
+            timezone="Asia/Kolkata",
+        )
+        erp = FakeERP(
+            timetable_payload={
+                "state": [
+                    {
+                        "Period": "09:00 - 10:00",
+                        "Subject": "Mathematics",
+                        "Employee": "Prof Timetable",
+                        "Time": "09:00 - 10:00",
+                    }
+                ]
+            },
+            attendance_payload={
+                "state": [
+                    {
+                        "Subject": "Mathematics",
+                        "SubjectCode": "MATH101",
+                        "EMPNAME": "Prof ERP",
+                        "TotalLecture": "4",
+                        "TotalPresent": "3",
+                        "Percentage": "75.00%",
+                    }
+                ]
+            },
+        )
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
+
+        service.send_morning_update(student_id, target_date=date(2026, 3, 15), force=True)
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("Morning Schedule Update", telegram.messages[0][2])
+        categories = {item.category for item in service.list_message_history()}
+        self.assertEqual(categories, {"morning_summary"})
+
+    def test_substitution_alerts_respect_send_substitution_report_disabled_action(self) -> None:
+        student_id = self.db.upsert_student(
+            student_id=None,
+            student_label="Substitution Blocked Student",
+            user_name="substitution_blocked_student",
+            password_encrypted="secret",
+            telegram_chat_id="123456789",
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json='["send_substitution_report"]',
+            timezone="Asia/Kolkata",
+        )
+        target_date = date(2026, 3, 16)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="10:00 - 11:00",
+                    subject_key="physics",
+                    subject_name="Physics",
+                    teacher_name="Prof B",
+                    raw_cell="Physics\nProf B\n10:00 - 11:00",
+                    start_time=time(10, 0),
+                    end_time=time(11, 0),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        erp = FakeERP(
+            substitutions_payload={
+                "state": [
+                    {
+                        "SubsDate": target_date.strftime("%d/%m/%Y"),
+                        "Period": "10:00 - 11:00",
+                        "Time": "10:00 - 11:00",
+                        "Subject": "Physics",
+                        "Employee": "Prof B",
+                        "SubsSubject": "Physics Lab",
+                        "SubsEmployee": "Prof C",
+                    }
+                ]
+            }
+        )
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=erp, telegram=telegram)
+
+        service.run_substitution_sweep(now=datetime(2026, 3, 16, 9, 45, tzinfo=ZoneInfo("Asia/Kolkata")))
+
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(service.list_message_history(), [])
 
     def test_database_creates_parent_directory_for_custom_path(self) -> None:
         nested_db_path = self.tmp / "nested" / "data" / "bot.sqlite3"
@@ -653,6 +885,8 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertTrue(any("Status: Your ERP session has expired" in body for body in bodies))
         self.assertTrue(any("Status: The student's ERP session has expired" in body for body in bodies))
         self.assertTrue(any("Manual Expired Student" in body for body in bodies))
+        self.assertTrue(any(f"/students/{student_id}/login" in body for body in bodies))
+        self.assertIsNotNone(self.db.get_pending_login(student_id))
         history = service.list_message_history()
         self.assertEqual(len(history), 2)
         self.assertEqual({item.category for item in history}, {"erp_session_expired", "erp_session_expired_admin"})
@@ -1937,6 +2171,8 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertTrue(any("ERP Session Alert" in body for body in bodies))
         self.assertTrue(any("Lecture-end attendance scans and summary checks are paused" in body for body in bodies))
         self.assertTrue(any("Telegram Expired Student" in body for body in bodies))
+        self.assertTrue(any(f"/students/{student_id}/login" in body for body in bodies))
+        self.assertIsNotNone(self.db.get_pending_login(student_id))
         history = service.list_message_history()
         self.assertEqual(len(history), 2)
         self.assertEqual({item.channel for item in history}, {"telegram"})
@@ -2028,6 +2264,8 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertTrue(any("ERP Session Alert" in body for body in bodies))
         self.assertTrue(any("Lecture-end attendance scans and summary checks are paused" in body for body in bodies))
         self.assertTrue(any("Due Check Expired Student" in body for body in bodies))
+        self.assertTrue(any(f"/students/{student_id}/login" in body for body in bodies))
+        self.assertIsNotNone(self.db.get_pending_login(student_id))
         history = service.list_message_history()
         self.assertEqual(len(history), 2)
         self.assertEqual({item.channel for item in history}, {"telegram"})
@@ -2785,6 +3023,37 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(len(telegram.messages), 1)
         self.assertIn("Upcoming Lecture Reminder", telegram.messages[0][2])
 
+    def test_run_lecture_schedule_sweep_skips_cached_alerts_when_erp_session_is_known_expired(self) -> None:
+        student_id = self._add_student(label="Expired Reminder Student", timezone="Asia/Kolkata")
+        target_date = date(2026, 3, 16)
+        self.db.replace_lecture_events(
+            student_id=student_id,
+            event_date=target_date,
+            slots=[
+                LectureSlot(
+                    slot_label="09:00 - 09:55",
+                    subject_key="math101",
+                    subject_name="Mathematics",
+                    teacher_name="Prof A",
+                    raw_cell="Mathematics\nProf A\n09:00 - 09:55",
+                    start_time=time(9, 0),
+                    end_time=time(9, 55),
+                    is_break=False,
+                )
+            ],
+            grace_minutes=self.settings.lecture_grace_minutes,
+        )
+        self.db.update_student_erp_status(student_id, ERP_SESSION_EXPIRED_STATUS_TEXT)
+        telegram = ConfiguredTelegram()
+        service = self._make_service(erp=FakeERP(), telegram=telegram)
+
+        service.run_lecture_schedule_sweep(
+            now=datetime(2026, 3, 16, 8, 59, tzinfo=ZoneInfo("Asia/Kolkata"))
+        )
+
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(service.list_message_history(), [])
+
     def test_run_due_checks_bootstraps_missing_todays_routine_and_sends_one_alert_per_finished_lecture(self) -> None:
         student_id = self.db.upsert_student(
             student_id=None,
@@ -3213,6 +3482,40 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(self.db.get_outbound_queue_summary()["sent"], 1)
         self.assertEqual(len(telegram.messages), 1)
         self.assertEqual(len(service.list_message_history()), 1)
+
+    def test_manual_dead_letter_retry_recovers_legacy_telegram_message_without_recipient(self) -> None:
+        student_id = self._add_student(label="Legacy Dead Letter Student", timezone="Asia/Kolkata")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        telegram = ConfiguredTelegram()
+        service = self._make_service(telegram=telegram)
+
+        claimed = self.db.claim_outbound_message(
+            idempotency_key="attendance_update:legacy-dead-letter-test",
+            student_id=student_id,
+            channel="telegram",
+            recipient="",
+            category="attendance_update",
+            message_kind="attendance",
+            title="Attendance Update",
+            body="Attendance Update\n\nStatus: Present",
+        )
+        self.assertTrue(claimed)
+        self.db.mark_outbound_message_failed(
+            "attendance_update:legacy-dead-letter-test",
+            "legacy delivery target removed during channel migration",
+            retry_limit=1,
+            retry_backoff_seconds=1,
+        )
+
+        result = service.retry_dead_letter_message("attendance_update:legacy-dead-letter-test")
+
+        self.assertIn("retried successfully", result.lower())
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertEqual(telegram.messages[0][0], student.telegram_chat_id)
+        history = service.list_message_history()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].recipient, student.telegram_chat_id)
 
     def test_force_resend_evening_report_uses_new_delivery_idempotency(self) -> None:
         student_id = self._add_student(label="Force Report Student", timezone="Asia/Kolkata")

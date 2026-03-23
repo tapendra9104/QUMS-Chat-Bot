@@ -2689,6 +2689,28 @@ class IntegrationFlowTests(unittest.TestCase):
             self.assertEqual(response.headers.get("Pragma"), "no-cache")
             self.assertEqual(response.headers.get("Expires"), "0")
 
+    def test_favicon_route_serves_static_asset(self) -> None:
+        db_path = self.tmp / "bot.sqlite3"
+        env_values = {
+            "DATABASE_PATH": str(db_path),
+            "APP_SECRET": "secret",
+            "USE_WAITRESS": "0",
+            "RUN_SCHEDULER": "0",
+            "ADMIN_USERNAME": "admin",
+            "ADMIN_PASSWORD": "password",
+        }
+        with env_context(env_values):
+            app = create_app(start_scheduler=False)
+            client = app.test_client()
+
+            response = client.get("/favicon.ico", follow_redirects=True)
+            try:
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.mimetype, "image/svg+xml")
+                self.assertIn("<svg", response.get_data(as_text=True))
+            finally:
+                response.close()
+
     def test_http_production_deploy_does_not_force_secure_session_cookie(self) -> None:
         db_path = self.tmp / "bot.sqlite3"
         env_values = {

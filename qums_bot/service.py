@@ -67,6 +67,23 @@ NOTIFICATION_CHANNEL_MODE_LABELS: dict[str, str] = {
     "paused": "Paused",
 }
 
+NOTIFICATION_ACTION_GUARDS: dict[str, str] = {
+    "morning_summary": "send_morning",
+    "lecture_upcoming_alert": "send_morning",
+    "lecture_live_alert": "send_morning",
+    "attendance_summary_report": "send_attendance_summary",
+    "attendance_update": "send_attendance_summary",
+    "attendance_pending": "send_attendance_summary",
+    "lecture_finished_status": "send_attendance_summary",
+    "attendance_summary_change": "send_attendance_summary",
+    "attendance_correction": "send_attendance_summary",
+    "daily_report": "send_day_report",
+    "substitution_report": "send_substitution_report",
+    "substitution_alert": "send_substitution_report",
+    "attendance_shortage_report": "send_shortage_report",
+    "low_attendance_alert": "send_shortage_report",
+}
+
 ERP_SESSION_MONITOR_COOLDOWN_MINUTES = 15
 ERP_SESSION_EXPIRED_STATUS_TEXT = "ERP session expired. Open the dashboard and complete login again with a fresh captcha."
 LECTURE_UPCOMING_ALERT_LEAD_SECONDS = 60
@@ -330,6 +347,12 @@ class BotService:
             raise ERPClientError("Notifications are paused for this student profile.")
         if not self._delivery_targets(student):
             raise ERPClientError("Telegram delivery is selected, but no reachable Telegram chat id is configured.")
+
+    def notification_action_guard(self, history_category: str | None) -> str | None:
+        normalized = str(history_category or "").strip().lower()
+        if not normalized:
+            return None
+        return NOTIFICATION_ACTION_GUARDS.get(normalized)
 
     def delete_student(self, student_id: int) -> bool:
         return self.db.delete_student(student_id)
@@ -3169,6 +3192,8 @@ class BotService:
         for student in self.db.list_students():
             if not student.enabled:
                 continue
+            if self._student_has_known_expired_erp_session(student):
+                continue
             student_now = self._now_for_student(student, current)
             try:
                 lecture_events = self.db.get_lecture_events_for_day(student.id, student_now.date())
@@ -3515,11 +3540,22 @@ class BotService:
 
         if not student.session_updated_at:
             return
+        login_url, login_handoff_error = self._prepare_erp_login_handoff(student)
         if self.db.has_notification_event(student.id, "erp_session_expired", student.session_updated_at):
             return
 
-        student_body = self._render_erp_session_expired_alert(student, detected_at=detected_at)
-        admin_body = self._render_erp_session_expired_admin_alert(student, detected_at=detected_at)
+        student_body = self._render_erp_session_expired_alert(
+            student,
+            detected_at=detected_at,
+            login_url=login_url,
+            login_handoff_error=login_handoff_error,
+        )
+        admin_body = self._render_erp_session_expired_admin_alert(
+            student,
+            detected_at=detected_at,
+            login_url=login_url,
+            login_handoff_error=login_handoff_error,
+        )
         delivered = False
         delivery_errors: list[str] = []
 
@@ -3562,6 +3598,17 @@ class BotService:
                 student.id,
                 f"{status_text} Telegram alerts could not be delivered.",
             )
+
+    def _prepare_erp_login_handoff(self, student: Student) -> tuple[str | None, str | None]:
+        pending = self.db.get_pending_login(student.id)
+        if pending is not None:
+            return self._dashboard_login_url(student.id), None
+        try:
+            pending = self.erp.start_manual_login(student)
+        except Exception as exc:
+            return None, str(exc) or "Automatic login preparation failed."
+        self.db.save_pending_login(pending)
+        return self._dashboard_login_url(student.id), None
 
     def _run_student_erp_action(
         self,
@@ -5559,48 +5606,72 @@ class BotService:
         student: Student,
         *,
         detected_at: datetime,
+        login_url: str | None = None,
+        login_handoff_error: str | None = None,
     ) -> str:
-        return "\n".join(
-            [
-                "ERP Session Alert",
-                "",
-                f"Student: {student.student_name or student.student_label}",
-                f"ERP user id: {student.user_name}",
-                f"Detected at: {self._format_datetime(detected_at)}",
-                "Status: Your ERP session has expired",
-                "",
-                "Impact:",
-                "Lecture-end attendance scans and summary checks are paused until ERP login is restored.",
-                "",
-                "Action required:",
-                "Open the dashboard and complete ERP login again with a fresh captcha.",
-            ]
-        )
+        lines = [
+            "ERP Session Alert",
+            "",
+            f"Student: {student.student_name or student.student_label}",
+            f"ERP user id: {student.user_name}",
+            f"Detected at: {self._format_datetime(detected_at)}",
+            "Status: Your ERP session has expired",
+            "",
+            "Impact:",
+            "Lecture-end attendance scans and summary checks are paused until ERP login is restored.",
+            "",
+            "Action required:",
+        ]
+        if login_url:
+            lines.extend(
+                [
+                    "A fresh ERP login handoff is ready.",
+                    f"Open this page to enter the captcha: {login_url}",
+                ]
+            )
+        else:
+            lines.append("Open the dashboard and complete ERP login again with a fresh captcha.")
+            if login_handoff_error:
+                lines.append(f"Automatic login preparation failed: {login_handoff_error}")
+        return "\n".join(lines)
 
     def _render_erp_session_expired_admin_alert(
         self,
         student: Student,
         *,
         detected_at: datetime,
+        login_url: str | None = None,
+        login_handoff_error: str | None = None,
     ) -> str:
-        return "\n".join(
-            [
-                "ERP Session Alert",
-                "",
-                f"Student: {student.student_name or student.student_label}",
-                f"ERP user id: {student.user_name}",
-                f"Website login username: {student.site_login_username or 'Not set'}",
-                f"Telegram chat id: {student.telegram_chat_id or 'Not set'}",
-                f"Detected at: {self._format_datetime(detected_at)}",
-                "Status: The student's ERP session has expired",
-                "",
-                "Impact:",
-                "Lecture-end attendance scans and summary checks are paused until ERP login is restored.",
-                "",
-                "Action required:",
-                f"{student.student_name or student.student_label} must open the dashboard and complete ERP login again with a fresh captcha.",
-            ]
-        )
+        lines = [
+            "ERP Session Alert",
+            "",
+            f"Student: {student.student_name or student.student_label}",
+            f"ERP user id: {student.user_name}",
+            f"Website login username: {student.site_login_username or 'Not set'}",
+            f"Telegram chat id: {student.telegram_chat_id or 'Not set'}",
+            f"Detected at: {self._format_datetime(detected_at)}",
+            "Status: The student's ERP session has expired",
+            "",
+            "Impact:",
+            "Lecture-end attendance scans and summary checks are paused until ERP login is restored.",
+            "",
+            "Action required:",
+        ]
+        if login_url:
+            lines.extend(
+                [
+                    "A fresh ERP login handoff is ready.",
+                    f"Open this page to enter the captcha: {login_url}",
+                ]
+            )
+        else:
+            lines.append(
+                f"{student.student_name or student.student_label} must open the dashboard and complete ERP login again with a fresh captcha."
+            )
+            if login_handoff_error:
+                lines.append(f"Automatic login preparation failed: {login_handoff_error}")
+        return "\n".join(lines)
 
     def _render_low_attendance_message(
         self,
@@ -6399,6 +6470,10 @@ class BotService:
             return "ERP session saved."
         return "Not started"
 
+    def _student_has_known_expired_erp_session(self, student: Student) -> bool:
+        status_text = self._student_erp_status_text(student).strip().lower()
+        return status_text.startswith("erp session expired")
+
     def _student_bot_activity_text(self, student: Student) -> str:
         return (student.last_bot_activity_text or "").strip() or "No recent bot activity recorded."
 
@@ -6480,6 +6555,9 @@ class BotService:
         title = body.splitlines()[0].strip() if body.strip() else message_kind
         category = history_category or message_kind
         if not student.enabled or self.notifications_paused(student):
+            return
+        required_action = self.notification_action_guard(category)
+        if required_action and self.is_student_action_disabled(student, required_action):
             return
         targets = self._delivery_targets(student)
         if not targets:
@@ -6570,11 +6648,24 @@ class BotService:
             return
         raise NotificationDeliveryError("; ".join(delivery_errors))
 
+    def _resolve_retry_delivery_target(self, student: Student, message) -> tuple[str, str]:
+        channel = str(getattr(message, "channel", "") or "").strip().lower()
+        recipient = str(getattr(message, "recipient", "") or "").strip()
+        if channel and recipient:
+            return channel, recipient
+        for target_channel, target_recipient in self._delivery_targets(student):
+            if target_channel == channel and target_recipient:
+                return target_channel, target_recipient
+        raise NotificationDeliveryError(
+            f"No active {channel or 'notification'} delivery target is available for retry."
+        )
+
     def _deliver_retry_message(self, student: Student, message) -> None:
+        channel, recipient = self._resolve_retry_delivery_target(student, message)
         try:
             provider_sid = self._send_via_channel(
-                message.channel,
-                message.recipient,
+                channel,
+                recipient,
                 message.body,
                 title=message.title,
                 message_kind=message.message_kind,
@@ -6604,8 +6695,8 @@ class BotService:
         try:
             self.db.insert_message_history(
                 student_id=student.id,
-                channel=message.channel,
-                recipient=message.recipient,
+                channel=channel,
+                recipient=recipient,
                 category=message.category,
                 message_kind=message.message_kind,
                 provider_sid=provider_sid,

@@ -13,10 +13,12 @@ from .service import BotService
 try:
     from redis import Redis
     from rq import Queue, Worker
-except ImportError:  # pragma: no cover - optional dependency path
+    RQ_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover - optional dependency path
     Queue = None
     Redis = None
     Worker = None
+    RQ_IMPORT_ERROR = exc
 
 
 @dataclass(frozen=True)
@@ -67,7 +69,8 @@ class TaskDispatcher:
 
     def _enqueue_rq(self, callback_name: str, *, job_name: str, slot_key: str) -> None:
         if Queue is None or Redis is None:
-            raise RuntimeError("TASK_QUEUE_MODE=rq requires the redis and rq packages.")
+            detail = f" ({RQ_IMPORT_ERROR})" if RQ_IMPORT_ERROR else ""
+            raise RuntimeError(f"TASK_QUEUE_MODE=rq requires a working redis/rq runtime{detail}.")
         if not self.settings.redis_url:
             raise RuntimeError("TASK_QUEUE_MODE=rq requires REDIS_URL.")
         if self._queue is None:
@@ -87,7 +90,8 @@ class TaskDispatcher:
 
     def _redis_connection(self):
         if Redis is None:
-            raise RuntimeError("TASK_QUEUE_MODE=rq requires the redis package.")
+            detail = f" ({RQ_IMPORT_ERROR})" if RQ_IMPORT_ERROR else ""
+            raise RuntimeError(f"TASK_QUEUE_MODE=rq requires a working redis runtime{detail}.")
         if not self.settings.redis_url:
             raise RuntimeError("TASK_QUEUE_MODE=rq requires REDIS_URL.")
         if self._redis is None:
@@ -133,7 +137,8 @@ def run_worker() -> None:
     if settings.task_queue_mode != "rq":
         raise RuntimeError("The worker can only run when TASK_QUEUE_MODE=rq.")
     if Queue is None or Redis is None or Worker is None:
-        raise RuntimeError("TASK_QUEUE_MODE=rq requires the redis and rq packages.")
+        detail = f" ({RQ_IMPORT_ERROR})" if RQ_IMPORT_ERROR else ""
+        raise RuntimeError(f"TASK_QUEUE_MODE=rq requires a working redis/rq runtime{detail}.")
     if not settings.redis_url:
         raise RuntimeError("TASK_QUEUE_MODE=rq requires REDIS_URL.")
 

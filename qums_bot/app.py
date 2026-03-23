@@ -83,6 +83,7 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             return None
         public_endpoints = {
             "healthz",
+            "favicon",
             "dashboard",
             "dashboard_live_data",
             "submit_application",
@@ -209,6 +210,10 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             next_path=_safe_next_path(request.args.get("next")),
             recovery_configured=bool(_get_admin_account_state()["recovery_telegram_username"]),
         )
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return redirect(url_for("static", filename="favicon.svg"))
 
     @app.get("/login")
     def login_alias():
