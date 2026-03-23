@@ -205,7 +205,14 @@ class BotService:
         if not self.db.try_claim_dead_letter_outbound_message(idempotency_key):
             raise ERPClientError("This dead-letter message is already being retried or has already changed state.")
         student = self._require_student(message.student_id)
-        self._deliver_retry_message(student, message)
+        try:
+            self._deliver_retry_message(student, message)
+        except Exception as exc:
+            self.db.restore_dead_letter_outbound_message(
+                idempotency_key,
+                error_text=str(exc) or "Retry failed before delivery could start.",
+            )
+            raise
         updated = self.db.get_outbound_message(idempotency_key)
         if not updated:
             raise ERPClientError("Dead-letter message state could not be read after retry.")
@@ -6477,6 +6484,17 @@ class BotService:
     def _student_bot_activity_text(self, student: Student) -> str:
         return (student.last_bot_activity_text or "").strip() or "No recent bot activity recorded."
 
+    def _notification_block_reason(self, student: Student, category: str) -> str | None:
+        if not student.enabled:
+            return "This student profile is disabled."
+        if self.notifications_paused(student):
+            return "Notifications are paused for this student."
+        required_action = self.notification_action_guard(category)
+        if required_action and self.is_student_action_disabled(student, required_action):
+            action_label = STUDENT_ACTION_LABELS.get(required_action, required_action.replace("_", " "))
+            return f"{action_label} is disabled for this student."
+        return None
+
     def _send_notification(
         self,
         student: Student,
@@ -6554,10 +6572,7 @@ class BotService:
     ) -> None:
         title = body.splitlines()[0].strip() if body.strip() else message_kind
         category = history_category or message_kind
-        if not student.enabled or self.notifications_paused(student):
-            return
-        required_action = self.notification_action_guard(category)
-        if required_action and self.is_student_action_disabled(student, required_action):
+        if self._notification_block_reason(student, category):
             return
         targets = self._delivery_targets(student)
         if not targets:
@@ -6649,10 +6664,12 @@ class BotService:
         raise NotificationDeliveryError("; ".join(delivery_errors))
 
     def _resolve_retry_delivery_target(self, student: Student, message) -> tuple[str, str]:
+        block_reason = self._notification_block_reason(student, str(getattr(message, "category", "") or ""))
+        if block_reason:
+            raise NotificationDeliveryError(block_reason)
         channel = str(getattr(message, "channel", "") or "").strip().lower()
-        recipient = str(getattr(message, "recipient", "") or "").strip()
-        if channel and recipient:
-            return channel, recipient
+        if not channel:
+            raise NotificationDeliveryError("The stored delivery channel is missing for this dead-letter message.")
         for target_channel, target_recipient in self._delivery_targets(student):
             if target_channel == channel and target_recipient:
                 return target_channel, target_recipient

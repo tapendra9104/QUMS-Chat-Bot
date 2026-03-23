@@ -1575,6 +1575,24 @@ class Database:
             )
         return cursor.rowcount > 0
 
+    def restore_dead_letter_outbound_message(self, idempotency_key: str, *, error_text: str | None = None) -> bool:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE outbound_messages
+                SET status = 'dead_letter',
+                    delivery_error_message = COALESCE(?, delivery_error_message),
+                    next_retry_at = NULL,
+                    dead_lettered_at = COALESCE(dead_lettered_at, ?),
+                    updated_at = ?
+                WHERE idempotency_key = ?
+                  AND status = 'claimed'
+                """,
+                (error_text, now, now, idempotency_key),
+            )
+        return cursor.rowcount > 0
+
     def get_dead_letter_messages(self, limit: int = 20) -> list[OutboundMessageRecord]:
         return self.get_dead_letter_messages_for_student(student_id=None, limit=limit)
 

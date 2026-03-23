@@ -3517,6 +3517,118 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0].recipient, student.telegram_chat_id)
 
+    def test_manual_dead_letter_retry_uses_current_telegram_target_after_profile_change(self) -> None:
+        student_id = self._add_student(label="Moved Chat Student", timezone="Asia/Kolkata")
+        student = self.db.get_student(student_id)
+        assert student is not None
+        telegram = ConfiguredTelegram()
+        service = self._make_service(telegram=telegram)
+
+        claimed = self.db.claim_outbound_message(
+            idempotency_key="attendance_update:moved-chat-dead-letter-test",
+            student_id=student_id,
+            channel="telegram",
+            recipient="5570554001",
+            category="attendance_update",
+            message_kind="attendance",
+            title="Attendance Update",
+            body="Attendance Update\n\nStatus: Present",
+        )
+        self.assertTrue(claimed)
+        self.db.mark_outbound_message_failed(
+            "attendance_update:moved-chat-dead-letter-test",
+            "temporary failure",
+            retry_limit=1,
+            retry_backoff_seconds=1,
+        )
+        with self.db._connect() as conn:
+            conn.execute(
+                "UPDATE students SET telegram_chat_id = ?, updated_at = ? WHERE id = ?",
+                ("5570554999", datetime.now(ZoneInfo("UTC")).replace(microsecond=0).isoformat(), student_id),
+            )
+
+        result = service.retry_dead_letter_message("attendance_update:moved-chat-dead-letter-test")
+
+        self.assertIn("retried successfully", result.lower())
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertEqual(telegram.messages[0][0], "5570554999")
+
+    def test_manual_dead_letter_retry_respects_paused_notifications_and_restores_dead_letter(self) -> None:
+        student_id = self._add_student(label="Paused Dead Letter Student", timezone="Asia/Kolkata")
+        telegram = ConfiguredTelegram()
+        service = self._make_service(telegram=telegram)
+
+        claimed = self.db.claim_outbound_message(
+            idempotency_key="attendance_update:paused-dead-letter-test",
+            student_id=student_id,
+            channel="telegram",
+            recipient="5570554766",
+            category="attendance_update",
+            message_kind="attendance",
+            title="Attendance Update",
+            body="Attendance Update\n\nStatus: Present",
+        )
+        self.assertTrue(claimed)
+        self.db.mark_outbound_message_failed(
+            "attendance_update:paused-dead-letter-test",
+            "temporary failure",
+            retry_limit=1,
+            retry_backoff_seconds=1,
+        )
+        self.db.update_student_controls(
+            student_id=student_id,
+            enabled=True,
+            notification_channel_mode="paused",
+            disabled_actions_json="[]",
+        )
+
+        with self.assertRaises(NotificationDeliveryError):
+            service.retry_dead_letter_message("attendance_update:paused-dead-letter-test")
+
+        updated = self.db.get_outbound_message("attendance_update:paused-dead-letter-test")
+        assert updated is not None
+        self.assertEqual(updated.status, "dead_letter")
+        self.assertIn("paused", updated.delivery_error_message or "")
+        self.assertEqual(telegram.messages, [])
+
+    def test_manual_dead_letter_retry_respects_disabled_feature_and_restores_dead_letter(self) -> None:
+        student_id = self._add_student(label="Blocked Dead Letter Student", timezone="Asia/Kolkata")
+        telegram = ConfiguredTelegram()
+        service = self._make_service(telegram=telegram)
+
+        claimed = self.db.claim_outbound_message(
+            idempotency_key="attendance_update:blocked-dead-letter-test",
+            student_id=student_id,
+            channel="telegram",
+            recipient="5570554766",
+            category="attendance_update",
+            message_kind="attendance",
+            title="Attendance Update",
+            body="Attendance Update\n\nStatus: Present",
+        )
+        self.assertTrue(claimed)
+        self.db.mark_outbound_message_failed(
+            "attendance_update:blocked-dead-letter-test",
+            "temporary failure",
+            retry_limit=1,
+            retry_backoff_seconds=1,
+        )
+        self.db.update_student_controls(
+            student_id=student_id,
+            enabled=True,
+            notification_channel_mode="telegram_only",
+            disabled_actions_json='["send_attendance_summary"]',
+        )
+
+        with self.assertRaises(NotificationDeliveryError):
+            service.retry_dead_letter_message("attendance_update:blocked-dead-letter-test")
+
+        updated = self.db.get_outbound_message("attendance_update:blocked-dead-letter-test")
+        assert updated is not None
+        self.assertEqual(updated.status, "dead_letter")
+        self.assertIn("disabled", updated.delivery_error_message or "")
+        self.assertEqual(telegram.messages, [])
+
     def test_force_resend_evening_report_uses_new_delivery_idempotency(self) -> None:
         student_id = self._add_student(label="Force Report Student", timezone="Asia/Kolkata")
         student = self.db.get_student(student_id)
