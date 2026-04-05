@@ -1,13 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0e4f64" />
-      <stop offset="100%" stop-color="#1b8aa5" />
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="55%" stop-color="#5b21b6"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
     </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="rgba(0,0,0,0.4)"/>
+    </filter>
   </defs>
-  <rect width="64" height="64" rx="16" fill="url(#bg)" />
-  <path
-    d="M19 20h18c5.523 0 10 4.477 10 10v14H37V31c0-1.657-1.343-3-3-3H29v16H19V20Zm10 8h5c1.105 0 2 .895 2 2v4h-7v-6Z"
-    fill="#f4f8fb"
-  />
+  <rect width="64" height="64" rx="16" fill="url(#bg)" filter="url(#shadow)"/>
+  <!-- Inner highlight -->
+  <rect x="1" y="1" width="62" height="30" rx="15" fill="rgba(255,255,255,0.08)"/>
+  <g stroke="white" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.95">
+    <path d="M32 13L15 22l17 9 17-9-17-9z"/>
+    <path d="M15 40l17 9 17-9"/>
+    <path d="M15 31l17 9 17-9"/>
+  </g>
 </svg>

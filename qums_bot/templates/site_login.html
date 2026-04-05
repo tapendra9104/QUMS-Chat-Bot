@@ -3,50 +3,88 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>QUMS Bot</title>
-    <meta name="theme-color" content="#0e4f64">
+    <title>QUMS Bot — Student Sign In</title>
+    <meta name="description" content="Student sign in for the QUMS Bot automation portal.">
+    <meta name="theme-color" content="#0d0b14">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
 </head>
 <body class="auth-body">
     <div class="auth-shell">
-        <section class="auth-card auth-card--md">
-            <div class="auth-hero">
-                <h1 class="auth-title">QUMS Bot</h1>
-                <p class="meta auth-hero-meta">Student sign in with the website login username and password you created during signup or received after admin approval.</p>
+
+        <!-- Left: Illustrated art panel -->
+        <aside class="auth-panel-art">
+            <img class="auth-panel-art-img"
+                 src="{{ url_for('static', filename='auth_side_panel.png') }}"
+                 alt="University campus at sunset with students">
+            <div class="auth-features">
+                <div class="auth-features-logo">QUMS Bot</div>
+                <div class="auth-features-tagline">Student Portal</div>
             </div>
-            <div class="auth-content">
-                <p class="meta">
-                    Forgot your password? <a href="{{ url_for('student_forgot_password') }}">Reset it with Telegram</a>.
-                </p>
-                <p class="meta">
-                    Need admin access instead? <a href="{{ admin_login_path }}">Open admin login</a>.
-                </p>
-                <p class="meta">
-                    Need a new account? Open the dashboard and use <strong>Sign Up &amp; Submit Application</strong> first.
-                </p>
-
-                {% with messages = get_flashed_messages(with_categories=true) %}
-                    {% if messages %}
-                        {% for category, message in messages %}
-                            <div class="flash {{ category }}">{{ message }}</div>
-                        {% endfor %}
-                    {% endif %}
-                {% endwith %}
-
-                <form method="post" action="{{ url_for('student_login_submit') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <input type="hidden" name="next_path" value="{{ next_path }}">
-                    <label for="login_username">Login username</label>
-                    <input id="login_username" name="login_username" type="text" autocomplete="username" required>
-
-                    <label for="password">Password</label>
-                    <input id="password" name="password" type="password" autocomplete="current-password" required>
-
-                    <button type="submit">Sign In</button>
-                </form>
-                <a class="button-link secondary" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
+            <div class="auth-panel-quote">
+                <blockquote>"Your attendance, schedule, and shortage alerts — all handled automatically. Just focus on learning."</blockquote>
+                <cite>— QUMS Student Automation</cite>
             </div>
-        </section>
+        </aside>
+
+        <!-- Right: Form panel -->
+        <div class="auth-panel-form">
+            <section class="auth-card auth-card--md" role="main">
+                <div class="auth-hero">
+                    <div class="auth-brand">
+                        <div class="auth-brand-icon">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <div class="auth-brand-name">QUMS Bot</div>
+                            <div class="auth-brand-tag">Student Portal</div>
+                        </div>
+                    </div>
+                    <h1 class="auth-title">Student Sign In</h1>
+                    <p class="auth-hero-meta">Use the login credentials you created during sign-up or that were sent after approval.</p>
+                </div>
+
+                <div class="auth-content">
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="flash {{ category }}">{{ message }}</div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+
+                    <form method="post" action="{{ url_for('student_login_submit') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="next_path" value="{{ next_path }}">
+
+                        <label for="login_username">Login Username</label>
+                        <input id="login_username" name="login_username" type="text" autocomplete="username" required placeholder="your.username">
+
+                        <label for="password">Password</label>
+                        <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="••••••••">
+
+                        <div style="margin-top: 4px;">
+                            <button type="submit" id="student-login-btn">Sign In</button>
+                        </div>
+                    </form>
+
+                    <div class="auth-divider">quick links</div>
+
+                    <div class="auth-actions">
+                        <a class="button-link ghost" href="{{ url_for('student_forgot_password') }}">Forgot Password?</a>
+                        <a class="button-link ghost" href="{{ admin_login_path }}">Admin Login</a>
+                        <a class="button-link ghost" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
+                    </div>
+
+                    <p class="meta" style="margin-top:16px;">
+                        No account yet? Open the dashboard and use <strong style="color:var(--amber)">Sign Up &amp; Submit Application</strong>.
+                    </p>
+                </div>
+            </section>
+        </div>
+
     </div>
 </body>
 </html>

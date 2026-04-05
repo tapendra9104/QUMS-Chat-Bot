@@ -1,88 +1,121 @@
 <!doctype html>
 <html lang="en">
+
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>QUMS Bot Dashboard</title>
-    <meta name="theme-color" content="#0e4f64">
+    <title>QUMS — Quantum University Roorkee</title>
+    <meta name="description" content="QUMS Academic Portal — Quantum University Roorkee student management, attendance, and scheduling.">
+    <meta name="theme-color" content="#1B3A5C">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    <script>
+        /* Theme initializer - runs before paint to prevent flash */
+        (function () {
+            var saved = localStorage.getItem("qums-theme");
+            var theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+            document.documentElement.setAttribute("data-theme", theme);
+        }());
+    </script>
 </head>
-<body class="dashboard-body" data-refresh-seconds="{{ settings.dashboard_auto_refresh_seconds }}" data-dashboard-auth-role="{% if is_admin_authenticated %}admin{% elif is_student_authenticated %}student{% elif is_pending_authenticated %}pending{% else %}public{% endif %}">
+
+<body class="dashboard-body" data-refresh-seconds="{{ settings.dashboard_auto_refresh_seconds }}"
+    data-dashboard-auth-role="{% if is_admin_authenticated %}admin{% elif is_student_authenticated %}student{% elif is_pending_authenticated %}pending{% else %}public{% endif %}">
     <div class="dashboard-shell">
         <section class="hero">
+            <div class="hero-shimmer"></div>
             <div class="hero-top">
                 <div class="hero-copy">
-                    <span class="eyebrow">QUMS Automation Console</span>
+                    <div class="hero-brand">
+                        <div class="hero-brand-icon">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M2 10l10-5 10 5-10 5-10-5z" fill="#fff"/>
+                                <path d="M6 12.5v3.5c0 1.1 2.7 2 6 2s6-.9 6-2v-3.5" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+                                <path d="M20 10v6" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+                                <circle cx="20" cy="16.5" r="1" fill="#fff"/>
+                            </svg>
+                        </div>
+                        <span class="hero-brand-text">Quantum University Roorkee</span>
+                    </div>
+                    <span class="eyebrow">Academic Services Portal</span>
                     <h1>
                         {% if is_admin_authenticated %}
-                            Admin Operations Dashboard
+                        Admin Operations Dashboard
                         {% elif is_student_authenticated %}
-                            Student Control Dashboard
+                        Student Control Dashboard
                         {% elif is_pending_authenticated %}
-                            Application Access Dashboard
+                        Application Access Dashboard
                         {% else %}
-                            QUMS Bot Access Portal
+                        QUMS Bot Access Portal
                         {% endif %}
                     </h1>
                     <p class="hero-lead">
                         {% if is_admin_authenticated %}
-                            Central workspace for student operations, delivery routing, application review, and ERP handoff tasks. ERP sign-in still requires manual CAPTCHA completion in the dashboard.
+                        Central workspace for student operations, delivery routing, application review, and ERP handoff
+                        tasks. ERP sign-in still requires manual CAPTCHA completion in the dashboard.
                         {% elif is_student_authenticated %}
-                            Review your own activity, delivery history, manual actions, and account security settings from one place.
+                        Review your own activity, delivery history, manual actions, and account security settings from
+                        one place.
                         {% elif is_pending_authenticated %}
-                            Your website account is active. You can monitor your application here, but student features remain unavailable until the request is approved.
+                        Your website account is active. You can monitor your application here, but student features
+                        remain unavailable until the request is approved.
                         {% else %}
-                            Create a website account, submit your ERP access request, and track the application from one professional access portal.
+                        Create a website account, submit your ERP access request, and track the application from one
+                        professional access portal.
                         {% endif %}
                     </p>
                     <div class="chip-row">
                         <span class="chip">Role: {{ viewer_session.role | title }}</span>
                         <span class="chip">Login: {{ viewer_session.login_path }}</span>
                         {% if is_admin_authenticated %}
-                            <span class="chip">Env: {{ settings.app_env }}</span>
-                            <span class="chip">Server: {{ "waitress" if settings.use_waitress else "flask-dev" }}</span>
-                            <span class="chip">Scheduler: {{ "Live" if scheduler_active else "Paused" }}</span>
-                            <span class="chip">Telegram: {{ "Configured" if telegram_configured else "Not configured" }}</span>
-                            <span class="chip">Refresh: {{ settings.dashboard_auto_refresh_seconds }}s</span>
+                        <span class="chip">Env: {{ settings.app_env }}</span>
+                        <span class="chip">Server: {{ "waitress" if settings.use_waitress else "flask-dev" }}</span>
+                        <span class="chip">Scheduler: {{ "Live" if scheduler_active else "Paused" }}</span>
+                        <span class="chip">Telegram: {{ "Configured" if telegram_configured else "Not configured"
+                            }}</span>
+                        <span class="chip">Refresh: {{ settings.dashboard_auto_refresh_seconds }}s</span>
                         {% elif is_student_authenticated %}
-                            <span class="chip">Scoped student view</span>
-                            <span class="chip">Telegram verified recovery</span>
+                        <span class="chip">Scoped student view</span>
+                        <span class="chip">Telegram verified recovery</span>
                         {% elif is_pending_authenticated %}
-                            <span class="chip">Application awaiting review</span>
-                            <span class="chip">Website access active</span>
+                        <span class="chip">Application awaiting review</span>
+                        <span class="chip">Website access active</span>
                         {% else %}
-                            <span class="chip">Public access</span>
-                            {% if settings.telegram_bot_link %}
-                                <span class="chip">Telegram bot available</span>
-                            {% endif %}
+                        <span class="chip">Public access</span>
+                        {% if settings.telegram_bot_link %}
+                        <span class="chip">Telegram bot available</span>
+                        {% endif %}
                         {% endif %}
                     </div>
                     {% if is_admin_authenticated %}
-                        <p class="hero-note">
-                            Morning digest: {{ settings.morning_digest_time }} |
-                            Evening report fallback: {{ settings.evening_report_time }} |
-                            Attendance poll: {{ settings.attendance_poll_interval_minutes }} minute(s) |
-                            Substitution poll: {{ settings.substitution_poll_interval_minutes }} minute(s) |
-                            Monitor poll: {{ settings.monitor_poll_interval_minutes }} minute(s) |
-                            Low attendance thresholds: {{ settings.low_attendance_thresholds | join(', ') }}% |
-                            Task queue mode: {{ settings.task_queue_mode }} |
-                            Sentry: {{ "Enabled" if sentry_enabled else "Disabled" }}
-                        </p>
+                    <p class="hero-note">
+                        Morning digest: {{ settings.morning_digest_time }} |
+                        Evening report fallback: {{ settings.evening_report_time }} |
+                        Attendance poll: {{ settings.attendance_poll_interval_minutes }} minute(s) |
+                        Substitution poll: {{ settings.substitution_poll_interval_minutes }} minute(s) |
+                        Monitor poll: {{ settings.monitor_poll_interval_minutes }} minute(s) |
+                        Low attendance thresholds: {{ settings.low_attendance_thresholds | join(', ') }}% |
+                        Task queue mode: {{ settings.task_queue_mode }} |
+                        Sentry: {{ "Enabled" if sentry_enabled else "Disabled" }}
+                    </p>
                     {% else %}
-                        <p class="hero-note">
-                            {% if is_student_authenticated %}
-                                Student view: only your own dashboard data is visible here.
-                            {% elif is_pending_authenticated %}
-                                Pending view: your account is signed in, but dashboard actions, profile management, and live automation features remain unavailable until approval.
-                            {% else %}
-                                Public view: prototype view only. Live student records and internal operational data remain hidden until sign-in.
-                            {% endif %}
-                        </p>
-                        {% if settings.telegram_bot_link %}
-                            <p class="hero-note">
-                                Telegram bot: <a href="{{ settings.telegram_bot_link }}" target="_blank" rel="noopener noreferrer">{{ settings.telegram_bot_link }}</a>
-                            </p>
+                    <p class="hero-note">
+                        {% if is_student_authenticated %}
+                        Student view: only your own dashboard data is visible here.
+                        {% elif is_pending_authenticated %}
+                        Pending view: your account is signed in, but dashboard actions, profile management, and live
+                        automation features remain unavailable until approval.
+                        {% else %}
+                        Public view: prototype view only. Live student records and internal operational data remain
+                        hidden until sign-in.
                         {% endif %}
+                    </p>
+                    {% if settings.telegram_bot_link %}
+                    <p class="hero-note">
+                        Telegram bot: <a href="{{ settings.telegram_bot_link }}" target="_blank"
+                            rel="noopener noreferrer">{{ settings.telegram_bot_link }}</a>
+                    </p>
+                    {% endif %}
                     {% endif %}
                 </div>
                 <div class="hero-action-stack">
@@ -94,63 +127,70 @@
                             Login page: <code>{{ viewer_session.login_path }}</code>
                         </div>
                     </div>
-                    <div class="hero-session-card hero-sync-card js-sync-indicator" data-state="{% if settings.dashboard_auto_refresh_seconds > 0 %}live{% else %}paused{% endif %}">
+                    <div class="hero-session-card hero-sync-card js-sync-indicator"
+                        data-state="{% if settings.dashboard_auto_refresh_seconds > 0 %}live{% else %}paused{% endif %}">
                         <div class="live-label">Live Dashboard Sync</div>
                         <div class="sync-row">
                             <span class="sync-dot js-sync-dot" aria-hidden="true"></span>
                             <div class="live-value sync-status js-refresh-status">
                                 {% if settings.dashboard_auto_refresh_seconds > 0 %}
-                                    Live sync active
+                                Live sync active
                                 {% else %}
-                                    Sync paused
+                                Sync paused
                                 {% endif %}
                             </div>
                         </div>
                         <div class="live-sub js-refresh-note">
                             {% if settings.dashboard_auto_refresh_seconds > 0 %}
-                                Refreshing dashboard panels every {{ settings.dashboard_auto_refresh_seconds }} second{% if settings.dashboard_auto_refresh_seconds != 1 %}s{% endif %}.
+                            Refreshing dashboard panels every {{ settings.dashboard_auto_refresh_seconds }} second{% if
+                            settings.dashboard_auto_refresh_seconds != 1 %}s{% endif %}.
                             {% else %}
-                                Live refresh is disabled in dashboard settings.
+                            Live refresh is disabled in dashboard settings.
                             {% endif %}
                         </div>
                     </div>
                     <div class="actions hero-actions">
                         {% if is_admin_authenticated %}
-                            <form class="inline" method="post" action="{{ url_for('admin_logout') }}">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                <button type="submit" class="ghost">Logout</button>
-                            </form>
+                        <form class="inline" method="post" action="{{ url_for('admin_logout') }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="ghost">Logout</button>
+                        </form>
                         {% elif is_student_authenticated or is_pending_authenticated %}
-                            <form class="inline" method="post" action="{{ url_for('student_logout') }}">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                <button type="submit" class="ghost">Logout</button>
-                            </form>
+                        <form class="inline" method="post" action="{{ url_for('student_logout') }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="ghost">Logout</button>
+                        </form>
                         {% else %}
-                            <a class="button-link ghost" href="{{ url_for('login_alias', next=request.path) }}">Login</a>
+                        <a class="button-link ghost" href="{{ url_for('login_alias', next=request.path) }}">Login</a>
                         {% endif %}
                         {% if is_admin_authenticated %}
-                            <form class="inline" method="post" action="{{ url_for('run_checks') }}">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                <button type="submit" class="secondary">Run Live Checks Now</button>
-                            </form>
-                            <form class="inline" method="post" action="{{ url_for('export_message_history') }}">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                <input type="hidden" name="message_q" value="{{ message_history_filters.query }}">
-                                <input type="hidden" name="message_channel" value="{{ message_history_filters.channel }}">
-                                <input type="hidden" name="message_category" value="{{ message_history_filters.category }}">
-                                <input type="hidden" name="page" value="{{ message_history_pagination.page }}">
-                                <input type="hidden" name="per_page" value="{{ message_history_pagination.per_page }}">
-                                <button type="submit" class="ghost">Export Message CSV</button>
-                            </form>
-                            <form class="inline" method="post" action="{{ url_for('export_audit_log') }}">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                <input type="hidden" name="audit_q" value="{{ audit_log_filters.query }}">
-                                <input type="hidden" name="audit_action" value="{{ audit_log_filters.action }}">
-                                <input type="hidden" name="page" value="{{ audit_log_pagination.page }}">
-                                <input type="hidden" name="per_page" value="{{ audit_log_pagination.per_page }}">
-                                <button type="submit" class="ghost">Export Audit CSV</button>
-                            </form>
-                            <button type="button" class="ghost js-refresh-toggle" data-refresh-seconds="{{ settings.dashboard_auto_refresh_seconds }}">Live sync: on</button>
+                        <form class="inline" method="post" action="{{ url_for('run_checks') }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="secondary">Run Live Checks Now</button>
+                        </form>
+                        <form class="inline" method="post" action="{{ url_for('export_message_history') }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="message_q" value="{{ message_history_filters.query }}">
+                            <input type="hidden" name="message_channel" value="{{ message_history_filters.channel }}">
+                            <input type="hidden" name="message_category" value="{{ message_history_filters.category }}">
+                            <input type="hidden" name="page" value="{{ message_history_pagination.page }}">
+                            <input type="hidden" name="per_page" value="{{ message_history_pagination.per_page }}">
+                            <button type="submit" class="ghost">Export Message CSV</button>
+                        </form>
+                        <form class="inline" method="post" action="{{ url_for('export_audit_log') }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="audit_q" value="{{ audit_log_filters.query }}">
+                            <input type="hidden" name="audit_action" value="{{ audit_log_filters.action }}">
+                            <input type="hidden" name="page" value="{{ audit_log_pagination.page }}">
+                            <input type="hidden" name="per_page" value="{{ audit_log_pagination.per_page }}">
+                            <button type="submit" class="ghost">Export Audit CSV</button>
+                        </form>
+                        <button type="button" class="ghost js-refresh-toggle"
+                            data-refresh-seconds="{{ settings.dashboard_auto_refresh_seconds }}">Live sync: on</button>
+                        <button type="button" class="theme-toggle js-theme-toggle" title="Toggle light/dark mode">
+                            <svg class="js-theme-icon" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 3a1 1 0 011 1v1a1 1 0 01-2 0V4a1 1 0 011-1zm0 11a1 1 0 011 1v1a1 1 0 01-2 0v-1a1 1 0 011-1zm7-4a1 1 0 010 2h-1a1 1 0 010-2h1zM5 10a1 1 0 010 2H4a1 1 0 010-2h1zm10.07-3.54a1 1 0 010 1.41l-.7.71a1 1 0 01-1.42-1.42l.71-.7a1 1 0 011.41 0zM7.05 14.24a1 1 0 010 1.41l-.7.71a1 1 0 11-1.42-1.42l.71-.7a1 1 0 011.41 0zm7.07 1.42a1 1 0 01-1.41 0l-.71-.71a1 1 0 011.42-1.41l.7.7a1 1 0 010 1.42zM5.76 7.05a1 1 0 01-1.41 0l-.71-.7a1 1 0 111.41-1.42l.71.71a1 1 0 010 1.41zM10 7a3 3 0 100 6 3 3 0 000-6z"/></svg>
+                            <span class="js-theme-label">Light</span>
+                        </button>
                         {% endif %}
                     </div>
                 </div>
@@ -159,565 +199,624 @@
         </section>
 
         {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="flash {{ category }}">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
+        {% if messages %}
+        {% for category, message in messages %}
+        <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+        {% endif %}
         {% endwith %}
 
         {% if is_admin_authenticated %}
-            <section class="panel" id="action-center-panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Operations</span>
-                        <h2>Action Center</h2>
-                        <p class="meta section-copy">Live operational issues, delivery health, and queue pressure that may need admin attention.</p>
-                    </div>
-                    <span class="section-tag">Live Queue</span>
+        <section class="panel" id="action-center-panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Operations</span>
+                    <h2>Action Center</h2>
+                    <p class="meta section-copy">Live operational issues, delivery health, and queue pressure that may
+                        need admin attention.</p>
                 </div>
-                <p class="meta" id="outbound-queue-summary">
-                    Outbound queue:
-                    claimed <span data-queue-count="claimed">{{ outbound_summary.claimed or 0 }}</span>,
-                    sent <span data-queue-count="sent">{{ outbound_summary.sent or 0 }}</span>,
-                    waiting retry <span data-queue-count="failed">{{ outbound_summary.failed or 0 }}</span>,
-                    dead letter <span data-queue-count="dead_letter">{{ outbound_summary.dead_letter or 0 }}</span>
-                </p>
-                <div id="action-center-results">
-                    {% include "partials/action_center_content.html" %}
-                </div>
-            </section>
+                <span class="section-tag">Live Queue</span>
+            </div>
+            <p class="meta" id="outbound-queue-summary">
+                Outbound queue:
+                claimed <span data-queue-count="claimed">{{ outbound_summary.claimed or 0 }}</span>,
+                sent <span data-queue-count="sent">{{ outbound_summary.sent or 0 }}</span>,
+                waiting retry <span data-queue-count="failed">{{ outbound_summary.failed or 0 }}</span>,
+                dead letter <span data-queue-count="dead_letter">{{ outbound_summary.dead_letter or 0 }}</span>
+            </p>
+            <div id="action-center-results">
+                {% include "partials/action_center_content.html" %}
+            </div>
+        </section>
 
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Access</span>
-                        <h2>Admin Security</h2>
-                        <p class="meta section-copy">
-                            Update the dashboard login username and password. Telegram recovery sends reset codes to the configured admin Telegram chat and verifies the Telegram username you set here.
-                        </p>
-                    </div>
-                    <span class="section-tag">Protected</span>
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Access</span>
+                    <h2>Admin Security</h2>
+                    <p class="meta section-copy">
+                        Update the dashboard login username and password. Telegram recovery sends reset codes to the
+                        configured admin Telegram chat and verifies the Telegram username you set here.
+                    </p>
                 </div>
-                <form method="post" action="{{ url_for('admin_account_update') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <div class="grid">
-                        <div>
-                            <label for="login_username">Login username</label>
-                            <input id="login_username" name="login_username" type="text" value="{{ admin_account.username }}" required>
-                        </div>
-                        <div>
-                            <label for="recovery_telegram_username">Recovery Telegram username</label>
-                            <input
-                                id="recovery_telegram_username"
-                                name="recovery_telegram_username"
-                                type="text"
-                                value="{{ admin_account.recovery_telegram_username }}"
-                                placeholder="@username or https://t.me/username">
-                        </div>
-                        <div>
-                            <label for="current_password">Current password</label>
-                            <input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
-                        </div>
-                        <div>
-                            <label for="new_password">New password</label>
-                            <input id="new_password" name="new_password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current password">
-                        </div>
-                        <div>
-                            <label for="confirm_password">Confirm new password</label>
-                            <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" placeholder="Repeat the new password if changing it">
-                        </div>
-                    </div>
-                    <div class="actions">
-                        <button type="submit">Update Admin Login</button>
-                        <a class="button-link ghost" href="{{ url_for('admin_forgot_password') }}">Forgot Password Recovery</a>
-                    </div>
-                </form>
-            </section>
-
-            <section class="panel" id="student-profile-panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Profiles</span>
-                        <h2>{{ "Edit Student" if edit_student else "Add Student" }}</h2>
-                        <p class="meta section-copy">
-                            Save ERP credentials, website access, delivery routing, and timezone details for each managed student profile.
-                        </p>
-                    </div>
-                    <span class="section-tag">{{ "Editing" if edit_student else "New profile" }}</span>
-                </div>
-                <form method="post" action="{{ url_for('save_student') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    {% if edit_student %}
-                        <input type="hidden" name="student_id" value="{{ edit_student.id }}">
-                    {% endif %}
-                    <div class="grid">
-                        <div>
-                            <label for="student_label">Student label</label>
-                            <input id="student_label" name="student_label" type="text" value="{{ edit_student.student_label if edit_student else '' }}" required>
-                        </div>
-                        <div>
-                            <label for="user_name">ERP user id</label>
-                            <input id="user_name" name="user_name" type="text" value="{{ edit_student.user_name if edit_student else '' }}" required>
-                        </div>
-                        <div>
-                            <label for="password">ERP password</label>
-                            <input id="password" name="password" type="password" placeholder="{{ 'Leave blank to keep existing password' if edit_student else '' }}">
-                        </div>
-                        <div>
-                            <label for="site_login_username">Site login username</label>
-                            <input id="site_login_username" name="site_login_username" type="text" value="{{ edit_student.site_login_username if edit_student else '' }}" placeholder="Optional website login username">
-                        </div>
-                        <div>
-                            <label for="site_login_password">Site login password</label>
-                            <input id="site_login_password" name="site_login_password" type="password" placeholder="{{ 'Leave blank to keep the current site password' if edit_student else 'Leave blank to keep site login disabled' }}">
-                        </div>
-                        <div>
-                            <label for="telegram_chat_id">Telegram chat id (numeric)</label>
-                            <input id="telegram_chat_id" name="telegram_chat_id" type="text" value="{{ edit_student.telegram_chat_id if edit_student else '' }}" placeholder="123456789 or -1001234567890">
-                            <div class="meta">
-                                {% if settings.telegram_bot_link %}
-                                    Open <a href="{{ settings.telegram_bot_link }}" target="_blank" rel="noopener noreferrer">the QUMS Telegram bot</a> and send <code>/start</code> first.
-                                {% else %}
-                                    Open the QUMS Telegram bot and send <code>/start</code> first.
-                                {% endif %}
-                                Check your numeric Telegram user id with <a href="https://t.me/userinfo3bot" target="_blank" rel="noopener noreferrer">@userinfo3bot</a>. Do not enter an <code>@username</code>.
-                            </div>
-                        </div>
-                        <div>
-                            <label for="timezone">Timezone</label>
-                            <input id="timezone" name="timezone" type="text" value="{{ edit_student.timezone if edit_student else settings.local_timezone }}" required>
-                        </div>
-                    </div>
-                    <label class="check">
-                        <input name="enabled" type="checkbox" {% if edit_student and edit_student.enabled or not edit_student %}checked{% endif %}>
-                        Enable morning summary, lecture attendance checks, substitute lecture alerts, evening report, and monitoring alerts
-                    </label>
-                    <div class="actions">
-                        <button type="submit">Save Student</button>
-                        {% if edit_student %}
-                            <a class="button-link ghost" href="{{ url_for('dashboard') }}">Cancel Edit</a>
-                        {% endif %}
-                    </div>
-                </form>
-            </section>
-
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Public Requests</span>
-                        <h2>New User Applications</h2>
-                        <p class="meta section-copy">
-                            Recent website applications waiting for review or already recorded as completed decisions.
-                            {% if application_request_summary.pending_count %}
-                                {{ application_request_summary.pending_count }} request{% if application_request_summary.pending_count != 1 %}s{% endif %} still need admin review.
-                            {% elif application_request_summary.reviewed_count %}
-                                All listed application requests have been processed. {{ application_request_summary.accepted_count }} approved and {{ application_request_summary.rejected_count }} rejected.
-                            {% else %}
-                                Telegram notifications are sent when a new request arrives.
-                            {% endif %}
-                        </p>
-                    </div>
-                    <span class="section-tag{% if application_request_summary.pending_count %} alert{% elif application_request_summary.total_count %} success{% endif %}">
-                        {% if application_request_summary.pending_count %}
-                            {{ application_request_summary.pending_count }} awaiting review
-                        {% elif application_request_summary.total_count %}
-                            All reviewed
-                        {% else %}
-                            0 awaiting review
-                        {% endif %}
-                    </span>
-                </div>
-                {% if application_requests %}
-                    {% for item in application_requests %}
-                        {% set application_view = application_request_views.get(item.id) %}
-                        {% set application_status = item.status|lower %}
-                        <details>
-                            <summary>{{ application_view.created_at if application_view else item.created_at }} | {{ item.applicant_name }} | {{ item.student_label }}</summary>
-                            <p class="meta">
-                                ERP user id: {{ item.user_name }}<br>
-                                RegID: {{ item.reg_id or "Not provided" }}<br>
-                                Telegram: {{ item.telegram_chat_id or "Not provided" }}<br>
-                                Timezone: {{ item.timezone }}<br>
-                                Status: {{ item.status | title }}<br>
-                                Submitted from IP: {{ item.created_from_ip or "Not available" }}<br>
-                                Updated at: {{ application_view.updated_at if application_view else item.updated_at }}
-                            </p>
-                            <div class="actions">
-                                <span class="status {% if application_status == 'accepted' %}ready{% elif application_status == 'rejected' %}closed{% else %}pending{% endif %}">
-                                    {% if application_status == "accepted" %}
-                                        Approved / Reviewed
-                                    {% elif application_status == "rejected" %}
-                                        Rejected / Reviewed
-                                    {% else %}
-                                        Pending Review
-                                    {% endif %}
-                                </span>
-                            </div>
-                            <p class="meta">
-                                {% if application_status == "accepted" %}
-                                    This request is complete. The student profile is already active in the dashboard.
-                                {% elif application_status == "rejected" %}
-                                    This request is closed and no longer appears in the active review count.
-                                {% else %}
-                                    Review the submitted credentials below, then approve or reject the request.
-                                {% endif %}
-                            </p>
-                            <div class="grid">
-                                <div>
-                                    <label for="application-erp-password-{{ item.id }}">Submitted ERP password</label>
-                                    <input
-                                        id="application-erp-password-{{ item.id }}"
-                                        type="text"
-                                        value="{{ application_view.password_value if application_view and application_view.password_value else 'Unavailable' }}"
-                                        readonly>
-                                    <div class="meta">Admin-only view of the ERP password submitted in this website application.</div>
-                                </div>
-                                <div>
-                                    <label for="application-site-username-preview-{{ item.id }}">Submitted website login username</label>
-                                    <input
-                                        id="application-site-username-preview-{{ item.id }}"
-                                        type="text"
-                                        value="{{ application_view.site_login_username_default if application_view else item.user_name }}"
-                                        readonly>
-                                    <div class="meta">
-                                        {% if application_view and application_view.site_password_configured %}
-                                            The applicant already created a website password during signup.
-                                        {% else %}
-                                            No signup website password was stored for this request yet.
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="actions">
-                                {% if application_status not in ["accepted", "rejected"] %}
-                                    <form method="post" action="{{ url_for('accept_application', application_id=item.id) }}">
-                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                        <div class="grid">
-                                            <div>
-                                                <label for="application-site-login-username-{{ item.id }}">Website login username</label>
-                                                <input
-                                                    id="application-site-login-username-{{ item.id }}"
-                                                    name="site_login_username"
-                                                    type="text"
-                                                    value="{{ application_view.site_login_username_default if application_view else item.user_name }}"
-                                                    required>
-                                            </div>
-                                            <div>
-                                                <label for="application-site-login-password-{{ item.id }}">Website login password</label>
-                                                <input
-                                                    id="application-site-login-password-{{ item.id }}"
-                                                    name="site_login_password"
-                                                    type="text"
-                                                    value="{{ application_view.site_login_password_default if application_view else '' }}"
-                                                    placeholder="{% if application_view and application_view.site_password_configured %}Leave blank to keep the signup password{% else %}Leave blank to reuse the ERP password or auto-generate one{% endif %}">
-                                            </div>
-                                        </div>
-                                        <div class="meta">
-                                            {% if application_view and application_view.site_password_configured %}
-                                                Leave the website password blank to keep the password the user created during sign-up. Enter a new password only if you want to override it before approval.
-                                            {% else %}
-                                                If you leave the website password blank, the dashboard will reuse the submitted ERP password when it is at least 8 characters long. Otherwise, a temporary website password will be generated automatically.
-                                            {% endif %}
-                                        </div>
-                                        <div class="actions">
-                                            <button type="submit">Approve Application</button>
-                                        </div>
-                                    </form>
-                                    <form method="post" action="{{ url_for('reject_application', application_id=item.id) }}">
-                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                        <div class="meta">
-                                            Rejecting closes this request and removes it from the active review queue. The applicant will receive a Telegram status update when available.
-                                        </div>
-                                        <div class="actions">
-                                            <button type="submit" class="ghost">Reject Application</button>
-                                        </div>
-                                    </form>
-                                {% elif application_status == "accepted" %}
-                                    <span class="chip">Approved</span>
-                                    <span class="chip">Reviewed</span>
-                                    <form method="post" action="{{ url_for('clear_application', application_id=item.id) }}" onsubmit="return confirm('Clear this reviewed application record from the dashboard?');">
-                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                        <button type="submit" class="ghost">Clear Request</button>
-                                    </form>
-                                {% else %}
-                                    <span class="chip">Rejected</span>
-                                    <span class="chip">Reviewed</span>
-                                    <form method="post" action="{{ url_for('clear_application', application_id=item.id) }}" onsubmit="return confirm('Clear this reviewed application record from the dashboard?');">
-                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                        <button type="submit" class="ghost">Clear Request</button>
-                                    </form>
-                                {% endif %}
-                            </div>
-                            {% if item.note %}
-                                <pre>{{ item.note }}</pre>
-                            {% endif %}
-                        </details>
-                    {% endfor %}
-                {% else %}
-                    <p class="meta">No public applications have been submitted yet.</p>
-                {% endif %}
-            </section>
-        {% elif is_student_authenticated %}
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Profile</span>
-                        <h2>Edit Profile</h2>
-                        <p class="meta section-copy">
-                            Update your own profile details here, including your Telegram chat ID. Changes are saved directly to the database, reflected in the admin dashboard automatically, and sent to the admin on Telegram.
-                        </p>
-                    </div>
-                    <span class="section-tag">Personal</span>
-                </div>
-                <form method="post" action="{{ url_for('student_profile_update') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <div class="grid">
-                        <div>
-                            <label for="student_profile_label">Student label</label>
-                            <input id="student_profile_label" name="student_label" type="text" value="{{ current_student.student_label }}" required>
-                        </div>
-                        <div>
-                            <label for="student_profile_user_name">ERP user id</label>
-                            <input id="student_profile_user_name" name="user_name" type="text" value="{{ current_student.user_name }}" required>
-                        </div>
-                        <div>
-                            <label for="student_profile_password">ERP password</label>
-                            <input id="student_profile_password" name="password" type="password" placeholder="Leave blank to keep the current ERP password">
-                        </div>
-                        <div>
-                            <label for="student_profile_telegram">Telegram chat id</label>
-                            <input id="student_profile_telegram" name="telegram_chat_id" type="text" value="{{ current_student.telegram_chat_id }}" placeholder="123456789 or -1001234567890">
-                            <div class="meta">
-                                {% if settings.telegram_bot_link %}
-                                    Open <a href="{{ settings.telegram_bot_link }}" target="_blank" rel="noopener noreferrer">the QUMS Telegram bot</a> and send <code>/start</code> first.
-                                {% else %}
-                                    Open the QUMS Telegram bot and send <code>/start</code> first.
-                                {% endif %}
-                                Check your numeric Telegram user ID with <a href="https://t.me/userinfo3bot" target="_blank" rel="noopener noreferrer">@userinfo3bot</a>. If you update this value, the admin dashboard and admin Telegram notification will reflect the new chat ID automatically.
-                            </div>
-                        </div>
-                        <div>
-                            <label for="student_profile_timezone">Timezone</label>
-                            <input id="student_profile_timezone" name="timezone" type="text" value="{{ current_student.timezone }}" required>
-                        </div>
-                    </div>
-                    <div class="actions">
-                        <button type="submit">Update Profile</button>
-                    </div>
-                </form>
-            </section>
-
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Security</span>
-                        <h2>Account Security</h2>
-                        <p class="meta section-copy">
-                            Login username: <code>{{ current_student.site_login_username }}</code><br>
-                            Password changes require a verification code sent to your Telegram account.
-                        </p>
-                    </div>
-                    <span class="section-tag">Telegram Recovery</span>
-                </div>
-                <div class="actions">
-                    <form method="post" action="{{ url_for('student_password_change_request') }}">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <button type="submit">Send Password Change Code</button>
-                    </form>
-                    <a class="button-link ghost" href="{{ url_for('student_forgot_password') }}">Forgot Password</a>
-                </div>
-                <form method="post" action="{{ url_for('student_password_change_submit') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <div class="grid">
-                        <div>
-                            <label for="student_reset_code">Verification code</label>
-                            <input id="student_reset_code" name="reset_code" type="text" inputmode="numeric" required>
-                        </div>
-                        <div>
-                            <label for="student_new_password">New password</label>
-                            <input id="student_new_password" name="new_password" type="password" autocomplete="new-password" required>
-                        </div>
-                        <div>
-                            <label for="student_confirm_password">Confirm new password</label>
-                            <input id="student_confirm_password" name="confirm_password" type="password" autocomplete="new-password" required>
-                        </div>
-                    </div>
-                    <div class="actions">
-                        <button type="submit">Change Password</button>
-                    </div>
-                </form>
-            </section>
-        {% elif is_pending_authenticated %}
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Access Status</span>
-                        <h2>
-                            {% if current_application_account.status|lower == "accepted" %}
-                                Application Approved
-                            {% elif current_application_account.status|lower == "rejected" %}
-                                Application Closed
-                            {% else %}
-                                Application Under Review
-                            {% endif %}
-                        </h2>
-                        <p class="meta section-copy">
-                            {% if current_application_account.status|lower == "accepted" %}
-                                Your request has been approved. Refresh once and the full student dashboard will replace this access notice automatically.
-                            {% elif current_application_account.status|lower == "rejected" %}
-                                Your request was reviewed but not approved. This application is closed and no longer appears in the active review queue.
-                            {% else %}
-                                Your website account is ready, but student features will remain unavailable until an administrator approves the application.
-                            {% endif %}
-                        </p>
-                    </div>
-                    <span class="section-tag {% if current_application_account.status|lower == 'accepted' %}success{% elif current_application_account.status|lower == 'rejected' %}closed{% else %}alert{% endif %}">
-                        {% if current_application_account.status|lower == "rejected" %}Closed{% else %}{{ current_application_account.status | title }}{% endif %}
-                    </span>
-                </div>
-                <div class="flash {% if current_application_account.status|lower == 'accepted' %}success{% else %}warning{% endif %}">
-                    {% if current_application_account.status|lower == "accepted" %}
-                        Your application has been approved. This access notice is complete, and your account will open the full student dashboard automatically on refresh.
-                    {% elif current_application_account.status|lower == "rejected" %}
-                        Your application has been reviewed and closed. Sign out if you would like to submit a new request with updated details later.
-                    {% else %}
-                        Student features are unavailable at the moment. Attendance checks, substitution reports, message history, and profile actions will unlock only after administrative approval.
-                    {% endif %}
-                </div>
+                <span class="section-tag">Protected</span>
+            </div>
+            <form method="post" action="{{ url_for('admin_account_update') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div class="grid">
                     <div>
-                        <label>Website login username</label>
-                        <input type="text" value="{{ current_application_account.site_login_username }}" readonly>
+                        <label for="login_username">Login username</label>
+                        <input id="login_username" name="login_username" type="text"
+                            value="{{ admin_account.username }}" required>
                     </div>
                     <div>
-                        <label>Application status</label>
-                        <input type="text" value="{{ current_application_account.status | title }}" readonly>
+                        <label for="recovery_telegram_username">Recovery Telegram username</label>
+                        <input id="recovery_telegram_username" name="recovery_telegram_username" type="text"
+                            value="{{ admin_account.recovery_telegram_username }}"
+                            placeholder="@username or https://t.me/username">
                     </div>
                     <div>
-                        <label>Submitted at</label>
-                        <input type="text" value="{{ current_application_account.created_at }}" readonly>
+                        <label for="current_password">Current password</label>
+                        <input id="current_password" name="current_password" type="password"
+                            autocomplete="current-password" required>
                     </div>
                     <div>
-                        <label>Last update</label>
-                        <input type="text" value="{{ current_application_account.updated_at }}" readonly>
+                        <label for="new_password">New password</label>
+                        <input id="new_password" name="new_password" type="password" autocomplete="new-password"
+                            placeholder="Leave blank to keep current password">
+                    </div>
+                    <div>
+                        <label for="confirm_password">Confirm new password</label>
+                        <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password"
+                            placeholder="Repeat the new password if changing it">
                     </div>
                 </div>
                 <div class="actions">
-                    <form method="post" action="{{ url_for('student_logout') }}">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <button type="submit">Logout</button>
-                    </form>
+                    <button type="submit">Update Admin Login</button>
+                    <a class="button-link ghost" href="{{ url_for('admin_forgot_password') }}">Forgot Password
+                        Recovery</a>
                 </div>
-            </section>
-        {% else %}
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Onboarding</span>
-                        <h2>Create Application</h2>
-                        <p class="meta section-copy">
-                            Create your own website login credentials, submit the ERP application, and sign in to the user panel immediately. Student features unlock after administrative approval.
-                        </p>
-                    </div>
-                    <span class="section-tag alert">Self Sign-Up</span>
-                </div>
-                <div class="flash warning">
-                    Sign up below with your own website username and password. After submission, you can sign in immediately, but live student features will remain unavailable until the application is approved.
-                    {% if settings.owner_telegram_contact %}
-                        Owner Telegram: <code>{{ settings.owner_telegram_contact }}</code>.
-                    {% endif %}
-                </div>
-                {% if settings.telegram_bot_link %}
-                    <p class="meta">
-                        Prefer Telegram? Open <a href="{{ settings.telegram_bot_link }}" target="_blank" rel="noopener noreferrer">the QUMS Telegram bot</a> and send <code>/apply</code>.
+            </form>
+        </section>
+
+        <section class="panel" id="student-profile-panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Profiles</span>
+                    <h2>{{ "Edit Student" if edit_student else "Add Student" }}</h2>
+                    <p class="meta section-copy">
+                        Save ERP credentials, website access, delivery routing, and timezone details for each managed
+                        student profile.
                     </p>
-                {% endif %}
-                <div class="live-grid">
-                    <div class="live-card light">
-                        <div class="live-label">Website Sign-Up</div>
-                        <div class="live-value">Self-Managed Access</div>
-                        <div class="live-sub">Create your own login username and password for the website user panel.</div>
-                    </div>
-                    <div class="live-card light">
-                        <div class="live-label">Application Review</div>
-                        <div class="live-value">Approval Workflow</div>
-                        <div class="live-sub">You can sign in immediately after submission, but student tools stay unavailable until approval.</div>
-                    </div>
                 </div>
-                <form method="post" action="{{ url_for('submit_application') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <div class="grid">
-                        <div>
-                            <label for="applicant_name">Full name</label>
-                            <input id="applicant_name" name="applicant_name" type="text" required>
-                        </div>
-                        <div>
-                            <label for="student_label">Preferred dashboard label</label>
-                            <input id="student_label" name="student_label" type="text" required>
-                        </div>
-                        <div>
-                            <label for="user_name">ERP user id</label>
-                            <input id="user_name" name="user_name" type="text" required>
-                        </div>
-                        <div>
-                            <label for="password">ERP password</label>
-                            <input id="password" name="password" type="password" required>
-                        </div>
-                        <div>
-                            <label for="site_login_username">Website login username</label>
-                            <input id="site_login_username" name="site_login_username" type="text" placeholder="your.username" required>
-                            <div class="meta">Choose this yourself. Use letters, numbers, dots, underscores, or hyphens only.</div>
-                        </div>
-                        <div>
-                            <label for="site_login_password">Website login password</label>
-                            <input id="site_login_password" name="site_login_password" type="password" minlength="8" placeholder="Minimum 8 characters" required>
-                            <div class="meta">Choose this yourself. Use at least 8 characters. This password works for the website user panel after submission.</div>
-                        </div>
-                        <div>
-                            <label for="reg_id">Registration id</label>
-                            <input id="reg_id" name="reg_id" type="text" placeholder="Optional">
-                        </div>
-                        <div>
-                            <label for="telegram_chat_id">Telegram chat id (numeric)</label>
-                            <input id="telegram_chat_id" name="telegram_chat_id" type="text" placeholder="123456789 or -1001234567890">
-                            <div class="meta">
-                                {% if settings.telegram_bot_link %}
-                                    Open <a href="{{ settings.telegram_bot_link }}" target="_blank" rel="noopener noreferrer">the QUMS Telegram bot</a> and send <code>/start</code> first.
-                                {% else %}
-                                    Open the QUMS Telegram bot and send <code>/start</code> first.
-                                {% endif %}
-                                Check your numeric Telegram user ID with <a href="https://t.me/userinfo3bot" target="_blank" rel="noopener noreferrer">@userinfo3bot</a>, then enter that numeric chat ID here.
-                            </div>
-                        </div>
-                        <div>
-                            <label for="timezone">Timezone</label>
-                            <input id="timezone" name="timezone" type="text" value="{{ settings.local_timezone }}" required>
+                <span class="section-tag">{{ "Editing" if edit_student else "New profile" }}</span>
+            </div>
+            <form method="post" action="{{ url_for('save_student') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                {% if edit_student %}
+                <input type="hidden" name="student_id" value="{{ edit_student.id }}">
+                {% endif %}
+                <div class="grid">
+                    <div>
+                        <label for="student_label">Student label</label>
+                        <input id="student_label" name="student_label" type="text"
+                            value="{{ edit_student.student_label if edit_student else '' }}" required>
+                    </div>
+                    <div>
+                        <label for="user_name">ERP user id</label>
+                        <input id="user_name" name="user_name" type="text"
+                            value="{{ edit_student.user_name if edit_student else '' }}" required>
+                    </div>
+                    <div>
+                        <label for="password">ERP password</label>
+                        <input id="password" name="password" type="password"
+                            placeholder="{{ 'Leave blank to keep existing password' if edit_student else '' }}">
+                    </div>
+                    <div>
+                        <label for="site_login_username">Site login username</label>
+                        <input id="site_login_username" name="site_login_username" type="text"
+                            value="{{ edit_student.site_login_username if edit_student else '' }}"
+                            placeholder="Optional website login username">
+                    </div>
+                    <div>
+                        <label for="site_login_password">Site login password</label>
+                        <input id="site_login_password" name="site_login_password" type="password"
+                            placeholder="{{ 'Leave blank to keep the current site password' if edit_student else 'Leave blank to keep site login disabled' }}">
+                    </div>
+                    <div>
+                        <label for="telegram_chat_id">Telegram chat id (numeric)</label>
+                        <input id="telegram_chat_id" name="telegram_chat_id" type="text"
+                            value="{{ edit_student.telegram_chat_id if edit_student else '' }}"
+                            placeholder="123456789 or -1001234567890">
+                        <div class="meta">
+                            {% if settings.telegram_bot_link %}
+                            Open <a href="{{ settings.telegram_bot_link }}" target="_blank"
+                                rel="noopener noreferrer">the QUMS Telegram bot</a> and send <code>/start</code> first.
+                            {% else %}
+                            Open the QUMS Telegram bot and send <code>/start</code> first.
+                            {% endif %}
+                            Check your numeric Telegram user id with <a href="https://t.me/userinfo3bot" target="_blank"
+                                rel="noopener noreferrer">@userinfo3bot</a>. Do not enter an <code>@username</code>.
                         </div>
                     </div>
                     <div>
-                        <label for="note">Application note</label>
-                        <textarea id="note" name="note" placeholder="Add any useful context, preferred timings, or extra instructions."></textarea>
+                        <label for="timezone">Timezone</label>
+                        <input id="timezone" name="timezone" type="text"
+                            value="{{ edit_student.timezone if edit_student else settings.local_timezone }}" required>
                     </div>
-                    <div class="actions">
-                        <button type="submit">Create Application</button>
-                        <a class="button-link ghost" href="{{ url_for('login_alias', next=request.path) }}">Login</a>
+                </div>
+                <label class="check">
+                    <input name="enabled" type="checkbox" {% if edit_student and edit_student.enabled or not
+                        edit_student %}checked{% endif %}>
+                    Enable morning summary, lecture attendance checks, substitute lecture alerts, evening report, and
+                    monitoring alerts
+                </label>
+                <div class="actions">
+                    <button type="submit">Save Student</button>
+                    {% if edit_student %}
+                    <a class="button-link ghost" href="{{ url_for('dashboard') }}">Cancel Edit</a>
+                    {% endif %}
+                </div>
+            </form>
+        </section>
+
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Public Requests</span>
+                    <h2>New User Applications</h2>
+                    <p class="meta section-copy">
+                        Recent website applications waiting for review or already recorded as completed decisions.
+                        {% if application_request_summary.pending_count %}
+                        {{ application_request_summary.pending_count }} request{% if
+                        application_request_summary.pending_count != 1 %}s{% endif %} still need admin review.
+                        {% elif application_request_summary.reviewed_count %}
+                        All listed application requests have been processed. {{
+                        application_request_summary.accepted_count }} approved and {{
+                        application_request_summary.rejected_count }} rejected.
+                        {% else %}
+                        Telegram notifications are sent when a new request arrives.
+                        {% endif %}
+                    </p>
+                </div>
+                <span
+                    class="section-tag{% if application_request_summary.pending_count %} alert{% elif application_request_summary.total_count %} success{% endif %}">
+                    {% if application_request_summary.pending_count %}
+                    {{ application_request_summary.pending_count }} awaiting review
+                    {% elif application_request_summary.total_count %}
+                    All reviewed
+                    {% else %}
+                    0 awaiting review
+                    {% endif %}
+                </span>
+            </div>
+            {% if application_requests %}
+            {% for item in application_requests %}
+            {% set application_view = application_request_views.get(item.id) %}
+            {% set application_status = item.status|lower %}
+            <details>
+                <summary>{{ application_view.created_at if application_view else item.created_at }} | {{
+                    item.applicant_name }} | {{ item.student_label }}</summary>
+                <p class="meta">
+                    ERP user id: {{ item.user_name }}<br>
+                    RegID: {{ item.reg_id or "Not provided" }}<br>
+                    Telegram: {{ item.telegram_chat_id or "Not provided" }}<br>
+                    Timezone: {{ item.timezone }}<br>
+                    Status: {{ item.status | title }}<br>
+                    Submitted from IP: {{ item.created_from_ip or "Not available" }}<br>
+                    Updated at: {{ application_view.updated_at if application_view else item.updated_at }}
+                </p>
+                <div class="actions">
+                    <span
+                        class="status {% if application_status == 'accepted' %}ready{% elif application_status == 'rejected' %}closed{% else %}pending{% endif %}">
+                        {% if application_status == "accepted" %}
+                        Approved / Reviewed
+                        {% elif application_status == "rejected" %}
+                        Rejected / Reviewed
+                        {% else %}
+                        Pending Review
+                        {% endif %}
+                    </span>
+                </div>
+                <p class="meta">
+                    {% if application_status == "accepted" %}
+                    This request is complete. The student profile is already active in the dashboard.
+                    {% elif application_status == "rejected" %}
+                    This request is closed and no longer appears in the active review count.
+                    {% else %}
+                    Review the submitted credentials below, then approve or reject the request.
+                    {% endif %}
+                </p>
+                <div class="grid">
+                    <div>
+                        <label for="application-erp-password-{{ item.id }}">Submitted ERP password</label>
+                        <input id="application-erp-password-{{ item.id }}" type="text"
+                            value="{{ application_view.password_value if application_view and application_view.password_value else 'Unavailable' }}"
+                            readonly>
+                        <div class="meta">Admin-only view of the ERP password submitted in this website application.
+                        </div>
                     </div>
+                    <div>
+                        <label for="application-site-username-preview-{{ item.id }}">Submitted website login
+                            username</label>
+                        <input id="application-site-username-preview-{{ item.id }}" type="text"
+                            value="{{ application_view.site_login_username_default if application_view else item.user_name }}"
+                            readonly>
+                        <div class="meta">
+                            {% if application_view and application_view.site_password_configured %}
+                            The applicant already created a website password during signup.
+                            {% else %}
+                            No signup website password was stored for this request yet.
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                <div class="actions">
+                    {% if application_status not in ["accepted", "rejected"] %}
+                    <form method="post" action="{{ url_for('accept_application', application_id=item.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="grid">
+                            <div>
+                                <label for="application-site-login-username-{{ item.id }}">Website login
+                                    username</label>
+                                <input id="application-site-login-username-{{ item.id }}" name="site_login_username"
+                                    type="text"
+                                    value="{{ application_view.site_login_username_default if application_view else item.user_name }}"
+                                    required>
+                            </div>
+                            <div>
+                                <label for="application-site-login-password-{{ item.id }}">Website login
+                                    password</label>
+                                <input id="application-site-login-password-{{ item.id }}" name="site_login_password"
+                                    type="text"
+                                    value="{{ application_view.site_login_password_default if application_view else '' }}"
+                                    placeholder="{% if application_view and application_view.site_password_configured %}Leave blank to keep the signup password{% else %}Leave blank to reuse the ERP password or auto-generate one{% endif %}">
+                            </div>
+                        </div>
+                        <div class="meta">
+                            {% if application_view and application_view.site_password_configured %}
+                            Leave the website password blank to keep the password the user created during sign-up. Enter
+                            a new password only if you want to override it before approval.
+                            {% else %}
+                            If you leave the website password blank, the dashboard will reuse the submitted ERP password
+                            when it is at least 8 characters long. Otherwise, a temporary website password will be
+                            generated automatically.
+                            {% endif %}
+                        </div>
+                        <div class="actions">
+                            <button type="submit">Approve Application</button>
+                        </div>
+                    </form>
+                    <form method="post" action="{{ url_for('reject_application', application_id=item.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="meta">
+                            Rejecting closes this request and removes it from the active review queue. The applicant
+                            will receive a Telegram status update when available.
+                        </div>
+                        <div class="actions">
+                            <button type="submit" class="ghost">Reject Application</button>
+                        </div>
+                    </form>
+                    {% elif application_status == "accepted" %}
+                    <span class="chip">Approved</span>
+                    <span class="chip">Reviewed</span>
+                    <form method="post" action="{{ url_for('clear_application', application_id=item.id) }}"
+                        onsubmit="return confirm('Clear this reviewed application record from the dashboard?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="ghost">Clear Request</button>
+                    </form>
+                    {% else %}
+                    <span class="chip">Rejected</span>
+                    <span class="chip">Reviewed</span>
+                    <form method="post" action="{{ url_for('clear_application', application_id=item.id) }}"
+                        onsubmit="return confirm('Clear this reviewed application record from the dashboard?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="ghost">Clear Request</button>
+                    </form>
+                    {% endif %}
+                </div>
+                {% if item.note %}
+                <pre>{{ item.note }}</pre>
+                {% endif %}
+            </details>
+            {% endfor %}
+            {% else %}
+            <p class="meta">No public applications have been submitted yet.</p>
+            {% endif %}
+        </section>
+        {% elif is_student_authenticated %}
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Profile</span>
+                    <h2>Edit Profile</h2>
+                    <p class="meta section-copy">
+                        Update your own profile details here, including your Telegram chat ID. Changes are saved
+                        directly to the database, reflected in the admin dashboard automatically, and sent to the admin
+                        on Telegram.
+                    </p>
+                </div>
+                <span class="section-tag">Personal</span>
+            </div>
+            <form method="post" action="{{ url_for('student_profile_update') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="grid">
+                    <div>
+                        <label for="student_profile_label">Student label</label>
+                        <input id="student_profile_label" name="student_label" type="text"
+                            value="{{ current_student.student_label }}" required>
+                    </div>
+                    <div>
+                        <label for="student_profile_user_name">ERP user id</label>
+                        <input id="student_profile_user_name" name="user_name" type="text"
+                            value="{{ current_student.user_name }}" required>
+                    </div>
+                    <div>
+                        <label for="student_profile_password">ERP password</label>
+                        <input id="student_profile_password" name="password" type="password"
+                            placeholder="Leave blank to keep the current ERP password">
+                    </div>
+                    <div>
+                        <label for="student_profile_telegram">Telegram chat id</label>
+                        <input id="student_profile_telegram" name="telegram_chat_id" type="text"
+                            value="{{ current_student.telegram_chat_id }}" placeholder="123456789 or -1001234567890">
+                        <div class="meta">
+                            {% if settings.telegram_bot_link %}
+                            Open <a href="{{ settings.telegram_bot_link }}" target="_blank"
+                                rel="noopener noreferrer">the QUMS Telegram bot</a> and send <code>/start</code> first.
+                            {% else %}
+                            Open the QUMS Telegram bot and send <code>/start</code> first.
+                            {% endif %}
+                            Check your numeric Telegram user ID with <a href="https://t.me/userinfo3bot" target="_blank"
+                                rel="noopener noreferrer">@userinfo3bot</a>. If you update this value, the admin
+                            dashboard and admin Telegram notification will reflect the new chat ID automatically.
+                        </div>
+                    </div>
+                    <div>
+                        <label for="student_profile_timezone">Timezone</label>
+                        <input id="student_profile_timezone" name="timezone" type="text"
+                            value="{{ current_student.timezone }}" required>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button type="submit">Update Profile</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Security</span>
+                    <h2>Account Security</h2>
+                    <p class="meta section-copy">
+                        Login username: <code>{{ current_student.site_login_username }}</code><br>
+                        Password changes require a verification code sent to your Telegram account.
+                    </p>
+                </div>
+                <span class="section-tag">Telegram Recovery</span>
+            </div>
+            <div class="actions">
+                <form method="post" action="{{ url_for('student_password_change_request') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit">Send Password Change Code</button>
                 </form>
-            </section>
+                <a class="button-link ghost" href="{{ url_for('student_forgot_password') }}">Forgot Password</a>
+            </div>
+            <form method="post" action="{{ url_for('student_password_change_submit') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="grid">
+                    <div>
+                        <label for="student_reset_code">Verification code</label>
+                        <input id="student_reset_code" name="reset_code" type="text" inputmode="numeric" required>
+                    </div>
+                    <div>
+                        <label for="student_new_password">New password</label>
+                        <input id="student_new_password" name="new_password" type="password" autocomplete="new-password"
+                            required>
+                    </div>
+                    <div>
+                        <label for="student_confirm_password">Confirm new password</label>
+                        <input id="student_confirm_password" name="confirm_password" type="password"
+                            autocomplete="new-password" required>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button type="submit">Change Password</button>
+                </div>
+            </form>
+        </section>
+        {% elif is_pending_authenticated %}
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Access Status</span>
+                    <h2>
+                        {% if current_application_account.status|lower == "accepted" %}
+                        Application Approved
+                        {% elif current_application_account.status|lower == "rejected" %}
+                        Application Closed
+                        {% else %}
+                        Application Under Review
+                        {% endif %}
+                    </h2>
+                    <p class="meta section-copy">
+                        {% if current_application_account.status|lower == "accepted" %}
+                        Your request has been approved. Refresh once and the full student dashboard will replace this
+                        access notice automatically.
+                        {% elif current_application_account.status|lower == "rejected" %}
+                        Your request was reviewed but not approved. This application is closed and no longer appears in
+                        the active review queue.
+                        {% else %}
+                        Your website account is ready, but student features will remain unavailable until an
+                        administrator approves the application.
+                        {% endif %}
+                    </p>
+                </div>
+                <span
+                    class="section-tag {% if current_application_account.status|lower == 'accepted' %}success{% elif current_application_account.status|lower == 'rejected' %}closed{% else %}alert{% endif %}">
+                    {% if current_application_account.status|lower == "rejected" %}Closed{% else %}{{
+                    current_application_account.status | title }}{% endif %}
+                </span>
+            </div>
+            <div
+                class="flash {% if current_application_account.status|lower == 'accepted' %}success{% else %}warning{% endif %}">
+                {% if current_application_account.status|lower == "accepted" %}
+                Your application has been approved. This access notice is complete, and your account will open the full
+                student dashboard automatically on refresh.
+                {% elif current_application_account.status|lower == "rejected" %}
+                Your application has been reviewed and closed. Sign out if you would like to submit a new request with
+                updated details later.
+                {% else %}
+                Student features are unavailable at the moment. Attendance checks, substitution reports, message
+                history, and profile actions will unlock only after administrative approval.
+                {% endif %}
+            </div>
+            <div class="grid">
+                <div>
+                    <label>Website login username</label>
+                    <input type="text" value="{{ current_application_account.site_login_username }}" readonly>
+                </div>
+                <div>
+                    <label>Application status</label>
+                    <input type="text" value="{{ current_application_account.status | title }}" readonly>
+                </div>
+                <div>
+                    <label>Submitted at</label>
+                    <input type="text" value="{{ current_application_account.created_at }}" readonly>
+                </div>
+                <div>
+                    <label>Last update</label>
+                    <input type="text" value="{{ current_application_account.updated_at }}" readonly>
+                </div>
+            </div>
+            <div class="actions">
+                <form method="post" action="{{ url_for('student_logout') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit">Logout</button>
+                </form>
+            </div>
+        </section>
+        {% else %}
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Onboarding</span>
+                    <h2>Create Application</h2>
+                    <p class="meta section-copy">
+                        Create your own website login credentials, submit the ERP application, and sign in to the user
+                        panel immediately. Student features unlock after administrative approval.
+                    </p>
+                </div>
+                <span class="section-tag alert">Self Sign-Up</span>
+            </div>
+            <div class="flash warning">
+                Sign up below with your own website username and password. After submission, you can sign in
+                immediately, but live student features will remain unavailable until the application is approved.
+                {% if settings.owner_telegram_contact %}
+                Owner Telegram: <code>{{ settings.owner_telegram_contact }}</code>.
+                {% endif %}
+            </div>
+            {% if settings.telegram_bot_link %}
+            <p class="meta">
+                Prefer Telegram? Open <a href="{{ settings.telegram_bot_link }}" target="_blank"
+                    rel="noopener noreferrer">the QUMS Telegram bot</a> and send <code>/apply</code>.
+            </p>
+            {% endif %}
+            <div class="live-grid">
+                <div class="live-card light">
+                    <div class="live-label">Website Sign-Up</div>
+                    <div class="live-value">Self-Managed Access</div>
+                    <div class="live-sub">Create your own login username and password for the website user panel.</div>
+                </div>
+                <div class="live-card light">
+                    <div class="live-label">Application Review</div>
+                    <div class="live-value">Approval Workflow</div>
+                    <div class="live-sub">You can sign in immediately after submission, but student tools stay
+                        unavailable until approval.</div>
+                </div>
+            </div>
+            <form method="post" action="{{ url_for('submit_application') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="grid">
+                    <div>
+                        <label for="applicant_name">Full name</label>
+                        <input id="applicant_name" name="applicant_name" type="text" required>
+                    </div>
+                    <div>
+                        <label for="student_label">Preferred dashboard label</label>
+                        <input id="student_label" name="student_label" type="text" required>
+                    </div>
+                    <div>
+                        <label for="user_name">ERP user id</label>
+                        <input id="user_name" name="user_name" type="text" required>
+                    </div>
+                    <div>
+                        <label for="password">ERP password</label>
+                        <input id="password" name="password" type="password" required>
+                    </div>
+                    <div>
+                        <label for="site_login_username">Website login username</label>
+                        <input id="site_login_username" name="site_login_username" type="text"
+                            placeholder="your.username" required>
+                        <div class="meta">Choose this yourself. Use letters, numbers, dots, underscores, or hyphens
+                            only.</div>
+                    </div>
+                    <div>
+                        <label for="site_login_password">Website login password</label>
+                        <input id="site_login_password" name="site_login_password" type="password" minlength="8"
+                            placeholder="Minimum 8 characters" required>
+                        <div class="meta">Choose this yourself. Use at least 8 characters. This password works for the
+                            website user panel after submission.</div>
+                    </div>
+                    <div>
+                        <label for="reg_id">Registration id</label>
+                        <input id="reg_id" name="reg_id" type="text" placeholder="Optional">
+                    </div>
+                    <div>
+                        <label for="telegram_chat_id">Telegram chat id (numeric)</label>
+                        <input id="telegram_chat_id" name="telegram_chat_id" type="text"
+                            placeholder="123456789 or -1001234567890">
+                        <div class="meta">
+                            {% if settings.telegram_bot_link %}
+                            Open <a href="{{ settings.telegram_bot_link }}" target="_blank"
+                                rel="noopener noreferrer">the QUMS Telegram bot</a> and send <code>/start</code> first.
+                            {% else %}
+                            Open the QUMS Telegram bot and send <code>/start</code> first.
+                            {% endif %}
+                            Check your numeric Telegram user ID with <a href="https://t.me/userinfo3bot" target="_blank"
+                                rel="noopener noreferrer">@userinfo3bot</a>, then enter that numeric chat ID here.
+                        </div>
+                    </div>
+                    <div>
+                        <label for="timezone">Timezone</label>
+                        <input id="timezone" name="timezone" type="text" value="{{ settings.local_timezone }}" required>
+                    </div>
+                </div>
+                <div>
+                    <label for="note">Application note</label>
+                    <textarea id="note" name="note"
+                        placeholder="Add any useful context, preferred timings, or extra instructions."></textarea>
+                </div>
+                <div class="actions">
+                    <button type="submit">Create Application</button>
+                    <a class="button-link ghost" href="{{ url_for('login_alias', next=request.path) }}">Login</a>
+                </div>
+            </form>
+        </section>
         {% endif %}
 
         {% if preview_text %}
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Output</span>
-                        <h2>Preview</h2>
-                    </div>
-                    <span class="section-tag">Manual</span>
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Output</span>
+                    <h2>Preview</h2>
                 </div>
-                <pre>{{ preview_text }}</pre>
-            </section>
+                <span class="section-tag">Manual</span>
+            </div>
+            <pre>{{ preview_text }}</pre>
+        </section>
         {% endif %}
 
         <section class="panel">
@@ -725,694 +824,690 @@
                 <div class="section-title-block">
                     <span class="eyebrow">
                         {% if is_admin_authenticated %}
-                            Students
+                        Students
                         {% elif is_student_authenticated %}
-                            Your Workspace
+                        Your Workspace
                         {% elif is_pending_authenticated %}
-                            Access Preview
+                        Access Preview
                         {% else %}
-                            Product Preview
+                        Product Preview
                         {% endif %}
                     </span>
                     <h2>
                         {% if is_admin_authenticated %}
-                            Student Profiles
+                        Student Profiles
                         {% elif is_student_authenticated %}
-                            Your Dashboard Profile
+                        Your Dashboard Profile
                         {% elif is_pending_authenticated %}
-                            Pending Account Preview
+                        Pending Account Preview
                         {% else %}
-                            Prototype Preview
+                        Prototype Preview
                         {% endif %}
                     </h2>
                     <p class="meta section-copy">
                         {% if is_admin_authenticated %}
-                            Review ERP health, delivery routing, automation schedules, and direct actions for each student in one place.
+                        Review ERP health, delivery routing, automation schedules, and direct actions for each student
+                        in one place.
                         {% elif is_student_authenticated %}
-                            This view is limited to your own profile, activity history, and manual student actions.
+                        This view is limited to your own profile, activity history, and manual student actions.
                         {% elif is_pending_authenticated %}
-                            Your website account is signed in, but this preview remains read-only until the application is approved.
+                        Your website account is signed in, but this preview remains read-only until the application is
+                        approved.
                         {% else %}
-                            Explore how the dashboard works before requesting access to the live automation service.
+                        Explore how the dashboard works before requesting access to the live automation service.
                         {% endif %}
                     </p>
                 </div>
                 <span class="section-tag">
                     {% if is_admin_authenticated %}
-                        {{ students|length }} profile(s)
+                    {{ students|length }} profile(s)
                     {% elif is_student_authenticated %}
-                        1 student scope
+                    1 student scope
                     {% elif is_pending_authenticated %}
-                        Locked until approval
+                    Locked until approval
                     {% else %}
-                        Demo mode
+                    Demo mode
                     {% endif %}
                 </span>
             </div>
             <div id="student-cards-results">
                 {% if is_admin_authenticated or is_student_authenticated %}
-                    {% include "partials/student_cards.html" %}
+                {% include "partials/student_cards.html" %}
                 {% else %}
-                    {% include "partials/public_prototype_cards.html" %}
+                {% include "partials/public_prototype_cards.html" %}
                 {% endif %}
             </div>
         </section>
 
         {% if is_admin_authenticated or is_student_authenticated %}
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Delivery Records</span>
-                        <h2>Message History</h2>
-                        <p class="meta section-copy">Search sent alerts, inspect delivery outcomes, and export message records for offline review.</p>
-                    </div>
-                    <span class="section-tag">{{ message_history_pagination.total_items }} record(s)</span>
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Delivery Records</span>
+                    <h2>Message History</h2>
+                    <p class="meta section-copy">Search sent alerts, inspect delivery outcomes, and export message
+                        records for offline review.</p>
                 </div>
-                <form method="get" class="filter-form">
-                    {% if is_admin_authenticated %}
-                        <input type="hidden" name="audit_q" value="{{ audit_log_filters.query }}">
-                        <input type="hidden" name="audit_action" value="{{ audit_log_filters.action }}">
-                    {% endif %}
-                    <div>
-                        <label for="message_q">Search message history</label>
-                        <input id="message_q" name="message_q" type="text" value="{{ message_history_filters.query }}" placeholder="student, title, recipient, body">
-                    </div>
-                    <div>
-                        <label for="message_channel">Channel</label>
-                        <select id="message_channel" name="message_channel">
-                            <option value="">All channels</option>
-                            {% for item in message_history_filter_options.channels %}
-                                <option value="{{ item }}" {% if message_history_filters.channel == item %}selected{% endif %}>{{ item | title }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div>
-                        <label for="message_category">Category</label>
-                        <select id="message_category" name="message_category">
-                            <option value="">All categories</option>
-                            {% for item in message_history_filter_options.categories %}
-                                <option value="{{ item }}" {% if message_history_filters.category == item %}selected{% endif %}>{{ item.replace('_', ' ') | title }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="actions">
-                        <button type="submit" class="ghost">Apply</button>
-                        <a class="button-link ghost" href="{{ url_for('dashboard', audit_q=audit_log_filters.query, audit_action=audit_log_filters.action) }}">Clear</a>
-                    </div>
-                </form>
-                <div id="message-history-results">
-                    {% include "partials/message_history_results.html" %}
+                <span class="section-tag">{{ message_history_pagination.total_items }} record(s)</span>
+            </div>
+            <form method="get" class="filter-form">
+                {% if is_admin_authenticated %}
+                <input type="hidden" name="audit_q" value="{{ audit_log_filters.query }}">
+                <input type="hidden" name="audit_action" value="{{ audit_log_filters.action }}">
+                {% endif %}
+                <div>
+                    <label for="message_q">Search message history</label>
+                    <input id="message_q" name="message_q" type="text" value="{{ message_history_filters.query }}"
+                        placeholder="student, title, recipient, body">
                 </div>
-            </section>
+                <div>
+                    <label for="message_channel">Channel</label>
+                    <select id="message_channel" name="message_channel">
+                        <option value="">All channels</option>
+                        {% for item in message_history_filter_options.channels %}
+                        <option value="{{ item }}" {% if message_history_filters.channel==item %}selected{% endif %}>{{
+                            item | title }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label for="message_category">Category</label>
+                    <select id="message_category" name="message_category">
+                        <option value="">All categories</option>
+                        {% for item in message_history_filter_options.categories %}
+                        <option value="{{ item }}" {% if message_history_filters.category==item %}selected{% endif %}>{{
+                            item.replace('_', ' ') | title }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="actions">
+                    <button type="submit" class="ghost">Apply</button>
+                    <a class="button-link ghost"
+                        href="{{ url_for('dashboard', audit_q=audit_log_filters.query, audit_action=audit_log_filters.action) }}">Clear</a>
+                </div>
+            </form>
+            <div id="message-history-results">
+                {% include "partials/message_history_results.html" %}
+            </div>
+        </section>
 
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Retries</span>
-                        <h2>Dead-Letter Queue</h2>
-                        <p class="meta section-copy">Messages that exhausted normal retry attempts can be reviewed and requeued here.</p>
-                    </div>
-                    <span class="section-tag {% if dead_letter_messages %}alert{% endif %}">{{ dead_letter_messages|length }} item(s)</span>
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Retries</span>
+                    <h2>Dead-Letter Queue</h2>
+                    <p class="meta section-copy">Messages that exhausted normal retry attempts can be reviewed and
+                        requeued here.</p>
                 </div>
-                <div id="dead-letter-content">
-                    {% include "partials/dead_letter_content.html" %}
-                </div>
-            </section>
+                <span class="section-tag {% if dead_letter_messages %}alert{% endif %}">{{ dead_letter_messages|length
+                    }} item(s)</span>
+            </div>
+            <div id="dead-letter-content">
+                {% include "partials/dead_letter_content.html" %}
+            </div>
+        </section>
         {% endif %}
 
         {% if is_admin_authenticated %}
-            <section class="panel">
-                <div class="section-head">
-                    <div class="section-title-block">
-                        <span class="eyebrow">Governance</span>
-                        <h2>Admin Audit Log</h2>
-                        <p class="meta section-copy">Trace dashboard actions, profile edits, and operational changes across the admin workflow.</p>
-                    </div>
-                    <span class="section-tag">{{ audit_log_pagination.total_items }} event(s)</span>
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Governance</span>
+                    <h2>Admin Audit Log</h2>
+                    <p class="meta section-copy">Trace dashboard actions, profile edits, and operational changes across
+                        the admin workflow.</p>
                 </div>
-                <form method="get" class="filter-form">
-                    <input type="hidden" name="message_q" value="{{ message_history_filters.query }}">
-                    <input type="hidden" name="message_channel" value="{{ message_history_filters.channel }}">
-                    <input type="hidden" name="message_category" value="{{ message_history_filters.category }}">
-                    <div>
-                        <label for="audit_q">Search audit log</label>
-                        <input id="audit_q" name="audit_q" type="text" value="{{ audit_log_filters.query }}" placeholder="actor, action, target, details">
-                    </div>
-                    <div>
-                        <label for="audit_action">Action</label>
-                        <select id="audit_action" name="audit_action">
-                            <option value="">All actions</option>
-                            {% for item in audit_log_filter_options.actions %}
-                                <option value="{{ item }}" {% if audit_log_filters.action == item %}selected{% endif %}>{{ item.replace('_', ' ') | title }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="actions">
-                        <button type="submit" class="ghost">Apply</button>
-                        <a class="button-link ghost" href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category) }}">Clear</a>
-                    </div>
-                </form>
-                <div id="audit-log-results">
-                    {% include "partials/audit_log_results.html" %}
+                <span class="section-tag">{{ audit_log_pagination.total_items }} event(s)</span>
+            </div>
+            <form method="get" class="filter-form">
+                <input type="hidden" name="message_q" value="{{ message_history_filters.query }}">
+                <input type="hidden" name="message_channel" value="{{ message_history_filters.channel }}">
+                <input type="hidden" name="message_category" value="{{ message_history_filters.category }}">
+                <div>
+                    <label for="audit_q">Search audit log</label>
+                    <input id="audit_q" name="audit_q" type="text" value="{{ audit_log_filters.query }}"
+                        placeholder="actor, action, target, details">
                 </div>
-            </section>
+                <div>
+                    <label for="audit_action">Action</label>
+                    <select id="audit_action" name="audit_action">
+                        <option value="">All actions</option>
+                        {% for item in audit_log_filter_options.actions %}
+                        <option value="{{ item }}" {% if audit_log_filters.action==item %}selected{% endif %}>{{
+                            item.replace('_', ' ') | title }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="actions">
+                    <button type="submit" class="ghost">Apply</button>
+                    <a class="button-link ghost"
+                        href="{{ url_for('dashboard', message_q=message_history_filters.query, message_channel=message_history_filters.channel, message_category=message_history_filters.category) }}">Clear</a>
+                </div>
+            </form>
+            <div id="audit-log-results">
+                {% include "partials/audit_log_results.html" %}
+            </div>
+        </section>
         {% endif %}
+
+        <!-- Premium Footer -->
+        <footer class="db-footer">
+            <div class="db-footer-inner">
+                <div class="db-footer-brand">
+                    <svg class="db-footer-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+                    </svg>
+                    <span class="db-footer-name">Quantum University Roorkee</span>
+                </div>
+                <div class="db-footer-meta">
+                    <span>QUMS Academic Portal</span>
+                    <span class="db-footer-dot">Â·</span>
+                    <span>ENV: {{ settings.app_env if is_admin_authenticated else 'student' }}</span>
+                    {% if is_admin_authenticated %}
+                    <span class="db-footer-dot">Â·</span>
+                    <span>{{ "Waitress" if settings.use_waitress else "Flask Dev" }}</span>
+                    {% endif %}
+                </div>
+            </div>
+        </footer>
     </div>
     <script>
         (function () {
+            "use strict";
+
+            /* â”€â”€ Boot â”€â”€ */
             document.body.classList.add("dashboard-mounted");
-            const refreshToggle = document.querySelector(".js-refresh-toggle");
-            const refreshSeconds = Number(document.body.getAttribute("data-refresh-seconds") || "0");
-            const dashboardAuthRole = document.body.getAttribute("data-dashboard-auth-role") || "public";
-            const refreshStorageKey = "qums-dashboard-auto-refresh";
-            const refreshIndicator = document.querySelector(".js-sync-indicator");
-            const refreshStatus = document.querySelector(".js-refresh-status");
-            const refreshNote = document.querySelector(".js-refresh-note");
-            const supportsLiveRefresh = typeof window.fetch === "function"
-                && typeof window.Promise === "function"
-                && typeof window.URLSearchParams === "function";
-            const supportsAbortController = typeof window.AbortController === "function";
-            const supportsIntlTime = typeof window.Intl === "object"
-                && typeof window.Intl.DateTimeFormat === "function";
-            const effectiveRefreshSeconds = refreshSeconds > 0 ? Math.max(1, refreshSeconds) : 0;
-            const effectiveRefreshMs = effectiveRefreshSeconds * 1000;
-            let refreshTimer = null;
-            let refreshAbortTimer = null;
-            let lastSuccessfulRefreshAt = null;
 
-            function normalizeComparableMarkup(root) {
-                if (!root) {
-                    return "";
-                }
-                const clone = root.cloneNode(true);
-                clone.querySelectorAll("details[open]").forEach(function (node) {
-                    node.removeAttribute("open");
-                });
-                clone.querySelectorAll(".js-live-now, .js-live-clock").forEach(function (node) {
-                    node.textContent = "";
-                    node.setAttribute("data-base-iso", "");
-                });
-                clone.querySelectorAll(".js-countdown").forEach(function (node) {
-                    node.textContent = "";
-                });
-                return clone.outerHTML;
-            }
+            var refreshToggle      = document.querySelector(".js-refresh-toggle");
+            var refreshSeconds     = Number(document.body.getAttribute("data-refresh-seconds") || "0");
+            var dashboardAuthRole  = document.body.getAttribute("data-dashboard-auth-role") || "public";
+            var refreshStorageKey  = "qums-dashboard-auto-refresh";
+            var refreshIndicator   = document.querySelector(".js-sync-indicator");
+            var refreshStatus      = document.querySelector(".js-refresh-status");
+            var refreshNote        = document.querySelector(".js-refresh-note");
 
-            function parseHtmlRoot(html) {
-                const template = document.createElement("template");
-                template.innerHTML = String(html || "").trim();
-                return template.content.firstElementChild;
-            }
+            var supportsWorker     = typeof Worker === "function";
+            var supportsLive       = typeof fetch === "function" && typeof Promise === "function";
+            var supportsIntlTime   = typeof Intl === "object" && typeof Intl.DateTimeFormat === "function";
+            var raf                = typeof requestAnimationFrame === "function"
+                                        ? requestAnimationFrame
+                                        : function (fn) { setTimeout(fn, 16); };
 
-            function parseComparableFragment(html) {
-                const wrapper = document.createElement("div");
-                wrapper.innerHTML = String(html || "");
-                return wrapper;
-            }
+            window.__dashboardBaseNow = new Date();
+            var lastSyncAt = null;
+            var _worker    = null;
+            var _rafDomPending = false;
+            var _pendingPayload = null;
+            var _lastHashes = {};  /* hash cache per container — skip DOM work when unchanged */
 
-            function syncLiveNodes(currentRoot, incomingRoot) {
-                if (!currentRoot || !incomingRoot) {
-                    return;
-                }
-                const currentTimeNodes = currentRoot.querySelectorAll(".js-live-now, .js-live-clock");
-                const incomingTimeNodes = incomingRoot.querySelectorAll(".js-live-now, .js-live-clock");
-                currentTimeNodes.forEach(function (node, index) {
-                    const incomingNode = incomingTimeNodes[index];
-                    if (!incomingNode) {
-                        return;
-                    }
-                    node.setAttribute("data-base-iso", incomingNode.getAttribute("data-base-iso") || "");
-                    node.setAttribute("data-timezone", incomingNode.getAttribute("data-timezone") || "");
-                });
-                const currentCountdownNodes = currentRoot.querySelectorAll(".js-countdown");
-                const incomingCountdownNodes = incomingRoot.querySelectorAll(".js-countdown");
-                currentCountdownNodes.forEach(function (node, index) {
-                    const incomingNode = incomingCountdownNodes[index];
-                    if (!incomingNode) {
-                        return;
-                    }
-                    node.setAttribute("data-target-iso", incomingNode.getAttribute("data-target-iso") || "");
-                });
-            }
-
-            function rootHasActiveEditor(root) {
-                if (!root) {
-                    return false;
-                }
-                const activeElement = document.activeElement;
-                if (!activeElement || activeElement === document.body || !root.contains(activeElement)) {
-                    return false;
-                }
-                if (!(activeElement instanceof Element)) {
-                    return false;
-                }
-                return activeElement.matches("input, textarea, select, button, [contenteditable=''], [contenteditable='true']");
-            }
-
-            function syncOuterHtmlIfNeeded(root, html) {
-                if (!root || typeof html !== "string") {
-                    return root;
-                }
-                const incomingRoot = parseHtmlRoot(html);
-                if (!incomingRoot) {
-                    return root;
-                }
-                syncLiveNodes(root, incomingRoot);
-                if (normalizeComparableMarkup(root) === normalizeComparableMarkup(incomingRoot)) {
-                    return root;
-                }
-                root.outerHTML = incomingRoot.outerHTML;
-                return document.getElementById(incomingRoot.id || root.id) || root;
-            }
-
-            function syncInnerHtmlIfNeeded(root, html, options) {
-                if (!root || typeof html !== "string") {
-                    return false;
-                }
-                const incomingComparable = parseComparableFragment(html);
-                syncLiveNodes(root, incomingComparable);
-                if (rootHasActiveEditor(root)) {
-                    return false;
-                }
-                if (options && options.skipWhileDetailsOpen && root.querySelector("details[open]")) {
-                    return false;
-                }
-                const currentComparable = parseComparableFragment(root.innerHTML);
-                syncLiveNodes(currentComparable, incomingComparable);
-                if (normalizeComparableMarkup(currentComparable) === normalizeComparableMarkup(incomingComparable)) {
-                    syncLiveNodes(root, incomingComparable);
-                    return false;
-                }
-                const detailKeys = options && options.preserveDetails ? getOpenDetailKeys(root) : [];
-                root.innerHTML = html;
-                if (options && options.preserveDetails) {
-                    restoreOpenDetailKeys(root, detailKeys);
-                }
-                return true;
-            }
-
-            function isReloadNavigation() {
-                if (window.performance && typeof window.performance.getEntriesByType === "function") {
-                    const navigationEntries = window.performance.getEntriesByType("navigation");
-                    if (navigationEntries.length) {
-                        return navigationEntries[0].type === "reload";
-                    }
-                }
-                if (window.performance && window.performance.navigation) {
-                    return window.performance.navigation.type === 1;
-                }
-                return false;
-            }
-
-            function resetScrollAfterReload() {
+            /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+               SCROLL RESTORE
+               â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+            (function resetScrollAfterReload() {
                 if (window.history && "scrollRestoration" in window.history) {
                     window.history.scrollRestoration = "manual";
                 }
-                if (!isReloadNavigation()) {
-                    return;
-                }
-                const scrollToTop = function () {
-                    window.scrollTo(0, 0);
-                };
-                if (typeof window.requestAnimationFrame === "function") {
-                    window.requestAnimationFrame(scrollToTop);
-                } else {
-                    window.setTimeout(scrollToTop, 0);
-                }
+                var isReload = false;
+                try {
+                    var entries = performance.getEntriesByType("navigation");
+                    isReload = entries.length > 0 && entries[0].type === "reload";
+                } catch (e) {}
+                if (isReload) { raf(function () { window.scrollTo(0, 0); }); }
+            }());
+
+            /* ═══════════════════════════════════════════
+               LIVE CLOCK / COUNTDOWN
+               Cached element refs + visibility-aware ticks.
+               Zero DOM queries per frame when tab is hidden.
+               ═══════════════════════════════════════════ */
+            var _timerRafPending = false;
+            var _localTz = supportsIntlTime ? Intl.DateTimeFormat().resolvedOptions().timeZone : "";
+            var _tabHidden = false;
+
+            /* Cache timer element refs — rebuilt only after DOM patches */
+            var _cachedCountdowns = [];
+            var _cachedClocks     = [];
+            function rebuildTimerCache() {
+                _cachedCountdowns = Array.from(document.querySelectorAll(".js-countdown"));
+                _cachedClocks     = Array.from(document.querySelectorAll(".js-live-now, .js-live-clock"));
+            }
+            rebuildTimerCache();
+
+            /* Pause ticks entirely when browser tab is not visible */
+            document.addEventListener("visibilitychange", function () {
+                _tabHidden = document.hidden;
+            });
+
+            function formatCountdown(iso) {
+                var target = new Date(iso);
+                if (isNaN(target)) { return "Invalid time"; }
+                var diff = target - Date.now();
+                if (diff <= 0) { return "Due now"; }
+                var s = Math.floor(diff / 1000);
+                var h = Math.floor(s / 3600);
+                var m = Math.floor((s % 3600) / 60);
+                var sec = s % 60;
+                if (h > 0) { return h + "h " + pad(m) + "m " + pad(sec) + "s"; }
+                return m + "m " + pad(sec) + "s";
             }
 
-            function setLiveSyncState(state, note) {
-                if (refreshIndicator) {
-                    refreshIndicator.setAttribute("data-state", state);
-                }
-                if (refreshStatus) {
-                    const labels = {
-                        live: "Live sync active",
-                        syncing: "Syncing now",
-                        reconnecting: "Reconnecting",
-                        paused: "Sync paused",
-                        unsupported: "Compatibility mode"
-                    };
-                    refreshStatus.textContent = labels[state] || "Live sync";
-                }
-                if (refreshNote && note) {
-                    refreshNote.textContent = note;
-                }
-            }
+            function pad(n) { return String(n).padStart(2, "0"); }
 
-            function defaultRefreshNote() {
-                if (effectiveRefreshSeconds <= 0) {
-                    return "Live refresh is disabled in dashboard settings.";
-                }
-                const unit = effectiveRefreshSeconds === 1 ? "second" : "seconds";
-                return "Refreshing dashboard panels every " + effectiveRefreshSeconds + " " + unit + ".";
-            }
-
-            function formatSyncTimestamp(date) {
-                if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-                    return "";
-                }
-                if (!supportsIntlTime) {
-                    return date.toLocaleTimeString();
-                }
+            function formatLiveTime(baseIso, tz) {
+                var base = new Date(baseIso);
+                if (isNaN(base)) { return "Unavailable"; }
+                var current = new Date(base.getTime() + (Date.now() - window.__dashboardBaseNow.getTime()));
+                if (!supportsIntlTime) { return current.toLocaleString(); }
                 return new Intl.DateTimeFormat("en-IN", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                    hour12: false
-                }).format(date);
-            }
-
-            function buildLiveNote() {
-                if (!lastSuccessfulRefreshAt) {
-                    return defaultRefreshNote();
-                }
-                return "Last synced at " + formatSyncTimestamp(lastSuccessfulRefreshAt) + " | " + defaultRefreshNote();
-            }
-
-            function formatCountdown(targetIso) {
-                const now = new Date();
-                const target = new Date(targetIso);
-                const diff = target.getTime() - now.getTime();
-                if (Number.isNaN(target.getTime())) {
-                    return "Invalid time";
-                }
-                if (diff <= 0) {
-                    return "Due now";
-                }
-                const totalSeconds = Math.floor(diff / 1000);
-                const hours = Math.floor(totalSeconds / 3600);
-                const minutes = Math.floor((totalSeconds % 3600) / 60);
-                const seconds = totalSeconds % 60;
-                if (hours > 0) {
-                    return hours + "h " + String(minutes).padStart(2, "0") + "m " + String(seconds).padStart(2, "0") + "s";
-                }
-                return minutes + "m " + String(seconds).padStart(2, "0") + "s";
-            }
-
-            function formatLiveTime(baseIso, timezone) {
-                const base = new Date(baseIso);
-                if (Number.isNaN(base.getTime())) {
-                    return "Unavailable";
-                }
-                const now = new Date();
-                const current = new Date(base.getTime() + (now.getTime() - window.__dashboardBaseNow.getTime()));
-                if (!supportsIntlTime) {
-                    return current.toLocaleString();
-                }
-                return new Intl.DateTimeFormat("en-IN", {
-                    weekday: "long",
-                    day: "2-digit",
-                    month: "long",
-                    year: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                    hour12: false,
-                    timeZone: timezone
+                    weekday:"long", day:"2-digit", month:"long", year:"numeric",
+                    hour:"2-digit", minute:"2-digit", second:"2-digit",
+                    hour12:false, timeZone: tz || _localTz
                 }).format(current);
             }
 
-            function updateTimers() {
-                document.querySelectorAll(".js-countdown").forEach(function (node) {
-                    const targetIso = node.getAttribute("data-target-iso");
-                    node.textContent = formatCountdown(targetIso);
-                });
-                document.querySelectorAll(".js-live-now").forEach(function (node) {
-                    node.textContent = formatLiveTime(
-                        node.getAttribute("data-base-iso"),
-                        node.getAttribute("data-timezone") || Intl.DateTimeFormat().resolvedOptions().timeZone
-                    );
-                });
-                document.querySelectorAll(".js-live-clock").forEach(function (node) {
-                    node.textContent = formatLiveTime(
-                        node.getAttribute("data-base-iso"),
-                        node.getAttribute("data-timezone") || Intl.DateTimeFormat().resolvedOptions().timeZone
-                    );
+            function tickTimers() {
+                /* Skip entirely when tab is hidden — zero CPU */
+                if (_tabHidden) { return; }
+                if (_timerRafPending) { return; }
+                _timerRafPending = true;
+                raf(function () {
+                    _timerRafPending = false;
+                    var i, n, v;
+                    for (i = _cachedCountdowns.length - 1; i >= 0; i--) {
+                        n = _cachedCountdowns[i];
+                        if (!n.isConnected) { _cachedCountdowns.splice(i, 1); continue; }
+                        v = formatCountdown(n.getAttribute("data-target-iso"));
+                        if (n.textContent !== v) { n.textContent = v; }
+                    }
+                    for (i = _cachedClocks.length - 1; i >= 0; i--) {
+                        n = _cachedClocks[i];
+                        if (!n.isConnected) { _cachedClocks.splice(i, 1); continue; }
+                        v = formatLiveTime(n.getAttribute("data-base-iso"), n.getAttribute("data-timezone") || _localTz);
+                        if (n.textContent !== v) { n.textContent = v; }
+                    }
                 });
             }
 
-            function syncAutoRefreshState() {
-                if (effectiveRefreshSeconds <= 0) {
-                    setLiveSyncState("paused", defaultRefreshNote());
-                    return;
+            setInterval(tickTimers, 1000);
+            tickTimers();
+
+            /* ═══════════════════════════════════════════
+               SYNC STATE UI  (dot + text)
+               ═══════════════════════════════════════════ */
+            var stateLabels = {
+                live:"Live sync active", syncing:"Syncing…",
+                reconnecting:"Reconnecting…", paused:"Sync paused",
+                unsupported:"Compatibility mode"
+            };
+
+            function formatSyncTime(d) {
+                if (!d || isNaN(d)) { return ""; }
+                if (!supportsIntlTime) { return d.toLocaleTimeString(); }
+                return new Intl.DateTimeFormat("en-IN", {
+                    hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false
+                }).format(d);
+            }
+
+            function buildNote() {
+                if (refreshSeconds <= 0) { return "Live sync disabled in settings."; }
+                if (!lastSyncAt) { return "Background sync active."; }
+                return "Synced " + formatSyncTime(lastSyncAt);
+            }
+
+            function setSyncState(state, note) {
+                if (refreshIndicator) { refreshIndicator.setAttribute("data-state", state); }
+                if (refreshStatus)    { refreshStatus.textContent = stateLabels[state] || "Live sync"; }
+                if (refreshNote && note) { refreshNote.textContent = note; }
+            }
+
+            /* ═══════════════════════════════════════════
+               HTML DIFFING  (runs in main thread, in rAF)
+               Uses fast FNV-1a hash instead of cloning the
+               entire DOM tree and serializing outerHTML.
+               ═══════════════════════════════════════════ */
+            function parseEl(html) {
+                var t = document.createElement("template");
+                t.innerHTML = (html || "").trim();
+                return t.content.firstElementChild;
+            }
+
+            /* Fast FNV-1a 32-bit hash — avoids expensive outerHTML string comparison */
+            function fnv1a(str) {
+                var h = 0x811c9dc5;
+                for (var i = 0, len = str.length; i < len; i++) {
+                    h ^= str.charCodeAt(i);
+                    h = (h * 0x01000193) >>> 0;
                 }
-                if (!supportsLiveRefresh) {
-                    if (refreshToggle) {
-                        refreshToggle.disabled = true;
-                        refreshToggle.textContent = "Live sync unavailable";
+                return h;
+            }
+
+            function normalise(root) {
+                if (!root) { return 0; }
+                var c = root.cloneNode(true);
+                c.querySelectorAll("details[open]").forEach(function (n) { n.removeAttribute("open"); });
+                c.querySelectorAll(".js-live-now,.js-live-clock").forEach(function (n) {
+                    n.textContent = ""; n.setAttribute("data-base-iso", "");
+                });
+                c.querySelectorAll(".js-countdown").forEach(function (n) { n.textContent = ""; });
+                return fnv1a(c.innerHTML);
+            }
+
+            function syncIso(cur, inc) {
+                if (!cur || !inc) { return; }
+                var cn = cur.querySelectorAll(".js-live-now,.js-live-clock");
+                var ik = inc.querySelectorAll(".js-live-now,.js-live-clock");
+                cn.forEach(function (n, i) {
+                    if (ik[i]) {
+                        n.setAttribute("data-base-iso",  ik[i].getAttribute("data-base-iso")  || "");
+                        n.setAttribute("data-timezone",   ik[i].getAttribute("data-timezone")   || "");
                     }
-                    setLiveSyncState("unsupported", "This browser does not support the live dashboard refresh features.");
-                    return;
-                }
-                const enabled = refreshToggle ? (localStorage.getItem(refreshStorageKey) !== "off") : true;
-                if (refreshToggle) {
-                    refreshToggle.textContent = "Live sync: " + (enabled ? "on" : "off");
-                }
-                if (refreshTimer) {
-                    window.clearTimeout(refreshTimer);
-                    refreshTimer = null;
-                }
-                if (enabled) {
-                    setLiveSyncState("live", buildLiveNote());
-                    scheduleNextRefresh();
-                } else {
-                    setLiveSyncState("paused", "Live sync is paused on this browser.");
-                }
+                });
+                var cc = cur.querySelectorAll(".js-countdown");
+                var ci = inc.querySelectorAll(".js-countdown");
+                cc.forEach(function (n, i) {
+                    if (ci[i]) { n.setAttribute("data-target-iso", ci[i].getAttribute("data-target-iso") || ""); }
+                });
+            }
+
+            function getOpenKeys(root) {
+                if (!root) { return []; }
+                return Array.from(root.querySelectorAll("details[open][data-refresh-key]"))
+                    .map(function (n) { return n.getAttribute("data-refresh-key"); }).filter(Boolean);
+            }
+
+            function restoreKeys(root, keys) {
+                (keys || []).forEach(function (k) {
+                    var n = root && root.querySelector('details[data-refresh-key="' + k + '"]');
+                    if (n) { n.open = true; }
+                });
+            }
+
+            function hasActiveEditor(root) {
+                var ae = document.activeElement;
+                return ae && ae !== document.body && root && root.contains(ae) &&
+                    ae.matches("input,textarea,select,button,[contenteditable]");
+            }
+
+            function patchOuter(root, html) {
+                if (!root || typeof html !== "string") { return root; }
+                /* Fast path: hash the raw server HTML to skip DOM work */
+                var id = root.id || "__outer";
+                var h = fnv1a(html);
+                if (_lastHashes[id] === h) { return root; }
+                var inc = parseEl(html);
+                if (!inc) { return root; }
+                syncIso(root, inc);
+                _lastHashes[id] = h;
+                root.outerHTML = inc.outerHTML;
+                return document.getElementById(inc.id || root.id) || root;
+            }
+
+            function patchInner(root, html, opts) {
+                if (!root || typeof html !== "string") { return false; }
+                /* Fast path: if raw HTML hash is same, skip all DOM work */
+                var id = root.id || "__inner";
+                var h = fnv1a(html);
+                if (_lastHashes[id] === h) { return false; }
+                /* Bail if user is interacting */
+                if (hasActiveEditor(root)) { return false; }
+                if (opts && opts.skipWhileOpen && root.querySelector("details[open]")) { return false; }
+                var keys = (opts && opts.preserve) ? getOpenKeys(root) : [];
+                root.innerHTML = html;
+                if (opts && opts.preserve) { restoreKeys(root, keys); }
+                _lastHashes[id] = h;
+                return true;
             }
 
             function renderQueueCounts(summary) {
-                if (!summary) {
-                    return;
-                }
-                Object.keys(summary).forEach(function (key) {
-                    const node = document.querySelector('[data-queue-count="' + key + '"]');
-                    if (node) {
-                        node.textContent = String(summary[key] || 0);
-                    }
+                if (!summary) { return; }
+                Object.keys(summary).forEach(function (k) {
+                    var n = document.querySelector('[data-queue-count="' + k + '"]');
+                    if (n) { n.textContent = String(summary[k] || 0); }
                 });
             }
 
-            let historyRefreshInFlight = false;
+            /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+               APPLY PAYLOAD â€” always inside rAF so DOM
+               writes are batched and never jank the frame
+               â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+            /* requestIdleCallback with fallback — DOM patches run
+               only when browser is idle, never stealing frame budget */
+            var ric = typeof requestIdleCallback === "function"
+                ? requestIdleCallback
+                : function (fn) { setTimeout(fn, 4); };
 
-            function getOpenDetailKeys(root) {
-                if (!root) {
-                    return [];
-                }
-                return Array.from(root.querySelectorAll("details[open][data-refresh-key]")).map(function (node) {
-                    return node.getAttribute("data-refresh-key");
-                }).filter(Boolean);
-            }
+            function applyPayload(payload) {
+                if (!payload) { return; }
+                /* Always coalesce — keep only the latest payload */
+                _pendingPayload = payload;
+                if (_rafDomPending) { return; }
+                _rafDomPending = true;
 
-            function restoreOpenDetailKeys(root, keys) {
-                if (!root || !Array.isArray(keys) || !keys.length) {
-                    return;
-                }
-                keys.forEach(function (key) {
-                    const node = root.querySelector('details[data-refresh-key="' + key + '"]');
-                    if (node) {
-                        node.open = true;
-                    }
-                });
-            }
+                /* Use idle callback so DOM writes never jank the visible frame */
+                ric(function () {
+                    _rafDomPending = false;
+                    var p = _pendingPayload;
+                    _pendingPayload = null;
+                    if (!p) { return; }
 
-            function scheduleNextRefresh() {
-                if (effectiveRefreshSeconds <= 0 || !supportsLiveRefresh) {
-                    return;
-                }
-                if (refreshToggle && localStorage.getItem(refreshStorageKey) === "off") {
-                    return;
-                }
-                if (refreshTimer) {
-                    window.clearTimeout(refreshTimer);
-                }
-                refreshTimer = window.setTimeout(function () {
-                    refreshDashboardPanels();
-                }, effectiveRefreshMs);
-            }
+                    var heroRoot   = document.getElementById("hero-live-grid-results");
+                    var histRoot   = document.getElementById("message-history-results");
+                    var dlRoot     = document.getElementById("dead-letter-content");
+                    var auditRoot  = document.getElementById("audit-log-results");
+                    var acRoot     = document.getElementById("action-center-results");
+                    var stuRoot    = document.getElementById("student-cards-results");
 
-            function parseJsonResponse(response) {
-                const contentType = response.headers.get("content-type") || "";
-                if (contentType.toLowerCase().indexOf("application/json") === -1) {
-                    if (response.redirected && response.url) {
-                        window.location.href = response.url;
-                        return Promise.reject(new Error("redirect"));
-                    }
-                    if (!response.ok) {
-                        if (dashboardAuthRole !== "public") {
-                            window.location.reload();
-                        }
-                        return Promise.reject(new Error("invalid-response"));
-                    }
-                    return Promise.reject(new Error("unexpected-response"));
-                }
-                return response.json().then(function (payload) {
-                    if (!response.ok && payload && payload.reload) {
-                        window.location.href = payload.login_url || window.location.href;
-                        return Promise.reject(new Error("reload"));
-                    }
-                    return { ok: response.ok, payload: payload };
-                });
-            }
+                    if (heroRoot  && p.hero_live_grid_html)    { heroRoot  = patchOuter(heroRoot,  p.hero_live_grid_html); }
+                    if (histRoot  && p.message_history_html)   { patchInner(histRoot,  p.message_history_html,  { preserve: true }); }
+                    if (dlRoot    && p.dead_letter_html)       { patchInner(dlRoot,    p.dead_letter_html,       { preserve: true }); dlRoot = document.getElementById("dead-letter-content"); }
+                    if (auditRoot && p.audit_log_html)         { patchInner(auditRoot, p.audit_log_html,         { preserve: true }); }
+                    if (acRoot    && p.action_center_html)     { patchInner(acRoot,    p.action_center_html); }
+                    if (stuRoot   && p.student_cards_html)     { patchInner(stuRoot,   p.student_cards_html,     { preserve: true, skipWhileOpen: true }); }
 
-            function refreshDashboardPanels() {
-                if (!supportsLiveRefresh) {
-                    return Promise.resolve();
-                }
-                if (historyRefreshInFlight) {
-                    return Promise.resolve();
-                }
-                historyRefreshInFlight = true;
-                const params = new URLSearchParams(window.location.search);
-                params.set("_ts", String(Date.now()));
-                let historyRoot = document.getElementById("message-history-results");
-                let deadLetterRoot = document.getElementById("dead-letter-content");
-                let auditRoot = document.getElementById("audit-log-results");
-                const actionCenterRoot = document.getElementById("action-center-results");
-                const studentCardsRoot = document.getElementById("student-cards-results");
-                let heroLiveGridRoot = document.getElementById("hero-live-grid-results");
-                const requestOptions = {
-                    cache: "no-store",
-                    headers: {
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Accept": "application/json",
-                        "Cache-Control": "no-cache",
-                        "X-Dashboard-Auth-Role": dashboardAuthRole
-                    }
-                };
-                let abortController = null;
-                if (supportsAbortController) {
-                    abortController = new AbortController();
-                    requestOptions.signal = abortController.signal;
-                    refreshAbortTimer = window.setTimeout(function () {
-                        abortController.abort();
-                    }, Math.max(5000, effectiveRefreshMs * 4));
-                }
-                setLiveSyncState("syncing", "Requesting the latest dashboard activity...");
-                return fetch("/dashboard/live-data?" + params.toString(), requestOptions).then(function (response) {
-                    return parseJsonResponse(response);
-                }).then(function (result) {
-                    if (!result.ok) {
-                        throw new Error((result.payload && result.payload.message) || "refresh failed");
-                    }
-                    const payload = result.payload;
-                    if (heroLiveGridRoot && typeof payload.hero_live_grid_html === "string") {
-                        heroLiveGridRoot = syncOuterHtmlIfNeeded(heroLiveGridRoot, payload.hero_live_grid_html);
-                    }
-                    if (historyRoot && typeof payload.message_history_html === "string") {
-                        syncInnerHtmlIfNeeded(historyRoot, payload.message_history_html, { preserveDetails: true });
-                    }
-                    if (deadLetterRoot && typeof payload.dead_letter_html === "string") {
-                        syncInnerHtmlIfNeeded(deadLetterRoot, payload.dead_letter_html, { preserveDetails: true });
-                        deadLetterRoot = document.getElementById("dead-letter-content");
-                    }
-                    if (auditRoot && typeof payload.audit_log_html === "string") {
-                        syncInnerHtmlIfNeeded(auditRoot, payload.audit_log_html, { preserveDetails: true });
-                    }
-                    if (actionCenterRoot && typeof payload.action_center_html === "string") {
-                        syncInnerHtmlIfNeeded(actionCenterRoot, payload.action_center_html);
-                    }
-                    if (studentCardsRoot && typeof payload.student_cards_html === "string") {
-                        syncInnerHtmlIfNeeded(studentCardsRoot, payload.student_cards_html, {
-                            preserveDetails: true,
-                            skipWhileDetailsOpen: true
-                        });
-                    }
+                    renderQueueCounts(p.outbound_summary || {});
+                    bindDeadLetterForms(dlRoot || document);
+
+                    /* Rebuild timer element cache after DOM patch */
+                    rebuildTimerCache();
+
                     window.__dashboardBaseNow = new Date();
-                    lastSuccessfulRefreshAt = new Date();
-                    renderQueueCounts(payload.outbound_summary || {});
-                    bindDeadLetterRetryForms(deadLetterRoot || document);
-                    updateTimers();
-                    setLiveSyncState("live", buildLiveNote());
-                }).catch(function () {
-                    setLiveSyncState("reconnecting", "Refresh failed. Retrying in " + (effectiveRefreshSeconds || 1) + " second" + ((effectiveRefreshSeconds || 1) === 1 ? "" : "s") + ".");
-                    return null;
-                }).finally(function () {
-                    if (refreshAbortTimer) {
-                        window.clearTimeout(refreshAbortTimer);
-                        refreshAbortTimer = null;
-                    }
-                    historyRefreshInFlight = false;
-                    scheduleNextRefresh();
+                    lastSyncAt = new Date();
+                    setSyncState("live", buildNote());
+                    tickTimers();
                 });
             }
 
-            function bindDeadLetterRetryForms(root) {
+            /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+               DEAD-LETTER RETRY FORMS
+               â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+            function bindDeadLetterForms(root) {
                 (root || document).querySelectorAll("form[action*='/dead-letter/']").forEach(function (form) {
-                    if (form.dataset.retryBound === "1") {
-                        return;
-                    }
+                    if (form.dataset.retryBound === "1") { return; }
                     form.dataset.retryBound = "1";
-                    const button = form.querySelector(".js-dead-letter-retry");
-                    const feedback = form.querySelector(".inline-feedback");
-                    const row = form.closest("[data-dead-letter-row]");
-                    if (!button || !feedback) {
-                        return;
-                    }
-                    form.addEventListener("submit", function (event) {
-                        event.preventDefault();
-                        button.disabled = true;
-                        button.textContent = "Retrying...";
-                        feedback.hidden = true;
-                        feedback.className = "inline-feedback";
+                    var btn      = form.querySelector(".js-dead-letter-retry");
+                    var feedback = form.querySelector(".inline-feedback");
+                    var row      = form.closest("[data-dead-letter-row]");
+                    if (!btn || !feedback) { return; }
+                    form.addEventListener("submit", function (evt) {
+                        evt.preventDefault();
+                        btn.disabled = true; btn.textContent = "Retrying\u2026";
+                        feedback.hidden = true; feedback.className = "inline-feedback";
                         fetch(form.action, {
                             method: "POST",
-                            body: new FormData(form),
-                            headers: {
-                                "X-Requested-With": "XMLHttpRequest",
-                                "Accept": "application/json"
-                            }
-                        }).then(function (response) {
-                            return parseJsonResponse(response);
-                        }).then(function (result) {
-                            if (!result.ok && result.payload && result.payload.reload) {
-                                window.location.reload();
-                                return;
-                            }
+                            body:    new FormData(form),
+                            headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" }
+                        }).then(function (r) { return r.json(); })
+                          .then(function (res) {
                             feedback.hidden = false;
-                            feedback.textContent = result.payload.message || (result.ok ? "Retry completed." : "Retry failed.");
-                            feedback.classList.add(result.ok ? "success" : "error");
-                            if (result.ok) {
-                                button.textContent = "Retried";
-                                button.disabled = true;
-                                renderQueueCounts(result.payload.queue || {});
-                                window.setTimeout(function () {
-                                    if (row && row.isConnected) {
-                                        row.remove();
-                                    }
-                                    refreshDashboardPanels();
-                                }, 1500);
+                            feedback.textContent = res.message || (res.ok ? "Retry completed." : "Retry failed.");
+                            feedback.classList.add(res.ok ? "success" : "error");
+                            if (res.ok) {
+                                btn.textContent = "Retried"; btn.disabled = true;
+                                renderQueueCounts(res.queue || {});
+                                setTimeout(function () {
+                                    if (row && row.isConnected) { row.remove(); }
+                                    if (_worker) { _worker.postMessage({ cmd: "poll_now" }); }
+                                }, 1200);
                             } else {
-                                button.textContent = "Retry Now";
-                                button.disabled = false;
+                                btn.textContent = "Retry Now"; btn.disabled = false;
                             }
-                        }).catch(function () {
+                          })
+                          .catch(function () {
                             feedback.hidden = false;
-                            feedback.textContent = "Retry request failed. Refresh the dashboard and try again.";
+                            feedback.textContent = "Request failed. Refresh and try again.";
                             feedback.classList.add("error");
-                            button.textContent = "Retry Now";
-                            button.disabled = false;
-                        });
+                            btn.textContent = "Retry Now"; btn.disabled = false;
+                          });
                     });
                 });
             }
 
-            window.__dashboardBaseNow = new Date();
-            resetScrollAfterReload();
-            updateTimers();
-            window.setInterval(updateTimers, 1000);
-            if (refreshToggle && supportsLiveRefresh) {
-                refreshToggle.addEventListener("click", function () {
-                    const enabled = localStorage.getItem(refreshStorageKey) !== "off";
-                    localStorage.setItem(refreshStorageKey, enabled ? "off" : "on");
-                    syncAutoRefreshState();
+            bindDeadLetterForms(document);
+
+            /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+               WEB WORKER  â€” fetches happen 100% off the
+               main thread, zero UI frame budget used
+               â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+            function startWorker(intervalMs) {
+                if (!supportsWorker || !supportsLive) { return null; }
+                var w;
+                try {
+                    w = new Worker("{{ url_for('static', filename='dashboard_worker.js') }}");
+                } catch (e) { return null; }
+
+                w.onmessage = function (evt) {
+                    var msg = evt.data || {};
+                    if (msg.type === "data") {
+                        applyPayload(msg.payload);
+                    } else if (msg.type === "auth_required" || msg.type === "redirect") {
+                        if (dashboardAuthRole !== "public") {
+                            var dest = (msg.payload && msg.payload.login_url) || msg.url || window.location.href;
+                            window.location.href = dest;
+                        }
+                    } else if (msg.type === "error") {
+                        setSyncState("reconnecting", "Sync failed â€” retrying silently\u2026");
+                    }
+                };
+
+                w.onerror = function () {
+                    setSyncState("reconnecting", "Worker error \u2014 retrying silently\u2026");
+                };
+
+                w.postMessage({
+                    cmd:        "start",
+                    intervalMs: intervalMs,
+                    role:       dashboardAuthRole
                 });
-                syncAutoRefreshState();
+
+                return w;
+            }
+
+            /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+               FALLBACK â€” plain fetch for browsers without
+               Worker support (very rare)
+               â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+            var _fallbackTimer = null;
+
+            function fallbackPoll() {
+                if (!supportsLive) { return; }
+                var url = "/dashboard/live-data?_ts=" + Date.now();
+                fetch(url, {
+                    cache:   "no-store",
+                    headers: {
+                        "X-Requested-With":      "XMLHttpRequest",
+                        "Accept":                "application/json",
+                        "Cache-Control":         "no-cache",
+                        "X-Dashboard-Auth-Role": dashboardAuthRole
+                    }
+                }).then(function (r) { return r.json(); })
+                  .then(function (data) {
+                    if (data && !data.reload) { applyPayload(data); }
+                  })
+                  .catch(function () {})
+                  .finally(function () {
+                    _fallbackTimer = setTimeout(fallbackPoll, Math.max(5000, (refreshSeconds || 15) * 1000));
+                  });
+            }
+
+            /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+               MAIN BOOT â€” wire everything up
+               â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+            function isRefreshEnabled() {
+                if (!refreshToggle) { return true; }
+                return localStorage.getItem(refreshStorageKey) !== "off";
+            }
+
+            function syncToggleState() {
+                if (!supportsLive || refreshSeconds <= 0) {
+                    setSyncState("paused", "Live scan disabled in settings.");
+                    return;
+                }
+                var enabled = isRefreshEnabled();
+                if (refreshToggle) {
+                    refreshToggle.textContent = "Live sync: " + (enabled ? "on" : "off");
+                }
+                if (enabled) {
+                    if (supportsWorker) {
+                        if (!_worker) {
+                            _worker = startWorker(refreshSeconds * 1000);
+                        }
+                        setSyncState("live", buildNote());
+                    } else {
+                        setSyncState("live", buildNote());
+                        if (!_fallbackTimer) { fallbackPoll(); }
+                    }
+                } else {
+                    if (_worker) { _worker.postMessage({ cmd: "stop" }); _worker.terminate(); _worker = null; }
+                    if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
+                    setSyncState("paused", "Live sync is paused on this browser.");
+                }
+            }
+
+            if (refreshToggle && supportsLive) {
+                refreshToggle.addEventListener("click", function () {
+                    var enabled = isRefreshEnabled();
+                    localStorage.setItem(refreshStorageKey, enabled ? "off" : "on");
+                    syncToggleState();
+                });
             } else if (refreshToggle) {
                 refreshToggle.disabled = true;
                 refreshToggle.textContent = "Live sync unavailable";
+                setSyncState("unsupported", "Your browser does not support live sync.");
             }
-            bindDeadLetterRetryForms(document);
+
+            syncToggleState();
+
+            /* ═══════════════════════════════════════════
+               THEME TOGGLE — Light / Dark mode
+               ═══════════════════════════════════════════ */
+            var themeToggle = document.querySelector(".js-theme-toggle");
+            var themeLabel  = document.querySelector(".js-theme-label");
+            var themeIcon   = document.querySelector(".js-theme-icon");
+
+            var sunPath = "M10 3a1 1 0 011 1v1a1 1 0 01-2 0V4a1 1 0 011-1zm0 11a1 1 0 011 1v1a1 1 0 01-2 0v-1a1 1 0 011-1zm7-4a1 1 0 010 2h-1a1 1 0 010-2h1zM5 10a1 1 0 010 2H4a1 1 0 010-2h1zm10.07-3.54a1 1 0 010 1.41l-.7.71a1 1 0 01-1.42-1.42l.71-.7a1 1 0 011.41 0zM7.05 14.24a1 1 0 010 1.41l-.7.71a1 1 0 11-1.42-1.42l.71-.7a1 1 0 011.41 0zm7.07 1.42a1 1 0 01-1.41 0l-.71-.71a1 1 0 011.42-1.41l.7.7a1 1 0 010 1.42zM5.76 7.05a1 1 0 01-1.41 0l-.71-.7a1 1 0 111.41-1.42l.71.71a1 1 0 010 1.41zM10 7a3 3 0 100 6 3 3 0 000-6z";
+            var moonPath = "M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z";
+
+            function syncThemeUI() {
+                var current = document.documentElement.getAttribute("data-theme") || "light";
+                if (themeLabel) { themeLabel.textContent = current === "dark" ? "Dark" : "Light"; }
+                if (themeIcon)  {
+                    themeIcon.innerHTML = '<path d="' + (current === "dark" ? moonPath : sunPath) + '"/>';
+                }
+            }
+
+            syncThemeUI();
+
+            if (themeToggle) {
+                themeToggle.addEventListener("click", function () {
+                    var current = document.documentElement.getAttribute("data-theme") || "light";
+                    var next = current === "dark" ? "light" : "dark";
+                    document.documentElement.setAttribute("data-theme", next);
+                    localStorage.setItem("qums-theme", next);
+                    syncThemeUI();
+                });
+            }
+
         }());
     </script>
 </body>

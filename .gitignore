@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.playwright-cli/
+.gemini/
 .pytest_cache/
 .tmp-pytest-cache/
 .tmp-test/

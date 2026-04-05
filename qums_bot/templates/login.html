@@ -3,38 +3,74 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>Manual ERP Login</title>
-    <meta name="theme-color" content="#0e4f64">
+    <title>QUMS Bot — Manual ERP Login</title>
+    <meta name="description" content="Complete the ERP captcha to restore your session.">
+    <meta name="theme-color" content="#0d0b14">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
 </head>
 <body class="auth-body">
     <div class="auth-shell">
-        <div class="auth-card auth-card--xl">
-            <div class="auth-hero">
-                <h1 class="auth-title">Manual ERP Login</h1>
-                <p class="meta auth-hero-meta">Complete the ERP captcha once to restore the student session.</p>
+        <aside class="auth-panel-art">
+            <img class="auth-panel-art-img" src="{{ url_for('static', filename='auth_side_panel.png') }}" alt="University campus">
+            <div class="auth-features">
+                <div class="auth-features-logo">QUMS Bot</div>
+                <div class="auth-features-tagline">ERP Session Recovery</div>
             </div>
-            <div class="auth-content">
-                <p class="meta">
-                    Student: {{ student.student_label }}<br>
-                    ERP user id: {{ student.user_name }}
-                </p>
-                <p>The bot will not solve the captcha automatically. Enter the captcha shown below to activate the ERP session.</p>
-                <img class="auth-captcha" src="{{ pending.captcha_data_url }}" alt="ERP captcha">
-                <form method="post" action="{{ url_for('complete_login', student_id=student.id) }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <label for="captcha">Captcha</label>
-                    <input id="captcha" name="captcha" type="text" autocomplete="off" required>
-                    <div class="auth-actions">
-                        <button type="submit">Complete Login</button>
+            <div class="auth-panel-quote">
+                <blockquote>"One captcha and the bot takes over again — monitoring, scanning, and sending alerts automatically."</blockquote>
+                <cite>— QUMS ERP Engine</cite>
+            </div>
+        </aside>
+
+        <div class="auth-panel-form">
+            <div class="auth-card auth-card--xl" role="main">
+                <div class="auth-hero">
+                    <div class="auth-brand">
+                        <div class="auth-brand-icon">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <div class="auth-brand-name">QUMS Bot</div>
+                            <div class="auth-brand-tag">Manual ERP Session</div>
+                        </div>
                     </div>
-                </form>
-                <div class="auth-actions">
-                    <form method="post" action="{{ url_for('refresh_login', student_id=student.id) }}">
+                    <h1 class="auth-title">Complete Captcha</h1>
+                    <p class="auth-hero-meta">
+                        The bot needs your help with this captcha to restore the ERP session for
+                        <strong style="color:var(--amber);">{{ student.student_label }}</strong>.
+                    </p>
+                </div>
+
+                <div class="auth-content">
+                    <div class="flash warning">
+                        The bot cannot solve this captcha automatically. Enter the code shown in the image below to re-activate the ERP session.
+                    </div>
+
+                    <p class="meta">
+                        <strong style="color:var(--amber)">ERP user id:</strong> {{ student.user_name }}
+                    </p>
+
+                    <img class="auth-captcha" src="{{ pending.captcha_data_url }}" alt="ERP captcha challenge">
+
+                    <form method="post" action="{{ url_for('complete_login', student_id=student.id) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <button type="submit" class="secondary">Refresh Captcha</button>
+                        <label for="captcha">Captcha Code</label>
+                        <input id="captcha" name="captcha" type="text" autocomplete="off" required placeholder="Type the characters shown above" style="letter-spacing:0.1em;">
+                        <button type="submit" id="complete-login-btn">Complete Login &amp; Resume Bot</button>
                     </form>
-                    <a class="button-link ghost" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
+
+                    <div class="auth-divider">or</div>
+
+                    <div class="auth-actions">
+                        <form method="post" action="{{ url_for('refresh_login', student_id=student.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="secondary">Refresh Captcha</button>
+                        </form>
+                        <a class="button-link ghost" href="{{ url_for('dashboard') }}">← Back to Dashboard</a>
+                    </div>
                 </div>
             </div>
         </div>
