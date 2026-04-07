@@ -96,6 +96,10 @@ class FakeERP:
             raise AuthenticationRequired("expired")
         return object()
 
+    def validate_session(self, student):
+        if self.auth_required:
+            raise AuthenticationRequired("expired")
+
     def start_manual_login(self, student):
         return PendingLogin(
             student_id=student.id,
@@ -167,6 +171,9 @@ class FlakyTelegram(ConfiguredTelegram):
 
 
 class DummyService:
+    def __init__(self):
+        self.db = None
+
     def run_scheduled_dispatch(self):
         return None
 
@@ -271,6 +278,7 @@ class SchedulerServiceTests(unittest.TestCase):
                 "delivery-retry-checks",
                 "telegram-inbound-checks",
                 "telegram-admin-refresh-checks",
+                "daily-db-backup",
             },
         )
         self.assertTrue(scheduler._job_defaults["coalesce"])
@@ -353,7 +361,7 @@ class SchedulerServiceTests(unittest.TestCase):
             telegram_chat_id="123456789",
             enabled=True,
             notification_channel_mode="telegram_only",
-            disabled_actions_json='["send_attendance_summary"]',
+            disabled_actions_json='["send_attendance_summary","send_day_report"]',
             timezone="Asia/Kolkata",
         )
         self.db.replace_lecture_events(
@@ -3089,9 +3097,12 @@ class SchedulerServiceTests(unittest.TestCase):
 
         service.run_due_checks()
 
-        self.assertEqual(len(telegram.messages), 3)
-        self.assertTrue(all("Attendance Update" in body for _, _, body in telegram.messages))
-        self.assertEqual(len(service.list_message_history()), 3)
+        self.assertEqual(len(telegram.messages), 4)
+        attendance_messages = [(cid, mk, body) for cid, mk, body in telegram.messages if "Attendance Update" in body]
+        self.assertEqual(len(attendance_messages), 3)
+        day_report_messages = [(cid, mk, body) for cid, mk, body in telegram.messages if "End-of-Day Attendance Report" in body]
+        self.assertEqual(len(day_report_messages), 1)
+        self.assertEqual(len(service.list_message_history()), 4)
         tracked_events = self.db.get_lecture_events_for_day(student_id, date(2026, 3, 14))
         self.assertEqual(len([event for event in tracked_events if not event.is_break]), 3)
         self.assertTrue(all(event.status == "notified_present" for event in tracked_events if not event.is_break))

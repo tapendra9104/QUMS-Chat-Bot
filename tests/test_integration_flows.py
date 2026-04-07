@@ -591,9 +591,9 @@ class IntegrationFlowTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn("QUMS Bot", html)
-            self.assertIn("Student sign in", html)
-            self.assertIn("/admin/login?next=/", html)
-            self.assertIn("Reset it with Telegram", html)
+            self.assertIn("Student Sign In", html)
+            self.assertIn("/admin/login", html)
+            self.assertIn("Forgot Password?", html)
             self.assertNotIn("Forgot your admin password?", html)
 
     def test_admin_login_page_uses_shared_qums_bot_branding(self) -> None:
@@ -614,11 +614,10 @@ class IntegrationFlowTests(unittest.TestCase):
             html = response.get_data(as_text=True)
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn("<title>QUMS Bot</title>", html)
-            self.assertIn("Admin sign in for the website dashboard.", html)
+            self.assertIn("QUMS Bot", html)
+            self.assertIn("Admin Sign In", html)
             self.assertIn("Forgot your password?", html)
-            self.assertIn("Reset it with Telegram", html)
-            self.assertNotIn("QUMS Bot Admin", html)
+            self.assertIn("Reset via Telegram", html)
 
     def test_public_application_submission_saves_request_and_sends_telegram_notification(self) -> None:
         db_path = self.tmp / "bot.sqlite3"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
@@ -7,6 +9,8 @@ from pathlib import Path
 from typing import Iterable
 
 from .models import (
+    AdminAccount,
+    AdminApplication,
     AdminAuditRecord,
     ApplicationRequest,
     DailyAttendanceReport,
@@ -49,21 +53,70 @@ def datetime_from_iso(value: str | None) -> datetime | None:
 
 
 class Database:
+    MAX_BACKUPS = 7  # Keep last 7 daily backups
+
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._logger = logging.getLogger(__name__)
+
+    def backup_to(self, backup_dir: Path | str) -> Path:
+        """Create a timestamped SQLite backup using the online backup API.
+
+        Returns the path to the backup file. Old backups beyond MAX_BACKUPS
+        are pruned automatically.
+        """
+        backup_path = Path(backup_dir)
+        backup_path.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dest = backup_path / f"bot_{stamp}.sqlite3"
+
+        source_conn = sqlite3.connect(self.path, timeout=30)
+        try:
+            dest_conn = sqlite3.connect(dest)
+            try:
+                source_conn.backup(dest_conn)
+            finally:
+                dest_conn.close()
+        finally:
+            source_conn.close()
+
+        self._logger.info("Database backed up to %s", dest)
+        self._prune_backups(backup_path)
+        return dest
+
+    def _prune_backups(self, backup_dir: Path) -> None:
+        backups = sorted(
+            backup_dir.glob("bot_*.sqlite3"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for old_backup in backups[self.MAX_BACKUPS:]:
+            try:
+                old_backup.unlink()
+                self._logger.info("Pruned old backup: %s", old_backup.name)
+            except OSError:
+                pass
 
     @contextmanager
     def _connect(self):
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA journal_size_limit = 67108864")  # 64MB
         conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
             conn.commit()
         finally:
             conn.close()
+
+    def execute_query(self, sql: str, params: tuple = ()) -> list[dict]:
+        """Run a read-only SQL query and return results as list of dicts."""
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(row) for row in rows]
 
     @staticmethod
     def _is_erp_session_status(status: str | None) -> bool:
@@ -298,6 +351,31 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS admin_applications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    applicant_name TEXT NOT NULL,
+                    desired_username TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    telegram_username TEXT NOT NULL DEFAULT '',
+                    note TEXT,
+                    created_from_ip TEXT,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS admin_accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    telegram_username TEXT NOT NULL DEFAULT '',
+                    role TEXT NOT NULL DEFAULT 'admin',
+                    created_from_application_id INTEGER,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_lecture_events_day
                     ON lecture_events (student_id, event_date, start_time);
 
@@ -324,6 +402,12 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_telegram_admin_refresh
                     ON telegram_admin_chats (auto_refresh_enabled, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_admin_applications_recent
+                    ON admin_applications (created_at DESC, id DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_admin_accounts_username
+                    ON admin_accounts (username);
                 """
             )
             self._ensure_column(conn, "lecture_events", "status_recorded_at", "TEXT")
@@ -434,6 +518,7 @@ class Database:
                     ON lecture_events (student_id, status_recorded_at DESC, id DESC)
                 """
             )
+            self._ensure_column(conn, "admin_accounts", "disabled_features_json", "TEXT NOT NULL DEFAULT '[]'")
 
     def list_students(self) -> list[Student]:
         with self._connect() as conn:
@@ -2313,6 +2398,209 @@ class Database:
             step=row["step"],
             student_id=row["student_id"],
             payload_json=row["payload_json"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    # ── Admin Applications ────────────────────────────────────────
+
+    def insert_admin_application(
+        self,
+        *,
+        applicant_name: str,
+        desired_username: str,
+        password_hash: str,
+        telegram_username: str,
+        note: str | None,
+        created_from_ip: str | None,
+        status: str = "new",
+    ) -> int:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO admin_applications (
+                    applicant_name, desired_username, password_hash,
+                    telegram_username, note, created_from_ip,
+                    status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    applicant_name,
+                    desired_username,
+                    password_hash,
+                    telegram_username,
+                    note,
+                    created_from_ip,
+                    status,
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_admin_applications(
+        self,
+        limit: int = 20,
+        *,
+        statuses: tuple[str, ...] | None = None,
+    ) -> list[AdminApplication]:
+        query = "SELECT * FROM admin_applications"
+        params: list[object] = []
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            query += f"\nWHERE LOWER(status) IN ({placeholders})"
+            params.extend(s.strip().lower() for s in statuses)
+        query += "\nORDER BY created_at DESC, id DESC\nLIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [self._admin_application_from_row(row) for row in rows]
+
+    def get_admin_application(self, application_id: int) -> AdminApplication | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM admin_applications WHERE id = ?",
+                (application_id,),
+            ).fetchone()
+        return self._admin_application_from_row(row) if row else None
+
+    def update_admin_application_status(self, application_id: int, status: str) -> None:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE admin_applications SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, application_id),
+            )
+
+    def delete_admin_application(self, application_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM admin_applications WHERE id = ?",
+                (application_id,),
+            )
+
+    # ── Admin Accounts ────────────────────────────────────────────
+
+    def insert_admin_account(
+        self,
+        *,
+        username: str,
+        password_hash: str,
+        telegram_username: str = "",
+        role: str = "admin",
+        created_from_application_id: int | None = None,
+    ) -> int:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO admin_accounts (
+                    username, password_hash, telegram_username,
+                    role, created_from_application_id, enabled,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    username,
+                    password_hash,
+                    telegram_username,
+                    role,
+                    created_from_application_id,
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_admin_account_by_username(self, username: str) -> AdminAccount | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM admin_accounts WHERE LOWER(username) = ? AND enabled = 1",
+                (username.strip().lower(),),
+            ).fetchone()
+        return self._admin_account_from_row(row) if row else None
+
+    def list_admin_accounts(self) -> list[AdminAccount]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM admin_accounts ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+        return [self._admin_account_from_row(row) for row in rows]
+
+    def admin_account_username_exists(self, username: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM admin_accounts WHERE LOWER(username) = ? LIMIT 1",
+                (username.strip().lower(),),
+            ).fetchone()
+        return row is not None
+
+    def enable_admin_account(self, account_id: int) -> None:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE admin_accounts SET enabled = 1, updated_at = ? WHERE id = ?",
+                (now, account_id),
+            )
+
+    def disable_admin_account(self, account_id: int) -> None:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE admin_accounts SET enabled = 0, updated_at = ? WHERE id = ?",
+                (now, account_id),
+            )
+
+    def delete_admin_account(self, account_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM admin_accounts WHERE id = ?",
+                (account_id,),
+            )
+
+    def update_admin_account_features(self, account_id: int, disabled_features_json: str) -> None:
+        now = utcnow_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE admin_accounts SET disabled_features_json = ?, updated_at = ? WHERE id = ?",
+                (disabled_features_json, now, account_id),
+            )
+
+    def get_admin_account(self, account_id: int) -> AdminAccount | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM admin_accounts WHERE id = ?",
+                (account_id,),
+            ).fetchone()
+        return self._admin_account_from_row(row) if row else None
+
+    def _admin_application_from_row(self, row: sqlite3.Row) -> AdminApplication:
+        return AdminApplication(
+            id=row["id"],
+            applicant_name=row["applicant_name"],
+            desired_username=row["desired_username"],
+            password_hash=row["password_hash"],
+            telegram_username=row["telegram_username"],
+            note=row["note"],
+            created_from_ip=row["created_from_ip"],
+            status=row["status"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def _admin_account_from_row(self, row: sqlite3.Row) -> AdminAccount:
+        return AdminAccount(
+            id=row["id"],
+            username=row["username"],
+            password_hash=row["password_hash"],
+            telegram_username=row["telegram_username"],
+            role=row["role"],
+            created_from_application_id=row["created_from_application_id"],
+            enabled=bool(row["enabled"]),
+            disabled_features_json=row["disabled_features_json"] or "[]",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

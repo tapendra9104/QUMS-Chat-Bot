@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import re
+import threading
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import Settings
 
@@ -15,11 +18,37 @@ class TelegramError(Exception):
 class TelegramSender:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._session = requests.Session()
+        self._local = threading.local()
 
     @property
     def configured(self) -> bool:
         return bool(self.settings.telegram_bot_token)
+
+    @property
+    def _session(self) -> requests.Session:
+        """Return a per-thread requests.Session with connection pooling for performance."""
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            retry_strategy = Retry(
+                total=2,
+                backoff_factor=0.3,
+                status_forcelist=[502, 503, 504],
+            )
+            adapter = HTTPAdapter(
+                pool_connections=4,
+                pool_maxsize=8,
+                max_retries=retry_strategy,
+            )
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            self._local.session = session
+        return session
+
+    @_session.setter
+    def _session(self, value: requests.Session) -> None:
+        """Allow overriding the session (used by tests)."""
+        self._local.session = value
 
     def send_text(
         self,
@@ -141,7 +170,7 @@ class TelegramSender:
         json: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
         files: dict[str, Any] | None = None,
-        timeout: int = 15,
+        timeout: int = 10,
     ) -> dict[str, Any]:
         if not self.configured:
             raise TelegramError("Telegram bot token is missing in .env.")

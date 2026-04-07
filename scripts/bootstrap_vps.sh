@@ -13,6 +13,20 @@ SERVER_NAME="${SERVER_NAME:-_}"
 PUBLIC_BASE_URL_DEFAULT="${PUBLIC_BASE_URL_DEFAULT:-}"
 LOCAL_TIMEZONE_DEFAULT="${LOCAL_TIMEZONE_DEFAULT:-Asia/Kolkata}"
 
+primary_server_name() {
+  local first_name="${SERVER_NAME%% *}"
+  printf '%s' "$first_name"
+}
+
+ssl_cert_available() {
+  local cert_name
+  cert_name="$(primary_server_name)"
+  [[ -n "$cert_name" ]] &&
+  [[ "$cert_name" != "_" ]] &&
+  [[ -f "/etc/letsencrypt/live/$cert_name/fullchain.pem" ]] &&
+  [[ -f "/etc/letsencrypt/live/$cert_name/privkey.pem" ]]
+}
+
 prompt_required() {
   local label="$1"
   local current="${2:-}"
@@ -261,6 +275,41 @@ EOF
 }
 
 write_nginx_site() {
+  local cert_name
+  cert_name="$(primary_server_name)"
+
+  if ssl_cert_available; then
+    cat > "/etc/nginx/sites-available/$SERVICE_NAME" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $SERVER_NAME;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name $SERVER_NAME;
+
+    ssl_certificate /etc/letsencrypt/live/$cert_name/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$cert_name/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_read_timeout 120s;
+    }
+}
+EOF
+    return
+  fi
+
   cat > "/etc/nginx/sites-available/$SERVICE_NAME" <<EOF
 server {
     listen 80;

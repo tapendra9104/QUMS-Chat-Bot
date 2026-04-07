@@ -102,4 +102,46 @@
             <br>Need your numeric Telegram id? Check it with <a href="https://t.me/userinfo3bot" target="_blank" rel="noopener noreferrer">@userinfo3bot</a>.
         </p>
     </article>
+
+    <!-- Apply for Admin Access Card -->
+    {% if not is_pending_authenticated %}
+    <article class="student" style="border: 1px solid rgba(52, 211, 153, 0.2); background: linear-gradient(135deg, rgba(52, 211, 153, 0.05) 0%, rgba(16, 185, 129, 0.02) 100%);">
+        <div class="student-head">
+            <div>
+                <span class="eyebrow">Admin Portal</span>
+                <h3>🛡️ Apply for Admin Access</h3>
+            </div>
+            <div class="student-badges">
+                <span class="status pending">Open</span>
+            </div>
+        </div>
+        <p class="meta">
+            Want to manage the dashboard, student profiles, and automation settings? Submit an admin access request and the current administrator will review it.
+        </p>
+        <div class="live-grid">
+            <div class="live-card light">
+                <div class="live-label">What You Get</div>
+                <div class="live-value">Full Access</div>
+                <div class="live-sub">
+                    Manage students, view attendance, control ERP automation, review applications, and monitor the system.
+                </div>
+            </div>
+            <div class="live-card light">
+                <div class="live-label">How It Works</div>
+                <div class="live-value">3 Steps</div>
+                <div class="live-sub">
+                    1. Submit the application form → 2. Wait for admin review → 3. Sign in with your credentials.
+                </div>
+            </div>
+        </div>
+        <div class="actions" style="margin-top: 12px;">
+            <a class="button-link" href="{{ url_for('admin_apply') }}" style="display: inline-block; text-align: center;">
+                🛡️ Apply for Admin Access
+            </a>
+            <a class="button-link ghost" href="{{ url_for('admin_login') }}" style="display: inline-block; text-align: center;">
+                Already an Admin? Sign In
+            </a>
+        </div>
+    </article>
+    {% endif %}
 </section>

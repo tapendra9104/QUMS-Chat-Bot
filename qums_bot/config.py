@@ -58,8 +58,13 @@ class Settings:
     telegram_admin_chat_ids: tuple[str, ...] = ()
     telegram_poll_interval_seconds: int = 1
     lecture_schedule_poll_interval_seconds: int = 30
+    attendance_poll_interval_seconds: int = 0
+    substitution_poll_interval_seconds: int = 0
+    monitor_poll_interval_seconds: int = 0
     telegram_bot_link: str = ""
     owner_telegram_contact: str = ""
+    auto_captcha_enabled: bool = True
+    auto_captcha_max_attempts: int = 5
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -190,8 +195,13 @@ def load_settings() -> Settings:
         telegram_admin_chat_ids=env_str_list("TELEGRAM_ADMIN_CHAT_IDS"),
         telegram_poll_interval_seconds=env_int("TELEGRAM_POLL_INTERVAL_SECONDS", 1, minimum=1, maximum=60),
         lecture_schedule_poll_interval_seconds=env_int("LECTURE_SCHEDULE_POLL_INTERVAL_SECONDS", 30, minimum=5, maximum=300),
+        attendance_poll_interval_seconds=env_int("ATTENDANCE_POLL_INTERVAL_SECONDS", 0, minimum=0, maximum=300),
+        substitution_poll_interval_seconds=env_int("SUBSTITUTION_POLL_INTERVAL_SECONDS", 0, minimum=0, maximum=300),
+        monitor_poll_interval_seconds=env_int("MONITOR_POLL_INTERVAL_SECONDS", 0, minimum=0, maximum=300),
         telegram_bot_link=os.getenv("TELEGRAM_BOT_LINK", "https://t.me/QUMS_ALERT_BOT").strip(),
         owner_telegram_contact=os.getenv("OWNER_TELEGRAM_CONTACT", "").strip(),
+        auto_captcha_enabled=env_bool("AUTO_CAPTCHA_ENABLED", True),
+        auto_captcha_max_attempts=env_int("AUTO_CAPTCHA_MAX_ATTEMPTS", 5, minimum=1, maximum=15),
     )
     _validate_production_settings(settings)
     return settings

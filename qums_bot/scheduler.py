@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from zoneinfo import ZoneInfo
 
 from .config import Settings
+from .db import Database
 from .service import BotService
 from .task_queue import TaskDispatcher
 
@@ -63,18 +67,30 @@ def build_scheduler(
         id="lecture-schedule-checks",
         replace_existing=True,
     )
+    # Attendance scanner - prefer SECONDS over MINUTES for live scanning
+    attendance_interval_seconds = (
+        settings.attendance_poll_interval_seconds
+        if settings.attendance_poll_interval_seconds > 0
+        else settings.attendance_poll_interval_minutes * 60
+    )
     scheduler.add_job(
         _dispatch(
             service.run_due_checks,
             dispatcher=dispatcher,
             job_name="attendance-checks",
             callback_name="run_due_checks",
-            interval_minutes=settings.attendance_poll_interval_minutes,
+            interval_seconds=attendance_interval_seconds,
         ),
         "interval",
-        minutes=settings.attendance_poll_interval_minutes,
+        seconds=attendance_interval_seconds,
         id="attendance-checks",
         replace_existing=True,
+    )
+    # Substitution scanner - prefer SECONDS over MINUTES for live scanning
+    substitution_interval_seconds = (
+        settings.substitution_poll_interval_seconds
+        if settings.substitution_poll_interval_seconds > 0
+        else settings.substitution_poll_interval_minutes * 60
     )
     scheduler.add_job(
         _dispatch(
@@ -82,12 +98,18 @@ def build_scheduler(
             dispatcher=dispatcher,
             job_name="substitution-checks",
             callback_name="run_substitution_sweep",
-            interval_minutes=settings.substitution_poll_interval_minutes,
+            interval_seconds=substitution_interval_seconds,
         ),
         "interval",
-        minutes=settings.substitution_poll_interval_minutes,
+        seconds=substitution_interval_seconds,
         id="substitution-checks",
         replace_existing=True,
+    )
+    # Monitor scanner - prefer SECONDS over MINUTES for live scanning
+    monitor_interval_seconds = (
+        settings.monitor_poll_interval_seconds
+        if settings.monitor_poll_interval_seconds > 0
+        else settings.monitor_poll_interval_minutes * 60
     )
     scheduler.add_job(
         _dispatch(
@@ -95,10 +117,10 @@ def build_scheduler(
             dispatcher=dispatcher,
             job_name="monitor-checks",
             callback_name="run_monitor_sweep",
-            interval_minutes=settings.monitor_poll_interval_minutes,
+            interval_seconds=monitor_interval_seconds,
         ),
         "interval",
-        minutes=settings.monitor_poll_interval_minutes,
+        seconds=monitor_interval_seconds,
         id="monitor-checks",
         replace_existing=True,
     )
@@ -141,6 +163,17 @@ def build_scheduler(
         id="telegram-admin-refresh-checks",
         replace_existing=True,
     )
+    # Daily database backup at midnight
+    backup_dir = settings.database_path.parent / "backups"
+    db = service.db
+    scheduler.add_job(
+        lambda: _safe_backup(db, backup_dir),
+        "cron",
+        hour=0,
+        minute=0,
+        id="daily-db-backup",
+        replace_existing=True,
+    )
     return scheduler
 
 
@@ -165,3 +198,12 @@ def _dispatch(
         )
 
     return runner
+
+
+def _safe_backup(db: Database, backup_dir: Path) -> None:
+    _logger = logging.getLogger(__name__)
+    try:
+        path = db.backup_to(backup_dir)
+        _logger.info('Daily backup completed: %s', path)
+    except Exception:
+        _logger.exception('Daily database backup failed')

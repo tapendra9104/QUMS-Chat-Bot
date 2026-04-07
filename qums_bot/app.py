@@ -20,6 +20,9 @@ from .errors import StudentValidationError
 from .scheduler import build_scheduler
 from .security import decrypt_text
 from .service import (
+    ADMIN_FEATURE_LABELS,
+    ADMIN_FEATURE_ORDER,
+    GLOBAL_FEATURE_KEYS,
     NOTIFICATION_CHANNEL_MODE_LABELS,
     STUDENT_ACTION_LABELS,
     STUDENT_ACTION_ORDER,
@@ -98,11 +101,12 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "admin_forgot_password",
             "admin_forgot_password_request",
             "admin_forgot_password_reset",
+            "admin_apply",
+            "admin_apply_submit",
             "static",
         }
         admin_only_endpoints = {
             "admin_logout",
-            "admin_account_update",
             "save_student",
             "update_student_controls",
             "accept_application",
@@ -113,6 +117,16 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             "run_checks",
             "export_message_history",
             "export_audit_log",
+        }
+        primary_admin_only_endpoints = {
+            "admin_account_update",
+            "admin_app_accept",
+            "admin_app_reject",
+            "admin_app_clear",
+            "admin_acct_remove",
+            "admin_acct_toggle",
+            "admin_feature_toggle",
+            "admin_acct_features",
         }
         shared_dashboard_endpoints = {
             "start_login",
@@ -134,6 +148,18 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         }
         if endpoint in public_endpoints:
             return None
+        if endpoint in primary_admin_only_endpoints:
+            if _is_primary_admin():
+                return None
+            if not _admin_auth_enabled():
+                return None
+            if _is_admin_authenticated():
+                flash("This action is restricted to the primary administrator.", "error")
+                return redirect(url_for("dashboard"))
+            return _auth_required_response(
+                url_for("admin_login", next=request.path),
+                "Admin sign-in required. Please sign in again.",
+            )
         if endpoint in admin_only_endpoints:
             if _is_admin_authenticated():
                 return None
@@ -175,6 +201,9 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         if request.endpoint in {
             "static",
         }:
+            return None
+        # Exempt JSON API routes from CSRF — they're same-origin AJAX calls
+        if request.path.startswith("/api/"):
             return None
         expected = session.get("_csrf_token")
         received = request.form.get("csrf_token", "")
@@ -317,6 +346,13 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
             session.clear()
             session["admin_authenticated"] = True
             session["admin_username"] = username
+            # Determine role: primary admin has env-level credentials
+            primary_account = _get_admin_account_state()
+            primary_username = str(primary_account["username"] or "").strip()
+            if primary_username and secrets.compare_digest(username, primary_username):
+                session["admin_role"] = "primary"
+            else:
+                session["admin_role"] = "secondary"
             flash("Admin login successful.", "success")
             return redirect(next_path)
 
@@ -437,6 +473,241 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
         session.clear()
         flash("Admin login credentials were updated. Sign in with the new username and password.", "success")
         return redirect(url_for("admin_login"))
+
+    # ── Admin Application Routes ──────────────────────────────────
+
+    @app.get("/admin/apply")
+    def admin_apply():
+        if session.get("admin_authenticated"):
+            return redirect(url_for("dashboard"))
+        return render_template("admin_apply.html")
+
+    @app.post("/admin/apply")
+    def admin_apply_submit():
+        if session.get("admin_authenticated"):
+            return redirect(url_for("dashboard"))
+        limit_response = _enforce_rate_limit(
+            bucket=f"admin-apply:{_client_ip()}",
+            limit=3,
+            window_seconds=600,
+        )
+        if limit_response is not None:
+            return limit_response
+
+        applicant_name = request.form.get("applicant_name", "").strip()
+        desired_username = request.form.get("desired_username", "").strip()
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        telegram_username = request.form.get("telegram_username", "").strip()
+        note = request.form.get("note", "").strip() or None
+
+        errors = []
+        if not applicant_name or len(applicant_name) < 2 or len(applicant_name) > 100:
+            errors.append("Full name must be between 2 and 100 characters.")
+        try:
+            desired_username = _validate_admin_login_username(desired_username)
+        except ValueError as exc:
+            errors.append(str(exc))
+        try:
+            password = _validate_admin_password(password, confirm_password)
+        except ValueError as exc:
+            errors.append(str(exc))
+
+        if desired_username:
+            # Check against primary admin
+            primary_account = _get_admin_account_state()
+            primary_username = str(primary_account["username"] or "").strip().lower()
+            if primary_username and desired_username.lower() == primary_username:
+                errors.append("This username is already taken.")
+            # Check against existing admin accounts
+            if not errors and service.db.admin_account_username_exists(desired_username):
+                errors.append("This username is already taken.")
+
+        if errors:
+            for e in errors:
+                flash(e, "error")
+            return render_template(
+                "admin_apply.html",
+                form_applicant_name=applicant_name,
+                form_desired_username=desired_username,
+                form_telegram_username=telegram_username,
+                form_note=note or "",
+            ), 400
+
+        password_hash = generate_password_hash(password)
+        application_id = service.db.insert_admin_application(
+            applicant_name=applicant_name,
+            desired_username=desired_username,
+            password_hash=password_hash,
+            telegram_username=telegram_username,
+            note=note,
+            created_from_ip=_client_ip(),
+        )
+        _log_admin_action(
+            action="admin_application_submitted",
+            target_type="admin_application",
+            target_id=str(application_id),
+            details=f"Admin application submitted by {applicant_name} (desired username: {desired_username}).",
+        )
+        flash("Your admin access application has been submitted successfully! The current administrator will review it shortly.", "success")
+        return render_template("admin_apply.html", submitted=True)
+
+    @app.post("/admin/applications/<int:application_id>/accept")
+    def admin_app_accept(application_id: int):
+        application = service.db.get_admin_application(application_id)
+        if not application:
+            flash("Admin application not found.", "error")
+            return redirect(url_for("dashboard"))
+        if application.status.lower() in ("accepted", "rejected"):
+            flash("This application has already been reviewed.", "warning")
+            return redirect(url_for("dashboard"))
+
+        final_username = request.form.get("final_username", "").strip() or application.desired_username
+        try:
+            final_username = _validate_admin_login_username(final_username)
+        except ValueError as exc:
+            flash(f"Invalid username: {exc}", "error")
+            return redirect(url_for("dashboard"))
+
+        # Check for conflicts
+        primary_account = _get_admin_account_state()
+        primary_username = str(primary_account["username"] or "").strip().lower()
+        if primary_username and final_username.lower() == primary_username:
+            flash("This username conflicts with the primary admin account.", "error")
+            return redirect(url_for("dashboard"))
+        if service.db.admin_account_username_exists(final_username):
+            flash("This username is already in use by another admin account.", "error")
+            return redirect(url_for("dashboard"))
+
+        # Create admin account
+        service.db.insert_admin_account(
+            username=final_username,
+            password_hash=application.password_hash,
+            telegram_username=application.telegram_username,
+            created_from_application_id=application.id,
+        )
+        service.db.update_admin_application_status(application.id, "accepted")
+        _log_admin_action(
+            action="admin_application_accepted",
+            target_type="admin_application",
+            target_id=str(application.id),
+            details=f"Admin application from {application.applicant_name} accepted. Admin account created: {final_username}.",
+        )
+        flash(f"Admin application approved! {application.applicant_name} can now sign in as '{final_username}'.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/admin/applications/<int:application_id>/reject")
+    def admin_app_reject(application_id: int):
+        application = service.db.get_admin_application(application_id)
+        if not application:
+            flash("Admin application not found.", "error")
+            return redirect(url_for("dashboard"))
+        if application.status.lower() in ("accepted", "rejected"):
+            flash("This application has already been reviewed.", "warning")
+            return redirect(url_for("dashboard"))
+        service.db.update_admin_application_status(application.id, "rejected")
+        _log_admin_action(
+            action="admin_application_rejected",
+            target_type="admin_application",
+            target_id=str(application.id),
+            details=f"Admin application from {application.applicant_name} rejected.",
+        )
+        flash(f"Admin application from {application.applicant_name} has been rejected.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/admin/applications/<int:application_id>/clear")
+    def admin_app_clear(application_id: int):
+        application = service.db.get_admin_application(application_id)
+        if not application:
+            flash("Admin application not found.", "error")
+            return redirect(url_for("dashboard"))
+        service.db.delete_admin_application(application.id)
+        _log_admin_action(
+            action="admin_application_cleared",
+            target_type="admin_application",
+            target_id=str(application.id),
+            details=f"Admin application from {application.applicant_name} cleared from dashboard.",
+        )
+        flash("Admin application record cleared.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/admin/accounts/<int:account_id>/remove")
+    def admin_acct_remove(account_id: int):
+        account = service.db.get_admin_account(account_id)
+        if not account:
+            flash("Admin account not found.", "error")
+            return redirect(url_for("dashboard"))
+        service.db.delete_admin_account(account.id)
+        _log_admin_action(
+            action="admin_account_removed",
+            target_type="admin_account",
+            target_id=str(account.id),
+            details=f"Admin account '{account.username}' permanently removed by primary admin.",
+        )
+        flash(f"Admin account '{account.username}' has been permanently removed.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/admin/accounts/<int:account_id>/toggle")
+    def admin_acct_toggle(account_id: int):
+        account = service.db.get_admin_account(account_id)
+        if not account:
+            flash("Admin account not found.", "error")
+            return redirect(url_for("dashboard"))
+        if account.enabled:
+            service.db.disable_admin_account(account.id)
+            _log_admin_action(
+                action="admin_account_disabled",
+                target_type="admin_account",
+                target_id=str(account.id),
+                details=f"Admin account '{account.username}' disabled by primary admin.",
+            )
+            flash(f"Admin account '{account.username}' has been disabled.", "success")
+        else:
+            service.db.enable_admin_account(account.id)
+            _log_admin_action(
+                action="admin_account_enabled",
+                target_type="admin_account",
+                target_id=str(account.id),
+                details=f"Admin account '{account.username}' re-enabled by primary admin.",
+            )
+            flash(f"Admin account '{account.username}' has been re-enabled.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/admin/features/toggle")
+    def admin_feature_toggle():
+        feature_key = request.form.get("feature_key", "").strip()
+        if feature_key not in GLOBAL_FEATURE_KEYS:
+            flash("Invalid feature key.", "error")
+            return redirect(url_for("dashboard"))
+        current_state = service.is_global_feature_enabled(feature_key)
+        new_state = not current_state
+        service.toggle_global_feature(feature_key, new_state)
+        label = GLOBAL_FEATURE_KEYS[feature_key]
+        _log_admin_action(
+            action="toggle_global_feature",
+            target_type="global_feature",
+            target_id=feature_key,
+            details=f"Global feature '{label}' {'enabled' if new_state else 'disabled'} by primary admin.",
+        )
+        flash(f"{label} has been {'enabled' if new_state else 'disabled'}.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/admin/accounts/<int:account_id>/features")
+    def admin_acct_features(account_id: int):
+        account = service.db.get_admin_account(account_id)
+        if not account:
+            flash("Admin account not found.", "error")
+            return redirect(url_for("dashboard"))
+        disabled_features = request.form.getlist("disabled_features")
+        service.update_admin_account_features(account.id, disabled_features)
+        _log_admin_action(
+            action="update_admin_features",
+            target_type="admin_account",
+            target_id=str(account.id),
+            details=f"Feature restrictions updated for admin '{account.username}'. Disabled: {', '.join(disabled_features) if disabled_features else 'none'}.",
+        )
+        flash(f"Feature restrictions updated for '{account.username}'.", "success")
+        return redirect(url_for("dashboard"))
 
     @app.get("/forgot-password")
     def student_forgot_password():
@@ -733,6 +1004,139 @@ def create_app(*, start_scheduler: bool = True) -> Flask:
                 "outbound_queue": service.get_outbound_queue_summary(),
             }
         )
+
+    # ── New Feature API Routes ─────────────────────────────────────
+
+    def _require_erp_features_allowed(service, student):
+        """Guard: return error response if ERP features are disabled for this student."""
+        if service.is_student_action_disabled(student, "erp_features"):
+            return jsonify({"error": "ERP Features are disabled for this student profile."}), 403
+        return None
+
+    @app.post("/api/student/<int:student_id>/internal-marks")
+    def api_internal_marks(student_id: int):
+        """Fetch internal marks for a student via ERP."""
+        service = _service()
+        student = service.get_student(student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        blocked = _require_erp_features_allowed(service, student)
+        if blocked:
+            return blocked
+        try:
+            from .parsers_extended import parse_internal_marks
+            payload = service.erp.get_internal_marks(student)
+            marks = parse_internal_marks(payload)
+            return jsonify({"marks": [
+                {"subject": m.subject, "subject_code": m.subject_code,
+                 "component": m.component, "max_marks": m.max_marks,
+                 "obtained_marks": m.obtained_marks, "is_pass": m.is_pass}
+                for m in marks
+            ]})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    @app.post("/api/student/<int:student_id>/assignments")
+    def api_assignments(student_id: int):
+        """Fetch assignments for a student via ERP."""
+        service = _service()
+        student = service.get_student(student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        blocked = _require_erp_features_allowed(service, student)
+        if blocked:
+            return blocked
+        try:
+            from .parsers_extended import parse_assignments
+            payload = service.erp.get_assignments(student)
+            assignments = parse_assignments(payload)
+            return jsonify({"assignments": [
+                {"subject": a.subject, "subject_code": a.subject_code,
+                 "title": a.title, "assigned_date": a.assigned_date,
+                 "deadline_date": a.deadline_date, "status": a.status}
+                for a in assignments
+            ]})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    @app.post("/api/student/<int:student_id>/fee-receipts")
+    def api_fee_receipts(student_id: int):
+        """Fetch fee receipts for a student via ERP."""
+        service = _service()
+        student = service.get_student(student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        blocked = _require_erp_features_allowed(service, student)
+        if blocked:
+            return blocked
+        try:
+            from .parsers_extended import parse_fee_receipts
+            payload = service.erp.get_fee_receipts(student)
+            receipts = parse_fee_receipts(payload)
+            return jsonify({"receipts": [
+                {"receipt_no": r.receipt_no, "receipt_date": r.receipt_date,
+                 "amount": r.amount, "remarks": r.remarks}
+                for r in receipts
+            ]})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    @app.post("/api/student/<int:student_id>/exams")
+    def api_exams(student_id: int):
+        """Fetch exam schedule for a student via ERP."""
+        service = _service()
+        student = service.get_student(student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        blocked = _require_erp_features_allowed(service, student)
+        if blocked:
+            return blocked
+        try:
+            from .parsers_extended import parse_exam_list
+            payload = service.erp.get_exam_list(student)
+            exams = parse_exam_list(payload)
+            return jsonify({"exams": [
+                {"exam_name": e.exam_name, "subject": e.subject,
+                 "exam_date": e.exam_date, "start_time": e.start_time,
+                 "end_time": e.end_time, "status": e.status}
+                for e in exams
+            ]})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    @app.get("/api/student/<int:student_id>/attendance-analytics")
+    def api_attendance_analytics(student_id: int):
+        """Compute attendance analytics from stored snapshots."""
+        service = _service()
+        student = service.get_student(student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        blocked = _require_erp_features_allowed(service, student)
+        if blocked:
+            return blocked
+        try:
+            analytics = service.compute_attendance_analytics(student)
+            return jsonify(analytics)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    @app.post("/api/student/<int:student_id>/force-relogin")
+    def api_force_relogin(student_id: int):
+        """Trigger auto-captcha bypass to re-login a student's ERP session."""
+        service = _service()
+        student = service.get_student(student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        blocked = _require_erp_features_allowed(service, student)
+        if blocked:
+            return blocked
+        try:
+            success = service._try_auto_login(student)
+            if success:
+                return jsonify({"status": "ok", "message": "ERP session recovered via auto-captcha."})
+            return jsonify({"status": "failed", "message": "Auto-captcha login failed. Manual login required."}), 422
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
 
     @app.post("/students")
     def save_student():
@@ -1550,11 +1954,19 @@ def _verify_admin_password(password: str) -> bool:
 
 
 def _verify_admin_credentials(username: str, password: str) -> bool:
+    # Check primary admin account first
     account = _get_admin_account_state()
     expected_username = str(account["username"] or "").strip()
-    if not expected_username or not secrets.compare_digest(username, expected_username):
-        return False
-    return _verify_admin_password(password)
+    if expected_username and secrets.compare_digest(username, expected_username):
+        if _verify_admin_password(password):
+            return True
+    # Check additional admin accounts from the admin_accounts table
+    if username and password:
+        db = _service().db
+        admin_account = db.get_admin_account_by_username(username)
+        if admin_account and admin_account.enabled:
+            return check_password_hash(admin_account.password_hash, password)
+    return False
 
 
 def _persist_admin_account_credentials(
@@ -1854,6 +2266,7 @@ def _notify_admin_student_profile_deleted(student) -> None:
 def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = None):
     service = _service()
     is_admin_authenticated = _is_admin_authenticated()
+    is_primary_admin = _is_primary_admin()
     is_student_authenticated = _is_student_authenticated()
     is_pending_authenticated = _is_pending_application_authenticated()
     current_student = _current_student()
@@ -1958,6 +2371,19 @@ def _render_dashboard(*, edit_id: int | None = None, preview_text: str | None = 
         application_requests=application_requests,
         application_request_summary=application_request_summary,
         application_request_views=_build_application_request_views(application_requests),
+        admin_applications=service.db.list_admin_applications(12) if is_admin_authenticated else [],
+        admin_application_summary=_build_admin_application_summary(
+            service.db.list_admin_applications(50)
+        ) if is_admin_authenticated else {"total_count": 0, "pending_count": 0, "accepted_count": 0, "rejected_count": 0, "reviewed_count": 0},
+        admin_accounts=service.db.list_admin_accounts() if is_admin_authenticated else [],
+        is_primary_admin=is_primary_admin,
+        admin_role=session.get("admin_role", "primary" if is_admin_authenticated else ""),
+        global_feature_states=service.get_all_global_feature_states() if is_admin_authenticated else {},
+        global_feature_keys=GLOBAL_FEATURE_KEYS if is_admin_authenticated else {},
+        admin_feature_labels=ADMIN_FEATURE_LABELS if is_primary_admin else {},
+        admin_feature_order=ADMIN_FEATURE_ORDER if is_primary_admin else (),
+        current_admin_account=_get_current_admin_account() if is_admin_authenticated and not is_primary_admin else None,
+        current_admin_disabled_features=_get_current_admin_disabled_features() if is_admin_authenticated and not is_primary_admin else set(),
         telegram_configured=service.telegram.configured,
         settings=settings,
         scheduler_overview=_build_scheduler_overview(dashboard_now),
@@ -1973,6 +2399,7 @@ def _build_scheduler_overview(now):
     scheduler = current_app.config.get("scheduler")
     job_definitions = [
         ("scheduled-dispatch", "Morning Summary Scanner", "Checks whether any student has reached the morning digest time."),
+        ("lecture-schedule-checks", "Lecture Schedule Scanner", "Polls ERP for today's timetable and sends upcoming / live lecture alerts."),
         ("attendance-checks", "Attendance Scanner", "Checks finished lectures and sends present, absent, or pending updates."),
         ("substitution-checks", "Substitution Scanner", "Checks for newly assigned substitute lectures and sends alerts."),
         ("monitor-checks", "Monitoring Scanner", "Checks sandbox expiry and ERP session status."),
@@ -2235,6 +2662,28 @@ def _build_application_request_summary(application_requests):
     }
 
 
+def _build_admin_application_summary(admin_applications):
+    total_count = len(admin_applications)
+    accepted_count = 0
+    rejected_count = 0
+    pending_count = 0
+    for item in admin_applications:
+        status = (item.status or "").strip().lower()
+        if status == "accepted":
+            accepted_count += 1
+        elif status == "rejected":
+            rejected_count += 1
+        else:
+            pending_count += 1
+    return {
+        "total_count": total_count,
+        "pending_count": pending_count,
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "reviewed_count": accepted_count + rejected_count,
+    }
+
+
 def _derive_dashboard_erp_status(student, *, pending_login):
     raw_status = (student.erp_status_text or "").strip()
     if pending_login:
@@ -2378,6 +2827,35 @@ def _is_admin_authenticated() -> bool:
     if not _admin_auth_enabled():
         return True
     return bool(session.get("admin_authenticated"))
+
+
+def _is_primary_admin() -> bool:
+    """Return True if the current user is the primary admin (ENV credentials or auth disabled)."""
+    if not _admin_auth_enabled():
+        return True
+    if not session.get("admin_authenticated"):
+        return False
+    return session.get("admin_role") == "primary"
+
+
+def _get_current_admin_account():
+    """Return the AdminAccount for the current session if secondary admin, else None."""
+    if not session.get("admin_authenticated"):
+        return None
+    if session.get("admin_role") == "primary":
+        return None
+    username = session.get("admin_username", "").strip()
+    if not username:
+        return None
+    return _service().db.get_admin_account_by_username(username)
+
+
+def _get_current_admin_disabled_features() -> set:
+    """Return the set of disabled features for the current secondary admin."""
+    account = _get_current_admin_account()
+    if not account:
+        return set()
+    return _service().get_admin_disabled_features(account)
 
 
 def _current_student():

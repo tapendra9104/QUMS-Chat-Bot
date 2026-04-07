@@ -21,6 +21,23 @@
                             {{ 'Active' if not student_view.blocked else 'Blocked' }}
                         </span>
                         <span class="pill">{{ student_view.notification_channel_label }}</span>
+                        {% if is_admin_authenticated %}
+                        {% set live_sync_disabled = 'live_sync' in student_view.disabled_actions %}
+                        <form method="post" action="{{ url_for('update_student_controls', student_id=student.id) }}" style="display:inline;">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="enabled" value="{{ 'on' if student.enabled else '' }}">
+                            <input type="hidden" name="notification_channel_mode" value="{{ student_view.notification_channel_mode }}">
+                            {% for da in student_view.disabled_actions if da != 'live_sync' %}
+                            <input type="hidden" name="disabled_actions" value="{{ da }}">
+                            {% endfor %}
+                            {% if not live_sync_disabled %}
+                            <input type="hidden" name="disabled_actions" value="live_sync">
+                            <button type="submit" class="pill pill--toggle pill--active" title="Live Scan is ON — click to disable">🟢 Live Scan</button>
+                            {% else %}
+                            <button type="submit" class="pill pill--toggle pill--inactive" title="Live Scan is OFF — click to enable">🔴 Live Scan</button>
+                            {% endif %}
+                        </form>
+                        {% endif %}
                     </div>
                 {% endif %}
             </div>
@@ -206,7 +223,41 @@
                         </form>
                     </div>
                 </details>
+                {% if action_states.get('erp_features', {}).get('disabled') %}
+                <div class="student-action-menu" data-refresh-key="student-features-{{ student.id }}">
+                    <p class="meta" style="color:var(--ink-muted);"><span style="opacity:0.6;">🚫</span> ERP Features disabled by admin for {{ student.student_label }}</p>
+                </div>
+                {% else %}
+                <details class="student-action-menu" data-refresh-key="student-features-{{ student.id }}">
+                    <summary class="student-action-trigger" title="Open ERP features">📊 ERP Features</summary>
+                    <div class="student-action-content">
+                        <p class="meta">Live data from ERP for {{ student.student_label }}</p>
+                        <div class="actions erp-feature-actions">
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="internal-marks" data-method="POST">📊 Internal Marks</button>
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="assignments" data-method="POST">📝 Assignments</button>
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="fee-receipts" data-method="POST">💰 Fee Receipts</button>
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="exams" data-method="POST">📅 Exam Schedule</button>
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="attendance-analytics" data-method="GET">📈 Attendance Analytics</button>
+                            <button type="button" class="secondary js-erp-feature" data-student-id="{{ student.id }}" data-feature="force-relogin" data-method="POST">🔄 Force Re-Login</button>
+                        </div>
+                    </div>
+                </details>
+                {% endif %}
             {% elif is_student_authenticated %}
+                <details class="student-action-menu" data-refresh-key="student-features-{{ student.id }}">
+                    <summary class="student-action-trigger" title="Open ERP features">📊 ERP Features</summary>
+                    <div class="student-action-content">
+                        <p class="meta">Live data from ERP for {{ student.student_label }}</p>
+                        <div class="actions erp-feature-actions">
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="internal-marks" data-method="POST">📊 Internal Marks</button>
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="assignments" data-method="POST">📝 Assignments</button>
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="fee-receipts" data-method="POST">💰 Fee Receipts</button>
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="exams" data-method="POST">📅 Exam Schedule</button>
+                            <button type="button" class="ghost js-erp-feature" data-student-id="{{ student.id }}" data-feature="attendance-analytics" data-method="GET">📈 Attendance Analytics</button>
+                            <button type="button" class="secondary js-erp-feature" data-student-id="{{ student.id }}" data-feature="force-relogin" data-method="POST">🔄 Force Re-Login</button>
+                        </div>
+                    </div>
+                </details>
                 <div class="student-action-menu" data-refresh-key="student-actions-{{ student.id }}">
                     <p class="meta">Manual actions for {{ student.student_label }}. These controls only apply to your own profile.</p>
                     <div class="actions">
@@ -270,3 +321,162 @@
         </article>
     {% endfor %}
 </section>
+
+<!-- ERP Feature Modal Overlay -->
+<div id="erp-feature-modal" class="erp-modal-overlay" style="display:none;" onclick="if(event.target===this)this.style.display='none'">
+    <div class="erp-modal-content">
+        <div class="erp-modal-header">
+            <h3 id="erp-modal-title">Loading...</h3>
+            <button type="button" class="erp-modal-close" onclick="document.getElementById('erp-feature-modal').style.display='none'">&times;</button>
+        </div>
+        <div id="erp-modal-body" class="erp-modal-body">
+            <div class="erp-modal-spinner">Loading data from ERP...</div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+    document.body.addEventListener('click', function(event) {
+        var btn = event.target.closest('.js-erp-feature');
+        if (!btn) return;
+        event.preventDefault();
+        event.stopPropagation();
+        (function() {
+            var sid = btn.dataset.studentId;
+            var feature = btn.dataset.feature;
+            var method = btn.dataset.method || 'POST';
+            var modal = document.getElementById('erp-feature-modal');
+            var title = document.getElementById('erp-modal-title');
+            var body = document.getElementById('erp-modal-body');
+            var titles = {
+                'internal-marks': '📊 Internal Marks',
+                'assignments': '📝 Assignments',
+                'fee-receipts': '💰 Fee Receipts',
+                'exams': '📅 Exam Schedule',
+                'attendance-analytics': '📈 Attendance Analytics',
+                'force-relogin': '🔄 Force Re-Login'
+            };
+            title.textContent = titles[feature] || feature;
+            body.innerHTML = '<div class="erp-modal-spinner">⏳ Fetching data from ERP server...</div>';
+            modal.style.display = 'flex';
+
+            fetch('/api/student/' + sid + '/' + feature, {
+                method: method,
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.error) {
+                    body.innerHTML = '<div class="erp-modal-error">❌ ' + data.error + '</div>';
+                    return;
+                }
+                if (feature === 'internal-marks') renderMarks(body, data);
+                else if (feature === 'assignments') renderAssignments(body, data);
+                else if (feature === 'fee-receipts') renderFeeReceipts(body, data);
+                else if (feature === 'exams') renderExams(body, data);
+                else if (feature === 'attendance-analytics') renderAnalytics(body, data);
+                else if (feature === 'force-relogin') renderRelogin(body, data);
+                else body.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(function(err) {
+                body.innerHTML = '<div class="erp-modal-error">❌ Network error: ' + err.message + '</div>';
+            });
+        })();
+    });
+
+    function renderMarks(el, data) {
+        if (!data.marks || !data.marks.length) { el.innerHTML = '<p class="meta">No internal marks data available.</p>'; return; }
+        var h = '<table class="erp-table"><thead><tr><th>Subject</th><th>Code</th><th>Component</th><th>Max</th><th>Obtained</th><th>Status</th></tr></thead><tbody>';
+        data.marks.forEach(function(m) {
+            var cls = m.is_pass === '0' ? ' class="erp-row-fail"' : '';
+            h += '<tr' + cls + '><td>' + m.subject + '</td><td>' + m.subject_code + '</td><td>' + m.component + '</td><td>' + m.max_marks + '</td><td>' + m.obtained_marks + '</td><td>' + (m.is_pass === '1' ? '✅' : '❌') + '</td></tr>';
+        });
+        h += '</tbody></table>';
+        el.innerHTML = h;
+    }
+
+    function renderAssignments(el, data) {
+        if (!data.assignments || !data.assignments.length) { el.innerHTML = '<p class="meta">No assignments found.</p>'; return; }
+        var h = '<table class="erp-table"><thead><tr><th>Subject</th><th>Title</th><th>Assigned</th><th>Deadline</th><th>Status</th></tr></thead><tbody>';
+        data.assignments.forEach(function(a) {
+            h += '<tr><td>' + a.subject + '</td><td>' + a.title + '</td><td>' + a.assigned_date + '</td><td>' + a.deadline_date + '</td><td>' + a.status + '</td></tr>';
+        });
+        h += '</tbody></table>';
+        el.innerHTML = h;
+    }
+
+    function renderFeeReceipts(el, data) {
+        if (!data.receipts || !data.receipts.length) { el.innerHTML = '<p class="meta">No fee receipts found.</p>'; return; }
+        var h = '<table class="erp-table"><thead><tr><th>Receipt No</th><th>Date</th><th>Amount</th><th>Remarks</th></tr></thead><tbody>';
+        data.receipts.forEach(function(r) {
+            h += '<tr><td>' + r.receipt_no + '</td><td>' + r.receipt_date + '</td><td>₹' + r.amount + '</td><td>' + r.remarks + '</td></tr>';
+        });
+        h += '</tbody></table>';
+        el.innerHTML = h;
+    }
+
+    function renderExams(el, data) {
+        if (!data.exams || !data.exams.length) { el.innerHTML = '<p class="meta">No exams scheduled.</p>'; return; }
+        var h = '<table class="erp-table"><thead><tr><th>Exam</th><th>Subject</th><th>Date</th><th>Time</th><th>Status</th></tr></thead><tbody>';
+        data.exams.forEach(function(e) {
+            h += '<tr><td>' + e.exam_name + '</td><td>' + e.subject + '</td><td>' + e.exam_date + '</td><td>' + e.start_time + ' - ' + e.end_time + '</td><td>' + e.status + '</td></tr>';
+        });
+        h += '</tbody></table>';
+        el.innerHTML = h;
+    }
+
+    function renderAnalytics(el, data) {
+        if (!data.subjects || !data.subjects.length) { el.innerHTML = '<p class="meta">No attendance data yet. Wait for the scanner to collect snapshots.</p>'; return; }
+        var summary = '<div class="erp-analytics-summary">' +
+            '<span class="erp-badge erp-badge--danger">⚠️ ' + data.danger_count + ' below 75%</span>' +
+            '<span class="erp-badge erp-badge--safe">✅ ' + data.safe_count + ' safe</span>' +
+            '</div>';
+        var table = '<table class="erp-table"><thead><tr><th>Subject</th><th>Present</th><th>Total</th><th>%</th><th>Can Skip</th><th>Status</th></tr></thead><tbody>';
+        data.subjects.forEach(function(s) {
+            var cls = s.status === 'danger' ? ' class="erp-row-fail"' : '';
+            table += '<tr' + cls + '><td>' + s.subject_name + '</td><td>' + s.present + '</td><td>' + s.total + '</td><td>' + s.percentage + '%</td><td>' + s.safe_to_skip + '</td><td>' + (s.status === 'danger' ? '🔴' : '🟢') + '</td></tr>';
+        });
+        table += '</tbody></table>';
+
+        var chartHtml = '<canvas id="erp-attendance-chart" height="200"></canvas>';
+        el.innerHTML = summary + table + chartHtml;
+
+        setTimeout(function() {
+            var canvas = document.getElementById('erp-attendance-chart');
+            if (!canvas || typeof Chart === 'undefined') return;
+            new Chart(canvas, {
+                type: 'bar',
+                data: {
+                    labels: data.subjects.map(function(s) { return s.subject_name.substring(0, 20); }),
+                    datasets: [{
+                        label: 'Attendance %',
+                        data: data.subjects.map(function(s) { return s.percentage; }),
+                        backgroundColor: data.subjects.map(function(s) {
+                            return s.status === 'danger' ? 'rgba(239,68,68,0.7)' : 'rgba(16,185,129,0.7)';
+                        }),
+                        borderRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, max: 100, ticks: { callback: function(v) { return v + '%'; } } },
+                        x: { ticks: { maxRotation: 45, minRotation: 30, font: { size: 10 } } }
+                    }
+                }
+            });
+        }, 100);
+    }
+
+    function renderRelogin(el, data) {
+        if (data.status === 'ok') {
+            el.innerHTML = '<div class="erp-modal-success">✅ ' + data.message + '</div>';
+        } else {
+            el.innerHTML = '<div class="erp-modal-error">❌ ' + (data.message || data.error || 'Login failed') + '</div>';
+        }
+    }
+})();
+</script>

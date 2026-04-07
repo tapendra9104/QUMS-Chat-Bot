@@ -52,7 +52,7 @@
                     <p class="hero-lead">
                         {% if is_admin_authenticated %}
                         Central workspace for student operations, delivery routing, application review, and ERP handoff
-                        tasks. ERP sign-in still requires manual CAPTCHA completion in the dashboard.
+                        tasks. Auto-captcha solver handles ERP login automatically when sessions expire.
                         {% elif is_student_authenticated %}
                         Review your own activity, delivery history, manual actions, and account security settings from
                         one place.
@@ -91,9 +91,21 @@
                     <p class="hero-note">
                         Morning digest: {{ settings.morning_digest_time }} |
                         Evening report fallback: {{ settings.evening_report_time }} |
+                        {% if settings.attendance_poll_interval_seconds > 0 %}
+                        Attendance poll: {{ settings.attendance_poll_interval_seconds }}s |
+                        {% else %}
                         Attendance poll: {{ settings.attendance_poll_interval_minutes }} minute(s) |
+                        {% endif %}
+                        {% if settings.substitution_poll_interval_seconds > 0 %}
+                        Substitution poll: {{ settings.substitution_poll_interval_seconds }}s |
+                        {% else %}
                         Substitution poll: {{ settings.substitution_poll_interval_minutes }} minute(s) |
+                        {% endif %}
+                        {% if settings.monitor_poll_interval_seconds > 0 %}
+                        Monitor poll: {{ settings.monitor_poll_interval_seconds }}s |
+                        {% else %}
                         Monitor poll: {{ settings.monitor_poll_interval_minutes }} minute(s) |
+                        {% endif %}
                         Low attendance thresholds: {{ settings.low_attendance_thresholds | join(', ') }}% |
                         Task queue mode: {{ settings.task_queue_mode }} |
                         Sentry: {{ "Enabled" if sentry_enabled else "Disabled" }}
@@ -229,6 +241,7 @@
             </div>
         </section>
 
+        {% if is_primary_admin %}
         <section class="panel">
             <div class="section-head">
                 <div class="section-title-block">
@@ -278,6 +291,115 @@
                 </div>
             </form>
         </section>
+
+        <section class="panel" id="global-feature-panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">System Controls</span>
+                    <h2>⚙️ Global Feature Toggles</h2>
+                    <p class="meta section-copy">
+                        Enable or disable system-wide features. These affect all students and secondary admins.
+                    </p>
+                </div>
+                <span class="section-tag">Primary Admin</span>
+            </div>
+            <div style="overflow-x: auto;">
+                <table class="erp-table" style="margin-top: 8px;">
+                    <thead>
+                        <tr>
+                            <th>Feature</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for key, label in global_feature_keys.items() %}
+                        <tr>
+                            <td><strong>{{ label }}</strong></td>
+                            <td>
+                                {% if global_feature_states.get(key, true) %}
+                                <span class="status ready">✅ Enabled</span>
+                                {% else %}
+                                <span class="status closed">🔴 Disabled</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <form method="post" action="{{ url_for('admin_feature_toggle') }}" style="display:inline;">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="hidden" name="feature_key" value="{{ key }}">
+                                    {% if global_feature_states.get(key, true) %}
+                                    <button type="submit" class="ghost" title="Disable {{ label }}">🔒 Disable</button>
+                                    {% else %}
+                                    <button type="submit" class="ghost" title="Enable {{ label }}">🔓 Enable</button>
+                                    {% endif %}
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% else %}
+        <section class="panel" id="secondary-admin-profile">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Your Account</span>
+                    <h2>🛡️ Admin Profile</h2>
+                    <p class="meta section-copy">
+                        You are signed in as a <strong>secondary admin</strong>. Account settings and system controls are managed by the primary administrator.
+                    </p>
+                </div>
+                <span class="section-tag tag-muted">Secondary Admin</span>
+            </div>
+            <div class="grid" style="padding: 1rem;">
+                <div>
+                    <div class="meta"><strong>Username</strong></div>
+                    <div style="font-size: 1.1rem; font-weight: 600;">{{ session.get('admin_username', 'Unknown') }}</div>
+                </div>
+                <div>
+                    <div class="meta"><strong>Role</strong></div>
+                    <div><span class="status ready">{{ admin_role|title }}</span></div>
+                </div>
+                {% if current_admin_account and current_admin_account.telegram_username %}
+                <div>
+                    <div class="meta"><strong>Telegram</strong></div>
+                    <div>{{ current_admin_account.telegram_username }}</div>
+                </div>
+                {% endif %}
+                {% if current_admin_account %}
+                <div>
+                    <div class="meta"><strong>Account Since</strong></div>
+                    <div>{{ current_admin_account.created_at[:10] }}</div>
+                </div>
+                {% endif %}
+            </div>
+            {% if current_admin_disabled_features %}
+            <div style="padding: 0 1rem 1rem;">
+                <div class="meta" style="margin-bottom: 8px;"><strong>⚠️ Restricted Features</strong></div>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                    {% for feat_key, feat_label in admin_feature_labels.items() if feat_key in current_admin_disabled_features %}
+                    <span class="chip" style="background: var(--danger-muted, #fdd); color: var(--danger, #c00);">🔒 {{ feat_label }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% else %}
+            <p class="meta" style="padding: 0 1rem 1rem;">All dashboard features are available to your account.</p>
+            {% endif %}
+            <div style="padding: 0 1rem 1rem;">
+                <div class="meta"><strong>Global Feature Status</strong></div>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;">
+                    {% for key, label in global_feature_keys.items() %}
+                    {% if global_feature_states.get(key, true) %}
+                    <span class="chip">✅ {{ label }}</span>
+                    {% else %}
+                    <span class="chip" style="background: var(--danger-muted, #fdd); color: var(--danger, #c00);">🔴 {{ label }}</span>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+        {% endif %}
 
         <section class="panel" id="student-profile-panel">
             <div class="section-head">
@@ -522,6 +644,205 @@
             {% endfor %}
             {% else %}
             <p class="meta">No public applications have been submitted yet.</p>
+            {% endif %}
+        </section>
+
+        <section class="panel">
+            <div class="section-head">
+                <div class="section-title-block">
+                    <span class="eyebrow">Admin Access</span>
+                    <h2>🛡️ Admin Applications</h2>
+                    <p class="meta section-copy">
+                        Public users can apply for admin dashboard access. Review, approve, or reject admin applications here.
+                        {% if admin_application_summary.pending_count %}
+                        {{ admin_application_summary.pending_count }} request{% if
+                        admin_application_summary.pending_count != 1 %}s{% endif %} need review.
+                        {% elif admin_application_summary.reviewed_count %}
+                        All admin applications have been processed. {{
+                        admin_application_summary.accepted_count }} approved and {{
+                        admin_application_summary.rejected_count }} rejected.
+                        {% else %}
+                        No admin applications submitted yet.
+                        {% endif %}
+                    </p>
+                </div>
+                <span
+                    class="section-tag{% if admin_application_summary.pending_count %} alert{% elif admin_application_summary.total_count %} success{% endif %}">
+                    {% if admin_application_summary.pending_count %}
+                    {{ admin_application_summary.pending_count }} awaiting review
+                    {% elif admin_application_summary.total_count %}
+                    All reviewed
+                    {% else %}
+                    0 pending
+                    {% endif %}
+                </span>
+            </div>
+
+            {% if admin_accounts %}
+            <details>
+                <summary>👥 Active Admin Accounts ({{ admin_accounts|length }})</summary>
+                <div style="overflow-x: auto;">
+                    <table class="erp-table" style="margin-top: 8px;">
+                        <thead>
+                            <tr>
+                                <th>Username</th>
+                                <th>Telegram</th>
+                                <th>Role</th>
+                                <th>Status</th>
+                                <th>Created</th>
+                                {% if is_primary_admin %}<th>Actions</th>{% endif %}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for acct in admin_accounts %}
+                            <tr>
+                                <td><strong>{{ acct.username }}</strong></td>
+                                <td>{{ acct.telegram_username or "—" }}</td>
+                                <td><span class="status ready">{{ acct.role | title }}</span></td>
+                                <td>
+                                    {% if acct.enabled %}
+                                    <span class="status ready">Active</span>
+                                    {% else %}
+                                    <span class="status closed">Disabled</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ acct.created_at[:10] }}</td>
+                                {% if is_primary_admin %}
+                                <td>
+                                    <div class="actions" style="gap:4px;">
+                                        <form method="post" action="{{ url_for('admin_acct_toggle', account_id=acct.id) }}" style="display:inline;">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            {% if acct.enabled %}
+                                            <button type="submit" class="ghost" title="Disable this admin">🔒 Disable</button>
+                                            {% else %}
+                                            <button type="submit" class="ghost" title="Re-enable this admin">🔓 Enable</button>
+                                            {% endif %}
+                                        </form>
+                                        <form method="post" action="{{ url_for('admin_acct_remove', account_id=acct.id) }}"
+                                            onsubmit="return confirm('Permanently remove admin account {{ acct.username }}?');" style="display:inline;">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="danger" title="Permanently remove">🗑️ Remove</button>
+                                        </form>
+                                    </div>
+                                </td>
+                                {% endif %}
+                            </tr>
+                            {% if is_primary_admin %}
+                            <tr>
+                                <td colspan="6" style="padding: 0;">
+                                    <details style="padding: 8px 12px;">
+                                        <summary style="font-size: 0.85rem; cursor: pointer;">⚙️ Manage Feature Restrictions for {{ acct.username }}</summary>
+                                        <form method="post" action="{{ url_for('admin_acct_features', account_id=acct.id) }}" style="margin-top: 8px;">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <p class="meta" style="margin-bottom: 8px;">Check features to <strong>disable</strong> for this admin. Unchecked features remain available.</p>
+                                            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 6px;">
+                                                {% set acct_disabled = acct.disabled_features_json | default('[]') %}
+                                                {% for feat_key in admin_feature_order %}
+                                                <label class="check" style="font-size: 0.85rem;">
+                                                    <input type="checkbox" name="disabled_features" value="{{ feat_key }}"
+                                                        {% if feat_key in acct_disabled %}checked{% endif %}>
+                                                    🔒 {{ admin_feature_labels[feat_key] }}
+                                                </label>
+                                                {% endfor %}
+                                            </div>
+                                            <div class="actions" style="margin-top: 8px;">
+                                                <button type="submit" class="ghost">💾 Save Feature Restrictions</button>
+                                            </div>
+                                        </form>
+                                    </details>
+                                </td>
+                            </tr>
+                            {% endif %}
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+            {% endif %}
+
+            {% if admin_applications %}
+            {% for item in admin_applications %}
+            {% set app_status = item.status|lower %}
+            <details>
+                <summary>
+                    {{ item.created_at[:10] }} | {{ item.applicant_name }} | {{ item.desired_username }}
+                    {% if app_status == 'accepted' %} ✅
+                    {% elif app_status == 'rejected' %} ❌
+                    {% else %} ⏳
+                    {% endif %}
+                </summary>
+                <p class="meta">
+                    Full name: <strong>{{ item.applicant_name }}</strong><br>
+                    Desired username: <code>{{ item.desired_username }}</code><br>
+                    Telegram: {{ item.telegram_username or "Not provided" }}<br>
+                    Status: <strong>{{ item.status | title }}</strong><br>
+                    Submitted from IP: {{ item.created_from_ip or "Not available" }}<br>
+                    Submitted at: {{ item.created_at }}<br>
+                    Updated at: {{ item.updated_at }}
+                </p>
+                {% if item.note %}
+                <pre>{{ item.note }}</pre>
+                {% endif %}
+                <div class="actions">
+                    <span
+                        class="status {% if app_status == 'accepted' %}ready{% elif app_status == 'rejected' %}closed{% else %}pending{% endif %}">
+                        {% if app_status == "accepted" %}Approved
+                        {% elif app_status == "rejected" %}Rejected
+                        {% else %}Pending Review
+                        {% endif %}
+                    </span>
+                </div>
+                {% if app_status not in ["accepted", "rejected"] %}
+                {% if is_primary_admin %}
+                <div class="grid" style="margin-top: 12px;">
+                    <div>
+                        <form method="post" action="{{ url_for('admin_app_accept', application_id=item.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <label for="admin-app-username-{{ item.id }}">Final admin username</label>
+                            <input id="admin-app-username-{{ item.id }}" name="final_username" type="text"
+                                value="{{ item.desired_username }}" required
+                                minlength="3" maxlength="64">
+                            <div class="meta">The applicant will sign in with this username. Change it here if needed before approving.</div>
+                            <div class="actions">
+                                <button type="submit">✅ Approve Application</button>
+                            </div>
+                        </form>
+                    </div>
+                    <div>
+                        <form method="post" action="{{ url_for('admin_app_reject', application_id=item.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <div class="meta">
+                                Rejecting closes this request. The applicant will not receive admin access.
+                            </div>
+                            <div class="actions">
+                                <button type="submit" class="ghost">❌ Reject Application</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                {% else %}
+                <p class="meta" style="margin-top:12px; color:var(--ink-muted);">⚠️ Only the primary administrator can approve or reject admin applications.</p>
+                {% endif %}
+                {% else %}
+                <div class="actions">
+                    {% if app_status == "accepted" %}
+                    <span class="pill">Approved</span>
+                    {% else %}
+                    <span class="pill">Rejected</span>
+                    {% endif %}
+                    {% if is_primary_admin %}
+                    <form method="post" action="{{ url_for('admin_app_clear', application_id=item.id) }}"
+                        onsubmit="return confirm('Clear this admin application record from the dashboard?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="ghost">Clear Record</button>
+                    </form>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </details>
+            {% endfor %}
+            {% else %}
+            <p class="meta">No admin access applications have been submitted yet. Public users can apply via the "Apply for Admin Access" link on the public dashboard.</p>
             {% endif %}
         </section>
         {% elif is_student_authenticated %}

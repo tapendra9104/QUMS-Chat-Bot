@@ -715,6 +715,46 @@ button:focus-visible, .button-link:focus-visible, summary:focus-visible {
     padding: 3px 10px;
 }
 
+.pill--toggle {
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.12s, box-shadow 0.12s;
+    min-height: 26px;
+    align-items: center;
+    gap: 4px;
+    box-shadow: none;
+}
+
+.pill--toggle:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.pill--toggle::before { display: none !important; }
+
+.pill--active {
+    background: var(--success-soft);
+    border-color: var(--success-glow);
+    color: var(--success);
+}
+
+.pill--active:hover {
+    background: var(--danger-soft);
+    border-color: rgba(220,38,38,0.15);
+    color: var(--danger);
+}
+
+.pill--inactive {
+    background: rgba(156,163,175,0.08);
+    border-color: rgba(156,163,175,0.12);
+    color: var(--ink-muted);
+}
+
+.pill--inactive:hover {
+    background: var(--success-soft);
+    border-color: var(--success-glow);
+    color: var(--success);
+}
+
 /* ════════════════════════════════
    CODE / PRE
    ════════════════════════════════ */
@@ -1078,4 +1118,200 @@ pre, code, .meta, .live-sub, .fact-value, .student-line { overflow-wrap: anywher
     .hero { background: #0f766e !important; color: #fff !important; }
     .panel, .student { background: #fff !important; box-shadow: none; border: 1px solid #ddd; }
     .actions, .hero-actions { display: none !important; }
+}
+
+/* ════════════════════════════════
+   ERP FEATURE BUTTONS
+   ════════════════════════════════ */
+.erp-feature-actions {
+    display: grid !important;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.erp-feature-actions button {
+    font-size: 0.82rem;
+    min-height: 38px;
+    padding: 6px 12px;
+    white-space: nowrap;
+}
+
+/* ════════════════════════════════
+   ERP MODAL OVERLAY
+   ════════════════════════════════ */
+.erp-modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: modalFadeIn 0.2s ease;
+}
+
+@keyframes modalFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.erp-modal-content {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-xl);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    max-height: 80vh;
+    max-width: 900px;
+    width: 90%;
+    overflow: hidden;
+    animation: modalSlideUp 0.25s ease;
+}
+
+@keyframes modalSlideUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.erp-modal-header {
+    align-items: center;
+    background: var(--primary-soft);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    padding: 16px 20px;
+}
+
+.erp-modal-header h3 {
+    font-size: 1.1rem;
+    margin: 0;
+    color: var(--ink);
+}
+
+.erp-modal-close {
+    background: none !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: var(--ink-muted) !important;
+    cursor: pointer;
+    font-size: 1.5rem;
+    line-height: 1;
+    min-height: auto !important;
+    padding: 4px 8px !important;
+}
+
+.erp-modal-close:hover { color: var(--danger) !important; }
+
+.erp-modal-body {
+    max-height: 65vh;
+    overflow-y: auto;
+    padding: 20px;
+}
+
+/* ════════════════════════════════
+   ERP DATA TABLES
+   ════════════════════════════════ */
+.erp-table {
+    border-collapse: collapse;
+    font-size: 0.84rem;
+    width: 100%;
+}
+
+.erp-table th {
+    background: var(--primary-soft);
+    border-bottom: 2px solid var(--primary-glow);
+    color: var(--primary);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 10px 12px;
+    text-align: left;
+    text-transform: uppercase;
+}
+
+.erp-table td {
+    border-bottom: 1px solid var(--border);
+    color: var(--ink);
+    padding: 9px 12px;
+}
+
+.erp-table tr:hover td {
+    background: var(--primary-soft);
+}
+
+.erp-row-fail td {
+    background: var(--danger-soft) !important;
+    color: var(--danger);
+}
+
+.erp-row-warn td {
+    background: var(--warning-soft) !important;
+    color: var(--warning);
+}
+
+/* ════════════════════════════════
+   ANALYTICS BADGES
+   ════════════════════════════════ */
+.erp-analytics-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.erp-badge {
+    border-radius: 99px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 5px 14px;
+}
+
+.erp-badge--danger { background: var(--danger-soft); border: 1px solid rgba(220,38,38,0.15); color: var(--danger); }
+.erp-badge--warning { background: var(--warning-soft); border: 1px solid rgba(217,119,6,0.2); color: var(--warning); }
+.erp-badge--safe { background: var(--success-soft); border: 1px solid var(--success-glow); color: var(--success); }
+
+/* ════════════════════════════════
+   MODAL FEEDBACK STATES
+   ════════════════════════════════ */
+.erp-modal-spinner {
+    align-items: center;
+    color: var(--ink-soft);
+    display: flex;
+    font-size: 0.95rem;
+    gap: 10px;
+    justify-content: center;
+    min-height: 120px;
+    animation: pulse 1.5s ease infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.erp-modal-error {
+    background: var(--danger-soft);
+    border: 1px solid rgba(220,38,38,0.15);
+    border-radius: var(--r-md);
+    color: var(--danger);
+    font-size: 0.9rem;
+    padding: 16px;
+    text-align: center;
+}
+
+.erp-modal-success {
+    background: var(--success-soft);
+    border: 1px solid var(--success-glow);
+    border-radius: var(--r-md);
+    color: var(--success);
+    font-size: 0.9rem;
+    padding: 16px;
+    text-align: center;
+}
+
+#erp-attendance-chart {
+    margin-top: 20px;
+    border-radius: var(--r-md);
 }

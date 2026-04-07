@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import Database, utcnow_iso
-from .erp_client import AuthenticationRequired, ERPClient, ERPClientError
+from .erp_client import AuthenticationRequired, ERPClient, ERPClientError, LoginFailed
 from .models import ApplicationRequest, LectureEvent, LectureSlot, PendingLogin, Student, Substitution, TelegramAdminSession
 from .parsers import (
     html_to_lines,
@@ -58,6 +58,8 @@ STUDENT_ACTION_LABELS: dict[str, str] = {
     "send_day_report": "Send Day Report",
     "send_shortage_report": "Send Shortage Report",
     "send_channel_test": "Send Channel Test",
+    "erp_features": "ERP Features",
+    "live_sync": "Live Sync (Automatic Scanning)",
 }
 
 STUDENT_ACTION_ORDER: tuple[str, ...] = tuple(STUDENT_ACTION_LABELS.keys())
@@ -83,8 +85,24 @@ NOTIFICATION_ACTION_GUARDS: dict[str, str] = {
     "attendance_shortage_report": "send_shortage_report",
     "low_attendance_alert": "send_shortage_report",
 }
+ADMIN_FEATURE_LABELS: dict[str, str] = {
+    "manage_students": "Manage Students (Add/Edit/Delete)",
+    "manage_applications": "Manage Applications (Accept/Reject)",
+    "toggle_student_controls": "Toggle Student Controls",
+    "run_checks": "Run Live Checks",
+    "export_data": "Export CSV Data",
+    "view_audit_log": "View Audit Log",
+    "retry_dead_letters": "Retry Dead Letters",
+}
 
-ERP_SESSION_MONITOR_COOLDOWN_MINUTES = 15
+ADMIN_FEATURE_ORDER: tuple[str, ...] = tuple(ADMIN_FEATURE_LABELS.keys())
+
+GLOBAL_FEATURE_KEYS: dict[str, str] = {
+    "student_profile_control": "Student Self-Service Profile Editing",
+    "live_scan_control": "Live Scan Toggle (per student)",
+}
+
+ERP_SESSION_MONITOR_COOLDOWN_MINUTES = 5
 ERP_SESSION_EXPIRED_STATUS_TEXT = "ERP session expired. Open the dashboard and complete login again with a fresh captcha."
 LECTURE_UPCOMING_ALERT_LEAD_SECONDS = 60
 
@@ -107,11 +125,71 @@ class BotService:
     def list_students(self) -> list[Student]:
         return self.db.list_students()
 
-    def list_message_history(self, limit: int | None = 50):
+    def list_message_history(self, limit: int | None = 50) -> list:
         return self.db.get_recent_message_history(limit)
 
-    def list_admin_audit_log(self, limit: int | None = 50):
+    def list_admin_audit_log(self, limit: int | None = 50) -> list:
         return self.db.get_recent_admin_audit_log(limit)
+
+    def compute_attendance_analytics(self, student: Student) -> dict:
+        """Compute attendance analytics from stored attendance snapshots.
+
+        Returns per-subject attendance %, classes attended vs total,
+        and how many more classes the student can skip while staying ≥75%.
+        """
+        rows = self.db.execute_query(
+            "SELECT subject_key, subject_name, total_lecture, total_present, percentage "
+            "FROM attendance_snapshots "
+            "WHERE student_id = ? "
+            "ORDER BY updated_at DESC",
+            (student.id,),
+        )
+        # Deduplicate: keep only the latest snapshot per subject_key
+        seen: dict[str, dict] = {}
+        for row in rows:
+            key = row["subject_key"]
+            if key not in seen:
+                seen[key] = dict(row)
+
+        subjects: list[dict] = []
+        for key, data in seen.items():
+            total = int(data.get("total_lecture", 0) or 0)
+            present = int(data.get("total_present", 0) or 0)
+            pct_str = str(data.get("percentage", "0")).replace("%", "").strip()
+            try:
+                pct = float(pct_str)
+            except (ValueError, TypeError):
+                pct = (present / total * 100) if total > 0 else 0.0
+
+            # Calculate "safe to skip" — how many more can be missed and stay ≥75%
+            safe_to_skip = 0
+            if total > 0:
+                # present / (total + future) >= 0.75 → future <= present / 0.75 - total
+                # Simpler: with current data, how many of remaining can be missed
+                # Assuming no more classes: safe_to_skip = present - ceil(0.75 * total)
+                import math
+                min_needed = math.ceil(0.75 * total)
+                safe_to_skip = max(0, present - min_needed)
+
+            subjects.append({
+                "subject_key": key,
+                "subject_name": data.get("subject_name", key),
+                "total": total,
+                "present": present,
+                "absent": total - present,
+                "percentage": round(pct, 1),
+                "safe_to_skip": safe_to_skip,
+                "status": "danger" if pct < 75 else "safe",
+            })
+
+        subjects.sort(key=lambda s: s["percentage"])
+        return {
+            "student_label": student.student_label,
+            "subjects": subjects,
+            "total_subjects": len(subjects),
+            "danger_count": sum(1 for s in subjects if s["status"] == "danger"),
+            "safe_count": sum(1 for s in subjects if s["status"] == "safe"),
+        }
 
     def list_application_requests(
         self,
@@ -238,6 +316,56 @@ class BotService:
             details=details,
         )
 
+    # ── Global Feature Toggles ─────────────────────────────────────
+
+    def is_global_feature_enabled(self, feature_key: str) -> bool:
+        """Check if a global feature toggle is enabled (default: enabled)."""
+        state_key = f"feature:{feature_key}"
+        value = self.db.get_runtime_state(state_key)
+        if value is None:
+            return True  # Features enabled by default
+        return value.strip().lower() in ("1", "true", "enabled", "on")
+
+    def toggle_global_feature(self, feature_key: str, enabled: bool) -> None:
+        """Enable or disable a global feature toggle."""
+        state_key = f"feature:{feature_key}"
+        self.db.upsert_runtime_state(
+            state_key=state_key,
+            state_value="1" if enabled else "0",
+        )
+
+    def get_all_global_feature_states(self) -> dict[str, bool]:
+        """Get the current enabled/disabled state of all global features."""
+        return {
+            key: self.is_global_feature_enabled(key)
+            for key in GLOBAL_FEATURE_KEYS
+        }
+
+    # ── Admin Feature Restrictions ─────────────────────────────────
+
+    def get_admin_disabled_features(self, admin_account) -> set[str]:
+        """Get the set of dashboard features disabled for an admin account."""
+        raw = admin_account.disabled_features_json or "[]"
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = []
+        if not isinstance(parsed, list):
+            parsed = []
+        return {str(item).strip().lower() for item in parsed if str(item).strip().lower() in ADMIN_FEATURE_LABELS}
+
+    def is_admin_feature_disabled(self, admin_account, feature_key: str) -> bool:
+        """Check if a specific feature is disabled for an admin account."""
+        return feature_key in self.get_admin_disabled_features(admin_account)
+
+    def update_admin_account_features(self, account_id: int, disabled_features: list[str]) -> None:
+        """Update the disabled features for an admin account."""
+        normalized = sorted({f.strip().lower() for f in disabled_features if f.strip().lower() in ADMIN_FEATURE_LABELS})
+        self.db.update_admin_account_features(
+            account_id=account_id,
+            disabled_features_json=json.dumps(normalized),
+        )
+
     def get_student_automation_status(
         self,
         student: Student,
@@ -344,6 +472,9 @@ class BotService:
         if not student.enabled:
             raise ERPClientError("This student profile is blocked. Unblock it first to use bot features.")
         normalized_action = (action_key or "").strip().lower()
+        # Check global student_profile_control toggle
+        if normalized_action == "edit" and not self.is_global_feature_enabled("student_profile_control"):
+            raise ERPClientError("Student self-service profile editing is currently disabled by the administrator.")
         if normalized_action and self.is_student_action_disabled(student, normalized_action):
             action_label = STUDENT_ACTION_LABELS.get(normalized_action, normalized_action.replace("_", " ").title())
             raise ERPClientError(f"{action_label} is disabled for this student profile.")
@@ -1490,6 +1621,47 @@ class BotService:
                 self._build_telegram_application_detail_text(application),
                 reply_markup=self._telegram_application_actions_markup(application.id, application.status),
             )
+            return True
+        if command in {"/adminapplications", "/adminapps"}:
+            admin_apps = self.db.list_admin_applications(20)
+            if not admin_apps:
+                self._send_telegram_text(chat_id, "No admin access applications found.")
+            else:
+                lines = ["🛡️ Admin Applications:\n"]
+                for app in admin_apps:
+                    status_icon = {"new": "⏳", "accepted": "✅", "rejected": "❌"}.get(app.status.lower(), "❓")
+                    lines.append(
+                        f"{status_icon} #{app.id} — {app.applicant_name} "
+                        f"({app.desired_username}) — {app.status.title()}"
+                    )
+                pending = sum(1 for a in admin_apps if a.status.lower() == "new")
+                if pending:
+                    lines.append(f"\n⚠️ {pending} pending review")
+                self._send_telegram_text(chat_id, "\n".join(lines))
+            return True
+        if command == "/features":
+            feature_states = self.get_all_global_feature_states()
+            lines = ["⚙️ *Global Feature Toggles*\n"]
+            for key, label in GLOBAL_FEATURE_KEYS.items():
+                enabled = feature_states.get(key, True)
+                icon = "✅" if enabled else "🔴"
+                status = "Enabled" if enabled else "Disabled"
+                lines.append(f"{icon} *{label}*: {status}")
+            lines.append("\n_Use the web dashboard to toggle features._")
+            self._send_telegram_text(chat_id, "\n".join(lines), parse_mode="Markdown")
+            return True
+        if command == "/admins":
+            admin_accounts = self.db.list_admin_accounts()
+            if not admin_accounts:
+                self._send_telegram_text(chat_id, "No secondary admin accounts registered.")
+            else:
+                lines = ["👥 *Admin Accounts*\n"]
+                for acct in admin_accounts:
+                    status = "✅ Active" if acct.enabled else "🔒 Disabled"
+                    tg_user = f" (@{acct.telegram_username})" if acct.telegram_username else ""
+                    lines.append(f"• *{acct.username}*{tg_user} — {status}")
+                lines.append(f"\n_Total: {len(admin_accounts)} account(s)_")
+                self._send_telegram_text(chat_id, "\n".join(lines), parse_mode="Markdown")
             return True
         if command in {
             "/runchecks",
@@ -2767,6 +2939,11 @@ class BotService:
                 "- /deleteprofile <id>",
                 "- /cancel",
                 "",
+                "Admin management",
+                "- /features — View global feature toggle states",
+                "- /admins — List secondary admin accounts",
+                "- /adminapps — List admin access applications",
+                "",
                 "QUMS Admin Control in Telegram is dashboard-only.",
                 "Background dashboard refresh runs silently and only sends an update when something changes.",
                 "All automatic alerts and scheduled checks continue to run in the background.",
@@ -3132,6 +3309,7 @@ class BotService:
                 details=details,
             )
         except Exception:
+            logger.warning("Audit log write failed for action=%s target=%s", action, target_id, exc_info=True)
             return
 
     def _ensure_telegram_bot_commands_registered(self) -> None:
@@ -3182,6 +3360,8 @@ class BotService:
         for student in self.db.list_students():
             if not student.enabled:
                 continue
+            if self._student_has_known_expired_erp_session(student):
+                continue
             if self.is_student_action_disabled(student, "send_morning"):
                 continue
             student_now = self._now_for_student(student, current)
@@ -3198,6 +3378,8 @@ class BotService:
         current = now or self._local_now()
         for student in self.db.list_students():
             if not student.enabled:
+                continue
+            if self.is_student_action_disabled(student, "live_sync"):
                 continue
             if self._student_has_known_expired_erp_session(student):
                 continue
@@ -3220,6 +3402,10 @@ class BotService:
         current = now or self._local_now()
         for student in self.db.list_students():
             if not student.enabled:
+                continue
+            if self.is_student_action_disabled(student, "live_sync"):
+                continue
+            if self._student_has_known_expired_erp_session(student):
                 continue
             student_now = self._now_for_student(student, current)
             target_date = student_now.date()
@@ -3294,6 +3480,10 @@ class BotService:
         lookback_start = now.date() - timedelta(days=self.settings.attendance_correction_lookback_days)
         for student in self.db.list_students():
             if not student.enabled:
+                continue
+            if self.is_student_action_disabled(student, "live_sync"):
+                continue
+            if self._student_has_known_expired_erp_session(student):
                 continue
             student_now = self._now_for_student(student, now)
             try:
@@ -3388,6 +3578,8 @@ class BotService:
         for student in self.db.list_students():
             if not student.enabled:
                 continue
+            if self._student_has_known_expired_erp_session(student):
+                continue
             if self.is_student_action_disabled(student, "send_day_report"):
                 continue
             student_now = self._now_for_student(student, current)
@@ -3463,6 +3655,7 @@ class BotService:
             target_date=target_date,
             substitutions=substitutions,
             lecture_events=lecture_events,
+            attendance=attendance,
         )
         self.db.mark_student_erp_sync(student.id)
         self.db.update_student_bot_activity(student.id, f"ERP sync completed for {target_date.isoformat()}.")
@@ -3502,7 +3695,7 @@ class BotService:
             return
 
         try:
-            self.erp.ensure_authenticated(student)
+            self.erp.validate_session(student)
         except AuthenticationRequired:
             self._handle_authentication_required(student, detected_at=now)
         except ERPClientError as exc:
@@ -3537,6 +3730,7 @@ class BotService:
         student: Student,
         *,
         detected_at: datetime,
+        auto_login_attempted: bool = False,
     ) -> None:
         status_text = ERP_SESSION_EXPIRED_STATUS_TEXT
         self.db.update_student_erp_status(student.id, status_text)
@@ -3544,6 +3738,12 @@ class BotService:
             student.id,
             f"ERP session expired at {self._format_datetime(detected_at)}. Fresh login is required.",
         )
+
+        # Attempt automatic captcha login before falling back to manual
+        if not auto_login_attempted:
+            auto_result = self._try_auto_login(student)
+            if auto_result:
+                return  # Session recovered automatically — skip manual handoff
 
         if not student.session_updated_at:
             return
@@ -3613,9 +3813,67 @@ class BotService:
         try:
             pending = self.erp.start_manual_login(student)
         except Exception as exc:
+            logger.warning("Manual login preparation failed for student %s: %s", student.id, exc)
             return None, str(exc) or "Automatic login preparation failed."
         self.db.save_pending_login(pending)
         return self._dashboard_login_url(student.id), None
+
+    def _try_auto_login(self, student: Student) -> bool:
+        """Attempt automatic captcha-solving login.
+
+        Returns True if the session was recovered, False otherwise.
+        Never raises — all errors are caught and logged.
+        """
+        if not self.settings.auto_captcha_enabled:
+            return False
+        try:
+            result = self.erp.auto_login(
+                student,
+                max_attempts=self.settings.auto_captcha_max_attempts,
+            )
+        except Exception as exc:
+            logger.info(
+                "Auto-captcha login failed for student %s: %s",
+                student.id,
+                exc,
+            )
+            self.db.update_student_bot_activity(
+                student.id,
+                f"Auto-captcha login failed: {exc}. Manual captcha entry may be required.",
+            )
+            return False
+
+        # Persist the recovered session
+        self.db.update_student_session(
+            student_id=student.id,
+            cookies_json=result.cookies_json,
+            last_login_status="ERP session active (auto-captcha).",
+            reg_id=result.reg_id,
+            student_name=result.student_name,
+        )
+        # Update the in-memory student so any lambda that captured it
+        # will use the fresh session cookies on retry.
+        student.session_cookies = result.cookies_json
+        if result.reg_id:
+            student.reg_id = result.reg_id
+        if result.student_name:
+            student.student_name = result.student_name
+        student.erp_status_text = "ERP session recovered automatically via captcha solver."
+
+        self.db.clear_pending_login(student.id)
+        self.db.update_student_erp_status(
+            student.id,
+            "ERP session recovered automatically via captcha solver.",
+        )
+        self.db.update_student_bot_activity(
+            student.id,
+            "ERP session recovered automatically. No manual captcha entry needed.",
+        )
+        logger.info(
+            "Auto-captcha login succeeded for student %s.",
+            student.id,
+        )
+        return True
 
     def _run_student_erp_action(
         self,
@@ -3627,9 +3885,18 @@ class BotService:
         try:
             return action()
         except AuthenticationRequired as exc:
+            # Try automatic captcha login before giving up.
+            # _try_auto_login updates student.session_cookies in-place,
+            # so the lambda that captured `student` will use fresh cookies.
+            if self._try_auto_login(student):
+                try:
+                    return action()
+                except AuthenticationRequired:
+                    pass  # auto-login succeeded but session still rejected — fall through
             self._handle_authentication_required(
                 student,
                 detected_at=detected_at or self._now_for_student(student),
+                auto_login_attempted=True,
             )
             raise AuthenticationRequired(ERP_SESSION_EXPIRED_STATUS_TEXT) from exc
 
@@ -3655,7 +3922,7 @@ class BotService:
                 continue
 
             notified_at = None
-            if send_alerts:
+            if send_alerts and not self.is_student_action_disabled(student, "send_substitution_report"):
                 alert_time = detected_at or self._local_now()
                 body = self._render_substitution_alert(target_date, context, detected_at=alert_time)
                 self._send_notification(
@@ -3883,6 +4150,8 @@ class BotService:
         events: list[LectureEvent],
         now: datetime,
     ) -> None:
+        if self.is_student_action_disabled(student, "send_morning"):
+            return
         now_naive = now.replace(tzinfo=None)
         for event in sorted(
             events,
@@ -4187,6 +4456,8 @@ class BotService:
         lecture_events: list[LectureEvent] | None = None,
         suppress_notification: bool = False,
     ) -> None:
+        if self.is_student_action_disabled(student, "send_attendance_summary"):
+            return
         if not attendance or not previous_snapshots:
             return
 
@@ -4441,6 +4712,8 @@ class BotService:
         *,
         lecture_events: list[LectureEvent] | None = None,
     ) -> None:
+        if self.is_student_action_disabled(student, "send_shortage_report"):
+            return
         if not attendance:
             return
         teacher_events = self._risk_teacher_reference_events(
@@ -4665,6 +4938,8 @@ class BotService:
         now: datetime,
         force: bool = False,
     ) -> str | None:
+        if self.is_student_action_disabled(student, "send_day_report") and not force:
+            return None
         if self.db.get_daily_attendance_report(student.id, target_date) and not force:
             return None
 
@@ -4687,11 +4962,13 @@ class BotService:
             events = self.db.get_lecture_events_for_day(student.id, target_date)
             lecture_events = [event for event in events if not event.is_break]
 
+        attendance_snapshots = self.db.get_attendance_snapshots(student.id)
         report = self._build_evening_report(
             student_name=student.student_name or student.student_label,
             target_date=target_date,
             events=lecture_events,
             generated_at=now,
+            attendance_snapshots=attendance_snapshots,
         )
         self._send_notification(
             student,
@@ -4724,6 +5001,20 @@ class BotService:
         now: datetime,
     ) -> bool:
         now_naive = now.replace(tzinfo=None)
+        # Smart trigger: if ALL lectures are already marked AND we are past the
+        # last lecture's end time, send the report immediately without waiting
+        # for the full grace-window or the evening_report_time fallback.
+        if events and all(
+            event.status in {"notified_present", "notified_absent"}
+            for event in events
+        ):
+            end_times = [
+                datetime.combine(target_date, event.end_time)
+                for event in events
+                if event.end_time
+            ]
+            if end_times and now_naive >= max(end_times):
+                return True
         check_times = [event.check_after for event in events if event.check_after]
         if check_times:
             return now_naive >= max(check_times)
@@ -4746,6 +5037,7 @@ class BotService:
         target_date: date,
         events: list[LectureEvent],
         generated_at: datetime,
+        attendance_snapshots: dict[str, dict] | None = None,
     ) -> dict[str, int | str]:
         present_count = 0
         absent_count = 0
@@ -4762,45 +5054,89 @@ class BotService:
 
         total_lectures = len(events)
         marked_count = present_count + absent_count
+        today_rate = f"{(present_count / total_lectures * 100):.1f}%" if total_lectures > 0 else "N/A"
+
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
+
         lines = [
-            "End-of-Day Attendance Report",
+            "📊 End-of-Day Attendance Report",
             "",
-            f"Student: {student_name or 'student'}",
-            f"Report date: {target_date.strftime('%A, %d %B %Y')}",
-            f"Generated at: {self._format_datetime(generated_at)}",
+            f"👤 Student: {student_name or 'student'}",
+            f"📅 {target_date.strftime('%A, %d %B %Y')}",
+            f"⏰ Generated at: {self._format_datetime(generated_at)}",
             "",
-            "Summary",
-            f"Scheduled lectures: {total_lectures}",
-            f"Attendance marked: {marked_count}",
-            f"Present: {present_count}",
-            f"Absent: {absent_count}",
-            f"Not marked yet: {unmarked_count}",
+            separator,
+            "📋 DAILY SUMMARY",
+            separator,
+            f"📚 Total Lectures: {total_lectures}",
+            f"✅ Present: {present_count}",
+            f"❌ Absent: {absent_count}",
+            f"⏳ Not marked yet: {unmarked_count}",
+            f"📊 Today's Rate: {today_rate}",
             "",
-            "Lecture-wise Status",
+            separator,
+            "📝 LECTURE DETAILS",
+            separator,
         ]
 
         for event in events:
-            status_text, _, _ = self._attendance_state_for_event(event)
-            marked_at_text = ""
-            if event.status_recorded_at:
-                marked_at_dt = self._normalize_event_datetime(event.status_recorded_at, generated_at.tzinfo)
-                marked_at_text = f" | Marked at: {self._format_datetime(marked_at_dt)}"
+            status_text, marked, is_present = self._attendance_state_for_event(event)
+            if marked and is_present:
+                status_icon = "✅"
+            elif marked and not is_present:
+                status_icon = "❌"
+            else:
+                status_icon = "⏳"
+
             teacher_text = f" | Faculty: {event.teacher_name}" if event.teacher_name else ""
             location_text = self._event_class_location(event)
             class_text = f" | Class: {location_text}" if location_text else ""
             note_text = f" | Note: {event.note}" if event.note else ""
             lines.append(
-                f"- {self._format_event_time(event)} | {event.subject_name} | {status_text}{marked_at_text}{teacher_text}{class_text}{note_text}"
+                f"{status_icon} {self._format_event_time(event)} | {event.subject_name} | {status_text}{teacher_text}{class_text}{note_text}"
             )
+            if event.status_recorded_at:
+                marked_at_dt = self._normalize_event_datetime(event.status_recorded_at, generated_at.tzinfo)
+                lines.append(f"   Marked at: {self._format_datetime(marked_at_dt)}")
 
         if unmarked_count:
             lines.extend(
                 [
                     "",
-                    "Pending lecture entries will continue to be checked automatically.",
-                    "If attendance is marked later, the bot will send a lecture-wise update with the original lecture date and time.",
+                    "⏳ Pending lecture entries will continue to be checked automatically.",
+                    "If attendance is marked later, the bot will send a lecture-wise update.",
                 ]
             )
+
+        # Overall semester attendance summary
+        if attendance_snapshots:
+            lines.extend([
+                "",
+                separator,
+                "📈 OVERALL SEMESTER ATTENDANCE",
+                separator,
+            ])
+            for _key, snap in sorted(attendance_snapshots.items(), key=lambda x: x[1].get("subject_name", "")):
+                subj_name = snap.get("subject_name", "Unknown")
+                total = int(snap.get("total_lecture", 0))
+                present = int(snap.get("total_present", 0))
+                pct_str = str(snap.get("percentage", "0")).replace("%", "").strip()
+                try:
+                    pct_val = float(pct_str)
+                except (ValueError, TypeError):
+                    pct_val = (present / total * 100) if total > 0 else 0.0
+                if pct_val >= 75:
+                    indicator = "✅"
+                elif pct_val >= 65:
+                    indicator = "⚠️"
+                else:
+                    indicator = "🔴"
+                lines.append(f"{indicator} {subj_name} — {pct_val:.1f}% ({present}/{total})")
+
+        lines.extend([
+            "",
+            "🤖 QUMS Academic Bot",
+        ])
 
         return {
             "body": "\n".join(lines),
@@ -5316,6 +5652,7 @@ class BotService:
         target_date: date,
         substitutions,
         lecture_events: list[LectureEvent],
+        attendance: list | None = None,
     ) -> str:
         display_events = sorted(
             lecture_events,
@@ -5366,15 +5703,148 @@ class BotService:
                 context = self._build_substitution_context(item, lecture_events)
                 lines.append(self._render_substitution_summary_line(context))
 
+        # ── Attendance Analytics for Today's Subjects ──────────────
+        insight_lines = self._build_morning_attendance_insights(
+            attendance=attendance or [],
+            lecture_events=lecture_events,
+        )
+        lines.extend(insight_lines)
+
         lines.extend(
             [
                 "",
                 "Attendance updates will be checked after each lecture.",
                 "New substitute-teacher assignments will be checked automatically and sent immediately when detected.",
-                "If the ERP session expires, open the dashboard and enter a fresh captcha.",
+                "This message is sent once daily. All monitoring runs fully automatically.",
             ]
         )
         return "\n".join(lines)
+
+    def _build_morning_attendance_insights(
+        self,
+        attendance: list,
+        lecture_events: list[LectureEvent],
+    ) -> list[str]:
+        """Build per-subject attendance analytics for today's morning summary.
+
+        Only includes subjects that appear in today's timetable.
+        Shows current %, skip-impact %, safe-to-skip count, and risk warnings.
+        """
+        import math
+        from .parsers import normalize_subject_key, match_attendance_record
+
+        # Collect unique subjects from today's non-break lecture events
+        # and count how many classes each subject has today
+        today_subject_counts: dict[str, int] = {}
+        today_subject_names: dict[str, str] = {}
+        for event in lecture_events:
+            if event.is_break:
+                continue
+            key = normalize_subject_key(event.subject_name)
+            today_subject_counts[key] = today_subject_counts.get(key, 0) + 1
+            today_subject_names[key] = event.subject_name
+
+        if not today_subject_counts:
+            return ["", "📊 Attendance Insights", "- No classes today — full analytics available on dashboard."]
+
+        if not attendance:
+            return ["", "📊 Attendance Insights", "- Attendance data not available yet."]
+
+        lines = ["", "📊 Attendance Insights (Today's Subjects)", ""]
+
+        for subject_key in today_subject_counts:
+            subject_display = today_subject_names.get(subject_key, subject_key)
+            today_classes = today_subject_counts[subject_key]
+
+            # Find matching attendance record
+            record = match_attendance_record(attendance, subject_key, subject_display)
+            if not record:
+                lines.append(f"📌 {subject_display}")
+                lines.append(f"   No attendance data found.")
+                lines.append("")
+                continue
+
+            total = max(int(record.total_lecture), 0)
+            present = max(int(record.total_present), 0)
+            pct_str = str(record.percentage).replace("%", "").strip()
+            try:
+                current_pct = float(pct_str)
+            except (ValueError, TypeError):
+                current_pct = (present / total * 100) if total > 0 else 0.0
+
+            # Status emoji based on current percentage (75% threshold only)
+            status = "🔴" if current_pct < 75 else "✅"
+
+            # Safe-to-skip calculation (from current data)
+            min_needed = math.ceil(0.75 * total) if total > 0 else 0
+            safe_to_skip = max(0, present - min_needed)
+
+            # If-you-skip-today calculation
+            # Total increases by today's class count, present stays same
+            total_after_skip = total + today_classes
+            pct_after_skip = (present / total_after_skip * 100) if total_after_skip > 0 else 0.0
+
+            # If-you-attend-today calculation
+            total_after_attend = total + today_classes
+            present_after_attend = present + today_classes
+            pct_after_attend = (present_after_attend / total_after_attend * 100) if total_after_attend > 0 else 0.0
+
+            skip_status = "🔴" if pct_after_skip < 75 else "✅"
+            attend_status = "🔴" if pct_after_attend < 75 else "✅"
+
+            risk_tag = ""
+            if pct_after_skip < 75 and current_pct >= 75:
+                risk_tag = " ⚠️ RISKY!"
+
+            # ── Build output for this subject ──────────────────────
+            lines.append(f"📌 {subject_display}")
+            lines.append(f"   Current: {present}/{total} ({current_pct:.1f}%) {status}")
+
+            # Skip/attend impact lines
+            if today_classes == 1:
+                lines.append(f"   If you skip today: {present}/{total_after_skip} ({pct_after_skip:.1f}%) {skip_status}{risk_tag}")
+                lines.append(f"   If you attend: {present_after_attend}/{total_after_attend} ({pct_after_attend:.1f}%) {attend_status}")
+            else:
+                lines.append(f"   If you skip all {today_classes} classes: {present}/{total_after_skip} ({pct_after_skip:.1f}%) {skip_status}{risk_tag}")
+                lines.append(f"   If you attend all: {present_after_attend}/{total_after_attend} ({pct_after_attend:.1f}%) {attend_status}")
+
+            if current_pct < 75 and total > 0:
+                # ── DANGER ZONE: Below 75% — full recovery plan ──
+                # Total consecutive classes needed from scratch to reach 75%
+                # Formula: (present + x) / (total + x) >= 0.75
+                #   → x >= (3*total - 4*present)
+                total_classes_needed = max(0, math.ceil(3 * total - 4 * present))
+
+                if total_classes_needed == 0:
+                    # Edge case: already at exactly 75% boundary
+                    lines.append(f"   ✅ You are at the 75% boundary")
+                    lines.append(f"   Can still skip: 0 classes")
+                elif total_classes_needed <= today_classes:
+                    # Can recover TODAY if you attend enough classes
+                    lines.append(f"   🎯 Attend {'today' if today_classes == 1 else f'all {today_classes} classes today'} → recovers to 75%!")
+                    lines.append(f"   After today: {present_after_attend}/{total_after_attend} ({pct_after_attend:.1f}%) {attend_status}")
+                    lines.append(f"   Can still skip: 0 classes (attend all to recover)")
+                else:
+                    # Need more classes AFTER today
+                    remaining_after_today = total_classes_needed - today_classes
+                    # Show projection: after attending today + remaining future classes
+                    total_at_recovery = total + total_classes_needed
+                    present_at_recovery = present + total_classes_needed
+                    pct_at_recovery = (present_at_recovery / total_at_recovery * 100) if total_at_recovery > 0 else 0.0
+
+                    lines.append(f"   🔴 BELOW 75% — Recovery Plan:")
+                    lines.append(f"   Total classes needed to reach 75%: {total_classes_needed}")
+                    lines.append(f"   Today's classes: {today_classes} (attend all!)")
+                    lines.append(f"   Still need after today: {remaining_after_today} more consecutive class{'es' if remaining_after_today != 1 else ''}")
+                    lines.append(f"   After recovery: {present_at_recovery}/{total_at_recovery} ({pct_at_recovery:.1f}%) ✅")
+                    lines.append(f"   Can still skip: 0 classes")
+            else:
+                # ── SAFE ZONE: Above 75% ──
+                lines.append(f"   Can still skip: {safe_to_skip} class{'es' if safe_to_skip != 1 else ''}")
+
+            lines.append("")
+
+        return lines
 
     def _build_substitution_report(
         self,

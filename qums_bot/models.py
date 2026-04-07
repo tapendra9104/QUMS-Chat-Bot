@@ -211,3 +211,74 @@ class TelegramAdminSession:
     payload_json: str
     created_at: str
     updated_at: str
+
+
+@dataclass
+class InternalMark:
+    subject: str
+    subject_code: str
+    component: str
+    max_marks: str
+    obtained_marks: str
+    is_pass: str
+    sessional_counter: str
+    raw: dict[str, Any]
+
+
+@dataclass
+class Assignment:
+    subject: str
+    subject_code: str
+    title: str
+    assigned_date: str
+    deadline_date: str
+    status: str
+    raw: dict[str, Any]
+
+
+@dataclass
+class FeeReceipt:
+    receipt_no: str
+    receipt_date: str
+    amount: str
+    remarks: str
+    raw: dict[str, Any]
+
+
+@dataclass
+class ExamEntry:
+    exam_name: str
+    subject: str
+    exam_date: str
+    start_time: str
+    end_time: str
+    status: str
+    raw: dict[str, Any]
+
+
+@dataclass
+class AdminApplication:
+    id: int
+    applicant_name: str
+    desired_username: str
+    password_hash: str
+    telegram_username: str
+    note: str | None
+    created_from_ip: str | None
+    status: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class AdminAccount:
+    id: int
+    username: str
+    password_hash: str
+    telegram_username: str
+    role: str
+    created_from_application_id: int | None
+    enabled: bool
+    disabled_features_json: str
+    created_at: str
+    updated_at: str
