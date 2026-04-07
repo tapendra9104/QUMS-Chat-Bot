@@ -680,8 +680,10 @@ class SchedulerServiceTests(unittest.TestCase):
 
         body = service.send_attendance_summary_report(student_id, target_date=date(2026, 3, 16), force=True)
 
-        self.assertIn("Compiler Design (CS36313) | Faculty: MD. IQBAL", body)
-        self.assertIn("Artificial Intelligence (CS36311) | Faculty: AMIT KUMAR", body)
+        self.assertIn("Compiler Design (CS36313)", body)
+        self.assertIn("Faculty: MD. IQBAL", body)
+        self.assertIn("Artificial Intelligence (CS36311)", body)
+        self.assertIn("Faculty: AMIT KUMAR", body)
         self.assertNotIn("Wrong Monthly Faculty", body)
         self.assertNotIn("Wrong AI Faculty", body)
 
@@ -742,20 +744,19 @@ class SchedulerServiceTests(unittest.TestCase):
         body = service.send_attendance_summary_report(student_id, force=True)
 
         self.assertIn("Attendance Summary Report", body)
-        self.assertIn("Totals present: 15", body)
-        self.assertIn("Total lectures: 18", body)
-        self.assertIn("Total absent: 3", body)
+        self.assertIn("Present: 15", body)
+        self.assertIn("Total Lectures: 18", body)
+        self.assertIn("Absent: 3", body)
         self.assertIn("Attendance Shortage Report", body)
         self.assertIn("Threshold: 75% per subject", body)
-        self.assertIn("Scope: totals below include only subjects currently at risk.", body)
-        self.assertIn("Subjects At Risk", body)
+        self.assertIn("SUBJECTS AT RISK", body)
         self.assertIn("Attendance: 6/8 (75.00%)", body)
-        self.assertIn("Risk: No more safe absences remain.", body)
-        self.assertIn("Subject-wise Attendance", body)
+        self.assertIn("No more safe absences remain!", body)
+        self.assertIn("SUBJECT-WISE ATTENDANCE", body)
         self.assertIn("Mathematics (MATH101)", body)
         self.assertIn("Faculty: Prof Timetable", body)
         self.assertIn("Percentage: 75.00%", body)
-        self.assertIn("Total lectures: 8", body)
+        self.assertIn("Total Lectures: 8", body)
         self.assertIn("Present: 6", body)
         self.assertIn("Absent: 2", body)
         self.assertIn("Physics Lab (PHYL102)", body)
@@ -852,7 +853,7 @@ class SchedulerServiceTests(unittest.TestCase):
 
         self.assertIn("Attendance Shortage Report", body)
         self.assertIn("Threshold: 75% per subject", body)
-        self.assertIn("Status: Clear", body)
+        self.assertIn("Status: All Clear", body)
         self.assertIn("No subject is currently at or below the attendance shortage threshold.", body)
 
     def test_manual_attendance_summary_auth_expiry_notifies_student_and_admin_on_telegram(self) -> None:
@@ -1416,7 +1417,7 @@ class SchedulerServiceTests(unittest.TestCase):
 
         self.assertEqual(len(service.telegram.messages), 1)
         self.assertIn("Attendance Summary Report", service.telegram.messages[-1][2])
-        self.assertIn("Totals present: 6", service.telegram.messages[-1][2])
+        self.assertIn("Present: 6", service.telegram.messages[-1][2])
         self.assertIn("Faculty: Prof Timetable", service.telegram.messages[-1][2])
 
     def test_telegram_substitution_command_sends_student_report(self) -> None:
@@ -2044,7 +2045,7 @@ class SchedulerServiceTests(unittest.TestCase):
 
         self.assertIn("Mathematics", message)
         self.assertIn("Physics Lab", message)
-        self.assertIn("Substitute Lectures", message)
+        self.assertIn("SUBSTITUTE LECTURES", message)
         self.assertEqual(len(lecture_events), 2)
         physics_event = next(event for event in lecture_events if event.slot_label == "10:00 - 11:00")
         self.assertEqual(physics_event.subject_key, "physics")
@@ -2438,7 +2439,7 @@ class SchedulerServiceTests(unittest.TestCase):
         subject_shortage = next(body for body in shortage_messages if "Mathematics (MATH101)" in body)
         self.assertIn("Threshold: 75% per subject", subject_shortage)
         self.assertIn("Faculty: Prof Timetable", subject_shortage)
-        self.assertIn("Total absent: 1", subject_shortage)
+        self.assertIn("Absent: 1", subject_shortage)
         self.assertNotIn("Prof ERP", subject_shortage)
 
     def test_subject_shortage_report_is_sent_when_attendance_drops_below_75_percent(self) -> None:
@@ -2477,7 +2478,7 @@ class SchedulerServiceTests(unittest.TestCase):
         subject_shortage = next(body for body in shortage_messages if "Physics (PHY101)" in body)
         self.assertIn("Faculty: Prof Timetable Physics", subject_shortage)
         self.assertIn("Attendance: 7/10 (70.00%)", subject_shortage)
-        self.assertIn("Total absent: 3", subject_shortage)
+        self.assertIn("Absent: 3", subject_shortage)
         self.assertIn("Threshold: 75% per subject", subject_shortage)
 
     def test_subject_shortage_report_is_not_sent_above_75_percent(self) -> None:
@@ -2656,7 +2657,8 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(len(telegram.messages), 1)
         body = telegram.messages[0][2]
         self.assertIn("Attendance Update", body)
-        self.assertIn("Final status: Present", body)
+        self.assertIn("STATUS:", body)
+        self.assertIn("Attendance has been marked present for this lecture.", body)
         self.assertIn("Technical Skills Development-V", body)
         event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
         self.assertEqual(event.status, "notified_present")
@@ -2718,8 +2720,8 @@ class SchedulerServiceTests(unittest.TestCase):
 
         self.assertEqual(len(telegram.messages), 1)
         body = telegram.messages[0][2]
-        self.assertIn("Attendance Pending Update", body)
-        self.assertIn("Current status: Not marked yet", body)
+        self.assertIn("Attendance Pending", body)
+        self.assertIn("Not marked yet", body)
         event = self.db.get_lecture_events_for_day(student_id, target_date)[0]
         self.assertEqual(event.status, "notified_unmarked")
         self.assertIsNotNone(event.check_after)
@@ -2795,8 +2797,9 @@ class SchedulerServiceTests(unittest.TestCase):
         )
         self.assertEqual(len(telegram.messages), 2)
         lecture_finish_body = telegram.messages[1][2]
-        self.assertIn("Lecture Finished Attendance Status", lecture_finish_body)
-        self.assertIn("Final status: Present", lecture_finish_body)
+        self.assertIn("Lecture Finished", lecture_finish_body)
+        self.assertIn("FINAL STATUS:", lecture_finish_body)
+        self.assertIn("Present", lecture_finish_body)
         self.assertIn("Technical Skills Development-V", lecture_finish_body)
 
         service._process_attendance_scan(
@@ -3154,10 +3157,9 @@ class SchedulerServiceTests(unittest.TestCase):
 
         self.assertIn("Attendance Shortage Report", report)
         self.assertIn("Threshold: 75% per subject", report)
-        self.assertIn("Scope: totals below include only subjects currently at risk.", report)
-        self.assertIn("Totals present: 6", report)
-        self.assertIn("Total lectures: 8", report)
-        self.assertIn("Total absent: 2", report)
+        self.assertIn("Present: 6", report)
+        self.assertIn("Total Lectures: 8", report)
+        self.assertIn("Absent: 2", report)
         self.assertIn("Mathematics (MATH101)", report)
         self.assertIn("Faculty: Prof Timetable", report)
         self.assertNotIn("Chemistry (CHEM101)", report)
@@ -3209,7 +3211,7 @@ class SchedulerServiceTests(unittest.TestCase):
             datetime(2026, 3, 13, 17, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
 
-        self.assertFalse(any("Attendance Summary Change Update" in body for _, _, body in telegram.messages))
+        self.assertFalse(any("Attendance Summary Change" in body for _, _, body in telegram.messages))
         snapshots = self.db.get_attendance_snapshots(student_id)
         self.assertEqual(len(snapshots), 2)
 
@@ -3278,13 +3280,13 @@ class SchedulerServiceTests(unittest.TestCase):
             datetime(2026, 3, 13, 17, 5, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
 
-        messages = [body for _, _, body in telegram.messages if "Attendance Summary Change Update" in body]
+        messages = [body for _, _, body in telegram.messages if "Attendance Summary Change" in body]
         self.assertEqual(len(messages), 1)
         body = messages[0]
-        self.assertIn("Overall attendance", body)
+        self.assertIn("OVERALL ATTENDANCE", body)
         self.assertIn("Previous: 16/18 (88.89%) | Absent: 2", body)
         self.assertIn("Current: 17/19 (89.47%) | Absent: 2", body)
-        self.assertIn("Change: present +1, lectures +1, absent +0", body)
+        self.assertIn("Change: Present +1, Lectures +1, Absent +0", body)
         self.assertIn("Mathematics (MATH101)", body)
         self.assertIn("Faculty: Prof A", body)
         self.assertIn("Previous: 9/10 (90.00%) | Absent: 1", body)
@@ -3325,7 +3327,7 @@ class SchedulerServiceTests(unittest.TestCase):
         service._process_attendance_scan(student, [], now)
         service._process_attendance_scan(student, [], now + timedelta(minutes=1))
 
-        messages = [body for _, _, body in telegram.messages if "Attendance Summary Change Update" in body]
+        messages = [body for _, _, body in telegram.messages if "Attendance Summary Change" in body]
         self.assertEqual(len(messages), 1)
 
     def test_preview_today_does_not_send_risk_alert_side_effects(self) -> None:
@@ -3375,8 +3377,8 @@ class SchedulerServiceTests(unittest.TestCase):
 
         preview = service.preview_today(student_id, target_date=date(2026, 3, 13))
 
-        self.assertIn("Class: A-010", preview)
-        self.assertIn("Faculty: AMIT KUMAR", preview)
+        self.assertIn("A-010", preview)
+        self.assertIn("AMIT KUMAR", preview)
 
     def test_evening_report_includes_class_location(self) -> None:
         student_id = self._add_student(label="Evening Room Student", timezone="Asia/Kolkata")
@@ -3791,7 +3793,8 @@ class SchedulerServiceTests(unittest.TestCase):
 
         self.assertEqual(len(telegram.messages), 1)
         body = telegram.messages[0][2]
-        self.assertIn("Final status: Absent", body)
+        self.assertIn("STATUS:", body)
+        self.assertIn("Absent", body)
         self.assertIn("Lecture type: Substitute lecture", body)
         self.assertIn("Substitute faculty: Prof C", body)
         self.assertIn("Original faculty: Prof B", body)
@@ -3867,9 +3870,10 @@ class SchedulerServiceTests(unittest.TestCase):
 
         self.assertEqual(len(telegram.messages), 1)
         body = telegram.messages[0][2]
-        self.assertIn("Final status: Present", body)
+        self.assertIn("STATUS:", body)
+        self.assertIn("Present", body)
         self.assertIn("Faculty: Prof C", body)
-        self.assertIn("Attendance marked by: Prof C", body)
+        self.assertIn("Marked by: Prof C", body)
         self.assertIn("Lecture type: Substitute lecture", body)
         self.assertIn("Substitute faculty: Prof C", body)
         self.assertIn("Original faculty: Prof B", body)
@@ -3934,7 +3938,7 @@ class SchedulerServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(len(telegram.messages), 2)
-        self.assertTrue(all("Final status: Present" in message[2] for message in telegram.messages))
+        self.assertTrue(all("STATUS:" in message[2] and "Present" in message[2] for message in telegram.messages))
         self.assertTrue(all("ERP updated 2 pending lecture(s)" in message[2] for message in telegram.messages))
         refreshed = self.db.get_lecture_events_between(student_id, date(2026, 3, 10), date(2026, 3, 11))
         self.assertTrue(all(event.status == "notified_present" for event in refreshed))

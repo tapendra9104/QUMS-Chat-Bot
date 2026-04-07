@@ -61,6 +61,25 @@ class TelegramSender:
         if not self.configured:
             raise TelegramError("Telegram bot token is missing in .env.")
 
+        MAX_LENGTH = 4096
+        if len(body) <= MAX_LENGTH:
+            return self._send_single_text(chat_id, body, reply_markup=reply_markup)
+
+        # Split long messages into chunks at section boundaries
+        chunks = self._split_message(body, MAX_LENGTH)
+        last_message_id = ""
+        for i, chunk in enumerate(chunks):
+            markup = reply_markup if i == len(chunks) - 1 else None
+            last_message_id = self._send_single_text(chat_id, chunk, reply_markup=markup)
+        return last_message_id
+
+    def _send_single_text(
+        self,
+        chat_id: str,
+        body: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> str:
         cleaned_chat_id = self._delivery_chat_id(chat_id)
 
         payload: dict[str, Any] = {
@@ -77,6 +96,44 @@ class TelegramSender:
         )
         result = payload.get("result") or {}
         return str(result.get("message_id") or "")
+
+    @staticmethod
+    def _split_message(text: str, max_length: int = 4096) -> list[str]:
+        """Split a long message into chunks that fit within Telegram's limit.
+
+        Prefers splitting on double-newline (section boundaries) for clean breaks.
+        Falls back to single-newline, then hard-cuts at max_length.
+        """
+        if len(text) <= max_length:
+            return [text]
+
+        chunks: list[str] = []
+        remaining = text
+
+        while remaining:
+            if len(remaining) <= max_length:
+                chunks.append(remaining)
+                break
+
+            # Try to split at a double-newline (section boundary)
+            split_pos = remaining.rfind("\n\n", 0, max_length)
+            if split_pos > max_length // 4:
+                chunks.append(remaining[:split_pos].rstrip())
+                remaining = remaining[split_pos:].lstrip("\n")
+                continue
+
+            # Fall back to single newline
+            split_pos = remaining.rfind("\n", 0, max_length)
+            if split_pos > max_length // 4:
+                chunks.append(remaining[:split_pos].rstrip())
+                remaining = remaining[split_pos + 1:]
+                continue
+
+            # Hard cut as last resort
+            chunks.append(remaining[:max_length])
+            remaining = remaining[max_length:]
+
+        return [c for c in chunks if c.strip()]
 
     def edit_text(
         self,

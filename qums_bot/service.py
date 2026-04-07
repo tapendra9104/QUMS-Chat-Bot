@@ -5435,14 +5435,22 @@ class BotService:
             lecture_events=lecture_events,
             subject_references=subject_references,
         )
-        return "\n".join(
-            self._shortage_report_lines(
-                student_name=student_name,
-                shortage_items=shortage_items,
-                generated_at=generated_at,
-                threshold=threshold,
-            )
+        report_lines = self._shortage_report_lines(
+            student_name=student_name,
+            shortage_items=shortage_items,
+            generated_at=generated_at,
+            threshold=threshold,
         )
+        # ── Attendance Insights for at-risk subjects ──────────────
+        insight_lines = self._build_all_subjects_attendance_insights(
+            attendance=attendance,
+            lecture_events=lecture_events,
+            subject_references=subject_references,
+            report_date=generated_at.date(),
+            only_at_risk=True,
+        )
+        report_lines.extend(insight_lines)
+        return "\n".join(report_lines)
 
     def _attendance_shortage_items(
         self,
@@ -5489,14 +5497,20 @@ class BotService:
         generated_at: datetime,
     ) -> str:
         if not attendance:
+            separator = "━━━━━━━━━━━━━━━━━━━━━━"
             return "\n".join(
                 [
-                    "Attendance Summary Report",
+                    "📊 Attendance Summary Report",
                     "",
-                    f"Student: {student_name or 'student'}",
-                    f"Generated at: {self._format_datetime(generated_at)}",
+                    f"👤 Student: {student_name or 'student'}",
+                    f"⏰ Generated: {self._format_datetime(generated_at)}",
                     "",
-                    "No attendance records are available right now.",
+                    separator,
+                    "📋 STATUS",
+                    separator,
+                    "📝 No attendance records are available right now.",
+                    "",
+                    "🤖 QUMS Academic Bot",
                 ]
             )
 
@@ -5509,18 +5523,22 @@ class BotService:
             lecture_events=lecture_events,
             subject_references=subject_references,
         )
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
+        overall_pct = self._safe_percentage(total_present, total_lecture)
+        overall_indicator = "✅" if overall_pct >= 75 else ("⚠️" if overall_pct >= 65 else "🔴")
         lines = [
-            "Attendance Summary Report",
+            "📊 Attendance Summary Report",
             "",
-            f"Student: {student_name or 'student'}",
-            f"Generated at: {self._format_datetime(generated_at)}",
-            f"Totals present: {total_present}",
-            f"Total lectures: {total_lecture}",
-            f"Total absent: {total_absent}",
-            (
-                f"Overall attendance: {total_present}/{total_lecture} "
-                f"({self._safe_percentage(total_present, total_lecture):.2f}%)"
-            ),
+            f"👤 Student: {student_name or 'student'}",
+            f"⏰ Generated: {self._format_datetime(generated_at)}",
+            "",
+            separator,
+            "📋 OVERALL SUMMARY",
+            separator,
+            f"📚 Total Lectures: {total_lecture}",
+            f"✅ Present: {total_present}",
+            f"❌ Absent: {total_absent}",
+            f"📊 Overall: {total_present}/{total_lecture} ({overall_pct:.2f}%) {overall_indicator}",
             "",
         ]
         lines.extend(
@@ -5534,7 +5552,9 @@ class BotService:
         lines.extend(
             [
                 "",
-            "Subject-wise Attendance",
+                separator,
+                "📝 SUBJECT-WISE ATTENDANCE",
+                separator,
             ]
         )
         sorted_attendance = sorted(
@@ -5554,14 +5574,19 @@ class BotService:
                 subject_references=subject_references,
                 lecture_events=lecture_events,
             )
-            lines.append(
-                f"- {self._format_subject_label(item.subject_name, item.subject_code)} | "
-                f"Faculty: {teacher_name} | "
-                f"Percentage: {percentage:.2f}% | "
-                f"Total lectures: {total} | "
-                f"Present: {present} | "
-                f"Absent: {absent}"
-            )
+            subj_icon = "✅" if percentage >= 75 else ("⚠️" if percentage >= 65 else "🔴")
+            lines.append(f"{subj_icon} {self._format_subject_label(item.subject_name, item.subject_code)}")
+            lines.append(f"   👨‍🏫 Faculty: {teacher_name}")
+            lines.append(f"   📊 Percentage: {percentage:.2f}%")
+            lines.append(f"   📚 Total Lectures: {total} | ✅ Present: {present} | ❌ Absent: {absent}")
+        # ── Attendance Insights for ALL Subjects ──────────────
+        insight_lines = self._build_all_subjects_attendance_insights(
+            attendance=attendance,
+            lecture_events=lecture_events,
+            subject_references=subject_references,
+            report_date=generated_at.date(),
+        )
+        lines.extend(insight_lines)
         return "\n".join(lines)
 
     def _absences_remaining_before_threshold(self, present: int, total: int, threshold: int) -> int:
@@ -5604,40 +5629,44 @@ class BotService:
         totals_present = sum(max(int(item["present"]), 0) for item in shortage_items)
         totals_lecture = sum(max(int(item["total"]), 0) for item in shortage_items)
         total_absent = max(totals_lecture - totals_present, 0)
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
         lines = [
-            "Attendance Shortage Report",
+            "⚠️ Attendance Shortage Report",
             "",
-            f"Student: {student_name or 'student'}",
-            f"Generated at: {self._format_datetime(generated_at)}",
-            f"Threshold: {threshold}% per subject",
-            "Scope: totals below include only subjects currently at risk.",
-            f"Totals present: {totals_present}",
-            f"Total lectures: {totals_lecture}",
-            f"Total absent: {total_absent}",
+            f"👤 Student: {student_name or 'student'}",
+            f"⏰ Generated: {self._format_datetime(generated_at)}",
+            f"📏 Threshold: {threshold}% per subject",
+            "",
+            separator,
+            "📊 AT-RISK SUMMARY",
+            separator,
+            f"✅ Present: {totals_present}",
+            f"📚 Total Lectures: {totals_lecture}",
+            f"❌ Absent: {total_absent}",
             "",
         ]
         if not shortage_items:
             lines.extend(
                 [
-                    "Status: Clear",
-                    "No subject is currently at or below the attendance shortage threshold.",
+                    "✅ Status: All Clear",
+                    "📝 No subject is currently at or below the attendance shortage threshold.",
                 ]
             )
             return lines
 
-        lines.append("Subjects At Risk")
+        lines.extend([separator, "🔴 SUBJECTS AT RISK", separator])
         for item in shortage_items:
             remaining_absences = int(item["remaining_absences"])
             risk_text = (
-                "No more safe absences remain."
+                "🔴 No more safe absences remain!"
                 if remaining_absences <= 0
-                else f"{remaining_absences} safe absence(s) remain before further risk."
+                else f"⚠️ {remaining_absences} safe absence(s) remain before further risk."
             )
-            lines.append(
-                f"- {item['subject_name']} | Faculty: {item['teacher_name']} | "
-                f"Attendance: {int(item['present'])}/{int(item['total'])} ({float(item['percentage']):.2f}%) | "
-                f"Risk: {risk_text}"
-            )
+            lines.append(f"📌 {item['subject_name']}")
+            lines.append(f"   👨‍🏫 Faculty: {item['teacher_name']}")
+            lines.append(f"   📊 Attendance: {int(item['present'])}/{int(item['total'])} ({float(item['percentage']):.2f}%)")
+            lines.append(f"   {risk_text}")
+            lines.append("")
         return lines
 
     def _report_idempotency_key(self, *, base_key: str, force: bool, now: datetime) -> str:
@@ -5668,36 +5697,39 @@ class BotService:
                 events=display_events,
             )
 
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
         lines = [
-            "Morning Schedule Update",
+            "🌅 Morning Schedule Update",
             "",
-            f"Student: {student_name or 'student'}",
-            f"Date: {target_date.strftime('%A, %d %B %Y')}",
+            f"👤 Student: {student_name or 'student'}",
+            f"📅 {target_date.strftime('%A, %d %B %Y')}",
             "",
-            "Today's Lectures",
+            separator,
+            "📋 TODAY'S LECTURES",
+            separator,
         ]
 
         if not display_events:
-            lines.append("- No timetable rows were found for today.")
+            lines.append("📝 No timetable rows were found for today.")
         else:
             for event in display_events:
                 time_text = self._format_event_time(event)
                 if event.is_break:
                     if self._is_no_class_event(event):
                         note_text = f" | Note: {event.note}" if event.note and event.note != event.subject_name else ""
-                        lines.append(f"- {time_text}: {event.subject_name}{note_text}")
+                        lines.append(f"🚫 {time_text} | {event.subject_name}{note_text}")
                     else:
-                        lines.append(f"- {time_text}: Break")
+                        lines.append(f"☕ {time_text} | Break")
                     continue
-                teacher_text = f" | Faculty: {event.teacher_name}" if event.teacher_name else ""
+                teacher_text = f" | 👨‍🏫 {event.teacher_name}" if event.teacher_name else ""
                 location_text = self._event_class_location(event)
-                class_text = f" | Class: {location_text}" if location_text else ""
-                note_text = f" | Note: {event.note}" if event.note else ""
-                lines.append(f"- {time_text}: {event.subject_name}{teacher_text}{class_text}{note_text}")
+                class_text = f" | 🏫 {location_text}" if location_text else ""
+                note_text = f" | 📝 {event.note}" if event.note else ""
+                lines.append(f"📚 {time_text} | {event.subject_name}{teacher_text}{class_text}{note_text}")
 
-        lines.extend(["", "Substitute Lectures"])
+        lines.extend(["", separator, "🔄 SUBSTITUTE LECTURES", separator])
         if not substitutions:
-            lines.append("- No substitute lecture is assigned right now.")
+            lines.append("✅ No substitute lecture assigned.")
         else:
             for item in substitutions:
                 context = self._build_substitution_context(item, lecture_events)
@@ -5713,9 +5745,14 @@ class BotService:
         lines.extend(
             [
                 "",
-                "Attendance updates will be checked after each lecture.",
-                "New substitute-teacher assignments will be checked automatically and sent immediately when detected.",
-                "This message is sent once daily. All monitoring runs fully automatically.",
+                separator,
+                "⚙️ AUTOMATION STATUS",
+                separator,
+                "✅ Attendance checked after each lecture",
+                "✅ Substitute changes detected instantly",
+                "✅ Daily monitoring runs automatically",
+                "",
+                "🤖 QUMS Academic Bot",
             ]
         )
         return "\n".join(lines)
@@ -5844,6 +5881,217 @@ class BotService:
 
             lines.append("")
 
+        return lines
+
+    def _build_all_subjects_attendance_insights(
+        self,
+        attendance: list,
+        lecture_events: list[LectureEvent],
+        subject_references: dict[str, dict[str, str]] | None,
+        *,
+        report_date: date | None = None,
+        only_at_risk: bool = False,
+    ) -> list[str]:
+        """Build per-subject attendance insights for ALL subjects (or only at-risk).
+
+        Uses Option B: remaining classes THIS WEEK based on weekday pattern
+        analysis from historical lecture events for accurate projections.
+
+        Shows current %, absent count, skip/attend projections, safe-to-skip count,
+        and full recovery plan for subjects below 75%.
+        """
+        import math
+
+        if not attendance:
+            return ["", "📊 Attendance Insights", "━━━━━━━━━━━━━━━━━━━━━━", "- Attendance data not available yet."]
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # OPTION B: Remaining classes THIS WEEK via weekday patterns
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        # Step 1: Count today's actual classes per subject
+        today_subject_counts: dict[str, int] = {}
+        if report_date and lecture_events:
+            for event in lecture_events:
+                if event.is_break or event.event_date != report_date:
+                    continue
+                key = normalize_subject_key(event.subject_name)
+                today_subject_counts[key] = today_subject_counts.get(key, 0) + 1
+
+        # Step 2: Analyze weekday patterns from historical events
+        # Build: subject_key → {weekday: avg_classes_per_that_day}
+        subject_weekday_events: dict[str, dict[int, int]] = {}
+        all_event_dates: set[date] = set()
+        if lecture_events:
+            for event in lecture_events:
+                if event.is_break:
+                    continue
+                key = normalize_subject_key(event.subject_name)
+                wd = event.event_date.weekday()
+                subject_weekday_events.setdefault(key, {})
+                subject_weekday_events[key][wd] = subject_weekday_events[key].get(wd, 0) + 1
+                all_event_dates.add(event.event_date)
+
+        # Count how many times each weekday appears in our historical data
+        weekday_occurrences: dict[int, int] = {}
+        for d in all_event_dates:
+            weekday_occurrences[d.weekday()] = weekday_occurrences.get(d.weekday(), 0) + 1
+
+        # Step 3: Compute remaining classes this week per subject
+        # = today's actual classes + estimated future days (tomorrow → Saturday)
+        remaining_weekly: dict[str, int] = {}
+        current_wd = report_date.weekday() if report_date else 0
+
+        all_subject_keys = set(
+            normalize_subject_key(getattr(r, "subject_key", "") or r.subject_name)
+            for r in attendance
+        )
+        for subject_key in all_subject_keys:
+            # Today: use actual event count if available
+            today_count = today_subject_counts.get(subject_key, 0)
+
+            # Future days: estimate from weekday patterns
+            future_count = 0
+            wd_map = subject_weekday_events.get(subject_key, {})
+            for wd in range(current_wd + 1, 7):  # Tomorrow through Sunday
+                if wd in wd_map:
+                    occurrences = weekday_occurrences.get(wd, 1)
+                    avg_classes = max(1, round(wd_map[wd] / occurrences))
+                    future_count += avg_classes
+
+            total_remaining = today_count + future_count
+            # If no historical data at all, use conservative default
+            remaining_weekly[subject_key] = total_remaining if total_remaining > 0 else 2
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # BUILD INSIGHTS OUTPUT
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
+        threshold = 75
+        title = "📊 ATTENDANCE INSIGHTS" if not only_at_risk else "📊 ATTENDANCE INSIGHTS (AT-RISK)"
+        lines: list[str] = ["", separator, title, separator, ""]
+
+        sorted_attendance = sorted(
+            attendance,
+            key=lambda item: self._parse_percentage(item.percentage, item.total_present, item.total_lecture),
+        )
+
+        has_insights = False
+        danger_count = 0
+        warning_count = 0
+        safe_count = 0
+        total_absent_all = 0
+
+        for record in sorted_attendance:
+            total = max(int(record.total_lecture), 0)
+            present = max(int(record.total_present), 0)
+            absent = max(total - present, 0)
+            percentage = self._parse_percentage(record.percentage, present, total)
+
+            if only_at_risk and percentage > threshold:
+                continue
+
+            subject_display = self._format_subject_label(record.subject_name, record.subject_code)
+            subject_key = normalize_subject_key(getattr(record, "subject_key", "") or record.subject_name)
+
+            # ── Determine upcoming class count (Option B: remaining this week) ──
+            upcoming = remaining_weekly.get(subject_key, 2)
+
+            status = "🔴" if percentage < 75 else "✅"
+            total_absent_all += absent
+
+            # Track counters
+            if percentage < 75:
+                danger_count += 1
+            elif percentage < 80:
+                warning_count += 1
+            else:
+                safe_count += 1
+
+            # ── Skip/attend projections ──
+            total_after_skip = total + upcoming
+            pct_after_skip = (present / total_after_skip * 100) if total_after_skip > 0 else 0.0
+            total_after_attend = total + upcoming
+            present_after_attend = present + upcoming
+            pct_after_attend = (present_after_attend / total_after_attend * 100) if total_after_attend > 0 else 0.0
+
+            skip_status = "🔴" if pct_after_skip < 75 else "✅"
+            attend_status = "🔴" if pct_after_attend < 75 else "✅"
+
+            risk_tag = ""
+            if pct_after_skip < 75 and percentage >= 75:
+                risk_tag = " ⚠️ RISKY!"
+
+            # ── Safe-to-skip calculation ──
+            min_needed = math.ceil(0.75 * total) if total > 0 else 0
+            safe_to_skip = max(0, present - min_needed)
+
+            # ── Build output for this subject ──
+            lines.append(f"📌 {subject_display}")
+            lines.append(f"   Current: {present}/{total} ({percentage:.1f}%) {status}")
+            lines.append(f"   Absent: {absent} class{'es' if absent != 1 else ''}")
+
+            # Skip/attend impact lines (remaining this week)
+            if upcoming == 1:
+                lines.append(f"   If you skip next class: {present}/{total_after_skip} ({pct_after_skip:.1f}%) {skip_status}{risk_tag}")
+                lines.append(f"   If you attend: {present_after_attend}/{total_after_attend} ({pct_after_attend:.1f}%) {attend_status}")
+            else:
+                lines.append(f"   If you skip all {upcoming} classes: {present}/{total_after_skip} ({pct_after_skip:.1f}%) {skip_status}{risk_tag}")
+                lines.append(f"   If you attend all: {present_after_attend}/{total_after_attend} ({pct_after_attend:.1f}%) {attend_status}")
+
+            if percentage < 75 and total > 0:
+                # ── DANGER ZONE: Below 75% — full recovery plan ──
+                # Formula: (present + x) / (total + x) >= 0.75
+                #   → x >= (3*total - 4*present)
+                total_classes_needed = max(0, math.ceil(3 * total - 4 * present))
+
+                if total_classes_needed == 0:
+                    lines.append(f"   ✅ You are at the 75% boundary")
+                    lines.append(f"   Can still skip: 0 classes")
+                elif total_classes_needed <= upcoming:
+                    lines.append(f"   🎯 Attend {'next class' if upcoming == 1 else f'all {upcoming} upcoming classes'} → recovers to 75%!")
+                    lines.append(f"   After recovery: {present_after_attend}/{total_after_attend} ({pct_after_attend:.1f}%) {attend_status}")
+                    lines.append(f"   Can still skip: 0 classes (attend all to recover)")
+                else:
+                    remaining_after = total_classes_needed - upcoming
+                    total_at_recovery = total + total_classes_needed
+                    present_at_recovery = present + total_classes_needed
+                    pct_at_recovery = (present_at_recovery / total_at_recovery * 100) if total_at_recovery > 0 else 0.0
+
+                    lines.append(f"   🔴 BELOW 75% — Recovery Plan:")
+                    lines.append(f"   Classes needed to reach 75%: {total_classes_needed} consecutive")
+                    lines.append(f"   Remaining this week: {upcoming} (attend all!)")
+                    lines.append(f"   Still need after this week: {remaining_after} more class{'es' if remaining_after != 1 else ''}")
+                    lines.append(f"   After full recovery: {present_at_recovery}/{total_at_recovery} ({pct_at_recovery:.1f}%) ✅")
+                    lines.append(f"   Can still skip: 0 classes")
+            else:
+                # ── SAFE ZONE: Above 75% ──
+                lines.append(f"   Can still skip: {safe_to_skip} class{'es' if safe_to_skip != 1 else ''}")
+
+            lines.append("")
+            has_insights = True
+
+        if not has_insights:
+            if only_at_risk:
+                lines.append("✅ All subjects are above the attendance threshold. No subjects at risk!")
+            else:
+                lines.append("✅ All subjects have attendance data available.")
+            lines.append("")
+        else:
+            # ── Summary stats ──
+            lines.append(separator)
+            if only_at_risk:
+                lines.append(f"🔴 Subjects at risk: {danger_count}")
+            else:
+                lines.append(f"📊 Quick Summary:")
+                lines.append(f"   🔴 Below 75%: {danger_count} subject{'s' if danger_count != 1 else ''}")
+                lines.append(f"   ⚠️ Between 75-80%: {warning_count} subject{'s' if warning_count != 1 else ''}")
+                lines.append(f"   ✅ Above 80%: {safe_count} subject{'s' if safe_count != 1 else ''}")
+                lines.append(f"   📝 Total absences: {total_absent_all} classes")
+            lines.append("")
+
+        lines.append("🤖 QUMS Academic Bot")
         return lines
 
     def _build_substitution_report(
@@ -6161,17 +6409,26 @@ class BotService:
         threshold: int,
         detected_at: datetime,
     ) -> str:
+        absent = max(total - present, 0)
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
         return "\n".join(
             [
-                "Low Attendance Alert",
+                "🔴 Low Attendance Alert",
                 "",
-                f"Subject: {subject_name}",
-                f"Faculty: {teacher_name}",
-                f"Detected at: {self._format_datetime(detected_at)}",
-                f"Current attendance: {present}/{total} ({percentage:.2f}%)",
-                f"Threshold breached: {threshold}%",
+                f"📚 Subject: {subject_name}",
+                f"👨‍🏫 Faculty: {teacher_name}",
+                f"🕐 Detected: {self._format_datetime(detected_at)}",
                 "",
-                "Action: Review the attendance shortfall and plan the remaining lectures carefully.",
+                separator,
+                "📊 ATTENDANCE STATUS",
+                separator,
+                f"📈 Current: {present}/{total} ({percentage:.2f}%)",
+                f"❌ Absent: {absent} classes",
+                f"⚠️ Threshold breached: {threshold}%",
+                "",
+                "📝 Action: Review the shortfall and plan remaining lectures carefully.",
+                "",
+                "🤖 QUMS Academic Bot",
             ]
         )
 
@@ -6191,53 +6448,58 @@ class BotService:
         previous_percentage = self._safe_percentage(previous_present_total, previous_lecture_total)
         current_percentage = self._safe_percentage(current_present_total, current_lecture_total)
 
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
         lines = [
-            "Attendance Summary Change Update",
+            "📊 Attendance Summary Change",
             "",
-            f"Student: {student.student_name or student.student_label}",
-            f"Detected at: {self._format_datetime(detected_at)}",
+            f"👤 Student: {student.student_name or student.student_label}",
+            f"🕐 Detected: {self._format_datetime(detected_at)}",
             "",
-            "Overall attendance",
+            separator,
+            "📈 OVERALL ATTENDANCE",
+            separator,
             (
-                f"- Previous: {previous_present_total}/{previous_lecture_total} "
+                f"⬅️ Previous: {previous_present_total}/{previous_lecture_total} "
                 f"({previous_percentage:.2f}%) | Absent: {previous_absent_total}"
             ),
             (
-                f"- Current: {current_present_total}/{current_lecture_total} "
+                f"➡️ Current: {current_present_total}/{current_lecture_total} "
                 f"({current_percentage:.2f}%) | Absent: {current_absent_total}"
             ),
             (
-                f"- Change: present {current_present_total - previous_present_total:+d}, "
-                f"lectures {current_lecture_total - previous_lecture_total:+d}, "
-                f"absent {current_absent_total - previous_absent_total:+d}"
+                f"📊 Change: Present {current_present_total - previous_present_total:+d}, "
+                f"Lectures {current_lecture_total - previous_lecture_total:+d}, "
+                f"Absent {current_absent_total - previous_absent_total:+d}"
             ),
         ]
 
         if changed_subjects:
-            lines.extend(["", "Subject changes"])
+            lines.extend(["", separator, "📝 SUBJECT CHANGES", separator])
             for item in sorted(changed_subjects, key=lambda value: str(value["subject_name"]).lower()):
                 previous_absent = max(int(item["previous_lecture"]) - int(item["previous_present"]), 0)
                 current_absent = max(int(item["current_lecture"]) - int(item["current_present"]), 0)
                 lines.extend(
                     [
-                        f"- {item['subject_name']}",
-                        f"  Faculty: {item['teacher_name']}",
+                        f"📌 {item['subject_name']}",
+                        f"   👨‍🏫 Faculty: {item['teacher_name']}",
                         (
-                            f"  Previous: {int(item['previous_present'])}/{int(item['previous_lecture'])} "
+                            f"   ⬅️ Previous: {int(item['previous_present'])}/{int(item['previous_lecture'])} "
                             f"({float(item['previous_percentage']):.2f}%) | Absent: {previous_absent}"
                         ),
                         (
-                            f"  Current: {int(item['current_present'])}/{int(item['current_lecture'])} "
+                            f"   ➡️ Current: {int(item['current_present'])}/{int(item['current_lecture'])} "
                             f"({float(item['current_percentage']):.2f}%) | Absent: {current_absent}"
                         ),
                         (
-                            f"  Change: present {int(item['current_present']) - int(item['previous_present']):+d}, "
-                            f"lectures {int(item['current_lecture']) - int(item['previous_lecture']):+d}, "
-                            f"absent {current_absent - previous_absent:+d}"
+                            f"   📊 Change: Present {int(item['current_present']) - int(item['previous_present']):+d}, "
+                            f"Lectures {int(item['current_lecture']) - int(item['previous_lecture']):+d}, "
+                            f"Absent {current_absent - previous_absent:+d}"
                         ),
+                        "",
                     ]
                 )
 
+        lines.append("🤖 QUMS Academic Bot")
         return "\n".join(lines)
 
     def _render_shortage_warning_message(
@@ -6252,21 +6514,28 @@ class BotService:
         remaining_absences: int,
         detected_at: datetime,
     ) -> str:
-        buffer_text = "No more safe absences remain." if remaining_absences <= 0 else f"Only {remaining_absences} safe absence(s) remain."
+        buffer_text = "🔴 No more safe absences remain!" if remaining_absences <= 0 else f"⚠️ Only {remaining_absences} safe absence(s) remain."
         absent = max(total - present, 0)
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
         return "\n".join(
             [
-                "Attendance Shortage Warning",
+                "⚠️ Attendance Shortage Warning",
                 "",
-                f"Subject: {subject_name}",
-                f"Faculty: {teacher_name}",
-                f"Detected at: {self._format_datetime(detected_at)}",
-                f"Current attendance: {present}/{total} ({percentage:.2f}%)",
-                f"Total absent: {absent}",
-                f"Threshold monitored: {threshold}%",
-                f"Risk level: {buffer_text}",
+                f"📚 Subject: {subject_name}",
+                f"👨‍🏫 Faculty: {teacher_name}",
+                f"🕐 Detected: {self._format_datetime(detected_at)}",
                 "",
-                "Action: Another absence can push attendance below the required threshold.",
+                separator,
+                "📊 ATTENDANCE STATUS",
+                separator,
+                f"📈 Current: {present}/{total} ({percentage:.2f}%)",
+                f"❌ Absent: {absent} classes",
+                f"📏 Threshold: {threshold}%",
+                f"   {buffer_text}",
+                "",
+                "📝 Action: Another absence can push attendance below the required threshold.",
+                "",
+                "🤖 QUMS Academic Bot",
             ]
         )
 
@@ -6281,30 +6550,34 @@ class BotService:
         corrected_present: bool,
     ) -> str:
         corrected_status = "Present" if corrected_present else "Absent"
+        status_emoji = "✅" if corrected_present else "❌"
         faculty_text = self._attendance_display_teacher_name(event, record)
         marking_teacher = self._attendance_marking_teacher_name(record)
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
         lines = [
-            "Attendance Correction Alert",
+            "🔄 Attendance Correction",
             "",
-            f"Subject: {self._format_subject_label(event.subject_name, getattr(record, 'subject_code', ''))}",
-            f"Faculty: {faculty_text}",
-            f"Lecture date: {event.event_date.strftime('%A, %d %B %Y')}",
-            f"Lecture time: {self._format_event_time(event)}",
-            f"Attendance marked time: {self._format_datetime(detected_at)}",
-            f"Final status: {corrected_status}",
-            (
-                "Previous cumulative attendance: "
-                f"{previous_present}/{previous_lecture}"
-            ),
-            f"Updated cumulative attendance: {record.total_present}/{record.total_lecture}",
+            f"📚 Subject: {self._format_subject_label(event.subject_name, getattr(record, 'subject_code', ''))}",
+            f"👨‍🏫 Faculty: {faculty_text}",
+            f"📅 Date: {event.event_date.strftime('%A, %d %B %Y')}",
+            f"⏰ Time: {self._format_event_time(event)}",
+            f"🕐 Marked at: {self._format_datetime(detected_at)}",
+            "",
+            separator,
+            f"📊 STATUS: {status_emoji} {corrected_status}",
+            separator,
+            f"⬅️ Previous: {previous_present}/{previous_lecture}",
+            f"➡️ Updated: {record.total_present}/{record.total_lecture}",
         ]
         if marking_teacher:
-            lines.append(f"Attendance marked by: {marking_teacher}")
+            lines.append(f"👨‍🏫 Marked by: {marking_teacher}")
         lines.extend(self._attendance_context_lines(event, detected_at=detected_at, record=record))
         lines.extend(
             [
                 "",
-                "The ERP revised this lecture after the original attendance alert.",
+                "📝 The ERP revised this lecture after the original attendance alert.",
+                "",
+                "🤖 QUMS Academic Bot",
             ]
         )
         return "\n".join(lines)
@@ -6320,41 +6593,46 @@ class BotService:
         batch_size: int = 1,
     ) -> str:
         status = "Present" if was_present else "Absent"
+        status_emoji = "✅" if was_present else "❌"
         percentage_text = f" ({record.percentage})" if record.percentage else ""
         faculty_text = self._attendance_display_teacher_name(event, record)
         marking_teacher = self._attendance_marking_teacher_name(record)
         subject_text = self._format_subject_label(event.subject_name, getattr(record, "subject_code", ""))
         update_type = "Delayed ERP update" if detected_at.date() != event.event_date else "Same-day ERP update"
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
 
         lines = [
-            "Attendance Alert" if not was_present else "Attendance Update",
+            f"{status_emoji} Attendance {'Alert' if not was_present else 'Update'}",
             "",
-            f"Subject: {subject_text}",
-            f"Faculty: {faculty_text}",
-            f"Lecture date: {event.event_date.strftime('%A, %d %B %Y')}",
-            f"Lecture time: {self._format_event_time(event)}",
-            f"Attendance marked time: {self._format_datetime(detected_at)}",
-            f"Update type: {update_type}",
-            f"Final status: {status}",
-            f"Cumulative attendance: {record.total_present}/{record.total_lecture}{percentage_text}",
+            f"📚 Subject: {subject_text}",
+            f"👨‍🏫 Faculty: {faculty_text}",
+            f"📅 Date: {event.event_date.strftime('%A, %d %B %Y')}",
+            f"⏰ Time: {self._format_event_time(event)}",
+            f"🕐 Marked at: {self._format_datetime(detected_at)}",
+            f"📋 Type: {update_type}",
+            "",
+            separator,
+            f"📊 STATUS: {status_emoji} {status}",
+            separator,
+            f"📈 Cumulative: {record.total_present}/{record.total_lecture}{percentage_text}",
         ]
         if marking_teacher:
-            lines.append(f"Attendance marked by: {marking_teacher}")
+            lines.append(f"👨‍🏫 Marked by: {marking_teacher}")
         lines.extend(self._attendance_context_lines(event, detected_at=detected_at, record=record))
 
         if was_present:
             lines.extend(
                 [
                     "",
-                    "Attendance has been marked present for this lecture.",
+                    "✅ Attendance has been marked present for this lecture.",
                 ]
             )
         else:
             lines.extend(
                 [
                     "",
-                    "Attendance has been marked absent for this lecture.",
-                    "Action: Review this absence in the ERP if you expected a present marking.",
+                    "❌ Attendance has been marked absent for this lecture.",
+                    "📝 Action: Review this absence in the ERP if you expected a present marking.",
                 ]
             )
 
@@ -6363,7 +6641,7 @@ class BotService:
                 [
                     "",
                     (
-                        "Late update: This lecture was marked "
+                        "⏳ Late update: This lecture was marked "
                         f"{max((detected_at.date() - event.event_date).days, 1)} day(s) after the lecture date."
                     ),
                 ]
@@ -6373,25 +6651,32 @@ class BotService:
                 [
                     "",
                     (
-                        f"Note: The ERP updated {batch_size} pending lecture(s) for this subject together. "
+                        f"📝 Note: The ERP updated {batch_size} pending lecture(s) for this subject together. "
                         "This lecture-level status is inferred from cumulative attendance totals."
                     ),
                 ]
             )
 
+        lines.extend(["", "🤖 QUMS Academic Bot"])
         return "\n".join(lines)
 
     def _render_not_marked_message(self, event: LectureEvent) -> str:
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
         return "\n".join(
             [
-                "Attendance Pending Update",
+                "⏳ Attendance Pending",
                 "",
-                f"Subject: {event.subject_name}",
-                f"Faculty: {event.teacher_name or 'Not available'}",
-                f"Lecture date: {event.event_date.strftime('%A, %d %B %Y')}",
-                f"Lecture time: {self._format_event_time(event)}",
-                "Current status: Not marked yet",
-                "Next action: The bot will check again automatically.",
+                f"📚 Subject: {event.subject_name}",
+                f"👨‍🏫 Faculty: {event.teacher_name or 'Not available'}",
+                f"📅 Date: {event.event_date.strftime('%A, %d %B %Y')}",
+                f"⏰ Time: {self._format_event_time(event)}",
+                "",
+                separator,
+                "📊 STATUS: ⏳ Not marked yet",
+                separator,
+                "⚙️ The bot will check again automatically.",
+                "",
+                "🤖 QUMS Academic Bot",
             ]
         )
 
@@ -6411,35 +6696,44 @@ class BotService:
             event.end_time or event.start_time or time(0, 0),
             tzinfo=detected_at.tzinfo or self.timezone,
         )
+        if marked:
+            status_icon = "✅" if status_text == "Present" else "❌"
+        else:
+            status_icon = "⏳"
+        separator = "━━━━━━━━━━━━━━━━━━━━━━"
         lines = [
-            "Lecture Finished Attendance Status",
+            "🏁 Lecture Finished — Attendance Status",
             "",
-            f"Subject: {subject_text}",
-            f"Faculty: {faculty_text}",
-            f"Lecture date: {event.event_date.strftime('%A, %d %B %Y')}",
-            f"Lecture time: {self._format_event_time(event)}",
-            f"Lecture finished at: {self._format_datetime(finish_reference)}",
-            f"Status checked at: {self._format_datetime(detected_at)}",
-            f"{'Final status' if marked else 'Current status'}: {status_text}",
+            f"📚 Subject: {subject_text}",
+            f"👨‍🏫 Faculty: {faculty_text}",
+            f"📅 Date: {event.event_date.strftime('%A, %d %B %Y')}",
+            f"⏰ Time: {self._format_event_time(event)}",
+            f"🏁 Finished at: {self._format_datetime(finish_reference)}",
+            f"🕐 Checked at: {self._format_datetime(detected_at)}",
+            "",
+            separator,
+            f"📊 {'FINAL' if marked else 'CURRENT'} STATUS: {status_icon} {status_text}",
+            separator,
         ]
         if record is not None:
             percentage_text = f" ({record.percentage})" if record.percentage else ""
-            lines.append(f"Cumulative attendance: {record.total_present}/{record.total_lecture}{percentage_text}")
+            lines.append(f"📈 Cumulative: {record.total_present}/{record.total_lecture}{percentage_text}")
         if marked:
             lines.extend(
                 [
                     "",
-                    "The lecture has finished and this is the latest attendance status currently visible in the ERP.",
+                    "✅ Lecture finished — this is the latest attendance status in the ERP.",
                 ]
             )
         else:
             lines.extend(
                 [
                     "",
-                    "The lecture has finished, but the ERP has not marked this lecture yet.",
-                    "Next action: The bot will keep checking silently in the background and notify you if it changes.",
+                    "⏳ Lecture finished, but ERP has not marked this lecture yet.",
+                    "⚙️ The bot will keep checking silently and notify you when it changes.",
                 ]
             )
+        lines.extend(["", "🤖 QUMS Academic Bot"])
         return "\n".join(lines)
 
     def _attendance_state_for_event(self, event: LectureEvent) -> tuple[str, bool, bool | None]:
